@@ -1,0 +1,8 @@
+dist-newstyle/
+.ghc.environment.*
+cabal.project.local*
+/manual-smoke.vcd
+/auto-smoke.vcd
+*.hi
+*.o
+.pre-commit-config.yaml

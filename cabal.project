@@ -1,0 +1,15 @@
+packages: .
+
+-- clash-prelude 1.11.0 is not on Hackage yet; pin the upstream commit this
+-- package is developed and tested against. Everything used here is stock
+-- clash-prelude API (the Clash.Signal.Trace internals are already
+-- parameterized over an IORef TraceMap upstream).
+source-repository-package
+  type: git
+  location: https://github.com/clash-lang/clash-compiler.git
+  tag: e16599387a68d6361134b4fe7e63bf4ad3ae8408
+  subdir: clash-prelude
+
+index-state: 2026-05-14T12:12:55Z
+
+tests: True
