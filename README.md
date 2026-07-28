@@ -98,39 +98,6 @@ or project-wide (`ghc-options: -fplugin=Clash.CircuitContext.Plugin`).
 3. **Auto-probe** — same rule for `HasProbe` signatures: bindings become
    `autoProbe "<binder>" …`, recording one value per simulated cycle from
    inside e.g. a mealy step function.
-
-## Opting out
-
-Instrumentation is **opt-in by signature, not by module**, so enabling the
-plugin project-wide is safe: a module with no `HasCircuitContext`/`HasProbe`
-signature is untouched. There are three ways to opt back out, at three
-granularities:
-
-| Granularity | How | Use when |
-| --- | --- | --- |
-| A whole function | **Omit the constraint.** No `HasCircuitContext` in the signature ⇒ no component wrap, no auto-trace. | The default. Nothing to undo. |
-| One binding | **Prefix its name with `_`.** `_hidden = acc inp` is skipped. | A binding you don't want in the waveform — scratch values, debug wiring, a `circuit` port you don't care about (`_dbg`). |
-| A call and everything under it | **`withoutCircuitContext`.** | Calling an instrumented function from a context that shouldn't record — most importantly a synthesis entry point. |
-
-```haskell
--- Discharges the constraint for one call, without duplicating the callee's
--- signature just to drop it:
-topEntity = withoutCircuitContext (myInstrumentedCircuit clk rst)
-```
-
-`withoutCircuitContext` is exactly `let ?circuitContext = noCircuitContext in …`,
-and instrumentation is HDL-transparent, so the wrapped call generates identical
-hardware to calling an uninstrumented function — in simulation *and* synthesis.
-
-The honest caveat: what is *not* easy is the constraint's **virality**. Because
-`HasCircuitContext` propagates to callers, instrumenting a widely-shared
-component means either threading the constraint repo-wide or writing
-`withoutCircuitContext` at every boundary — 9 edits for one peripheral in the
-bittide dogfooding (`timeWb`: 7 synthesis call sites plus 2 library
-intermediaries). Opting *out* is cheap; the cost is in how far opting *in*
-spreads. A non-viral opt-in — tracing a component "from the outside" — is the
-main open design question, tracked as finding F1 in
-[`docs/dogfooding-bittide.md`](docs/dogfooding-bittide.md).
 4. **Innermost signature wins** — a local signature switches the mode for
    its subtree, so a `HasProbe` step function nested in a
    `HasCircuitContext` component probes rather than traces.
@@ -180,9 +147,34 @@ main open design question, tracked as finding F1 in
 
 ### Opting out
 
-* Prefix a binder with `_` to leave it uninstrumented.
-* Omit the `OPAQUE` pragma or the constraint to keep a function untouched.
-* Don't enable the plugin on a module to leave the whole module untouched.
+Instrumentation is opt-in **by signature, not by module**, so enabling the
+plugin project-wide is safe — a module with no `HasCircuitContext`/`HasProbe`
+signature is untouched. To opt back out, at four granularities:
+
+| Granularity | How |
+| --- | --- |
+| One binding | Prefix the binder with `_`: `_hidden = acc inp` is skipped. Works for `circuit` ports too (`_dbg`). |
+| One function | Omit the `OPAQUE` pragma (no component scope) or the constraint (no instrumentation at all). |
+| One module | Don't enable the plugin on it. |
+| A call, and everything under it | `withoutCircuitContext` — discharges the constraint without duplicating the callee's signature just to drop it. |
+
+```haskell
+-- A synthesis entry point calling an instrumented circuit:
+topEntity = withoutCircuitContext (myInstrumentedCircuit clk rst)
+```
+
+`withoutCircuitContext` is exactly `let ?circuitContext = noCircuitContext in …`.
+Because instrumentation is HDL-transparent, the wrapped call is identical — in
+simulation *and* synthesis — to calling an uninstrumented function.
+
+What is *not* cheap is the opposite direction. `HasCircuitContext` propagates to
+callers, so instrumenting a widely-shared component means either threading the
+constraint repo-wide or writing `withoutCircuitContext` at every boundary — in
+the bittide dogfooding, 9 edits for one peripheral (`timeWb`: 7 synthesis call
+sites plus 2 library intermediaries). Opting out is cheap; opting *in* spreads.
+A non-viral opt-in — tracing a component "from the outside" — is the main open
+design question, tracked as finding F1 in
+[`docs/dogfooding-bittide.md`](docs/dogfooding-bittide.md).
 
 ## Manual API
 
@@ -274,9 +266,9 @@ actually collects a waveform.
 `auto-smoke` (the same design written naturally, instrumented entirely by
 the plugin), and `notation-smoke` (the real circuit-notation desugarer,
 against the vendored `deps/circuit-notation`) — then diffs the generated VCDs
-against the goldens in `goldens/` and asserts the fall-through warning fires.
-VCD output is fully deterministic by design, so the goldens are byte-identical
-across GHC 9.6 and 9.10.
+against the goldens in `goldens/` and asserts the fall-through warning fires. VCD output is fully
+deterministic by design, so the goldens are byte-identical across GHC 9.6
+and 9.10.
 
 `notation-smoke` exists only on this branch: it needs the `trace-ports` patch in
 `deps/circuit-notation`, so on `main` — whose `cabal.project` is just
