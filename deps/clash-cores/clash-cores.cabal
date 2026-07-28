@@ -1,0 +1,233 @@
+cabal-version:       2.2
+
+name:                clash-cores
+version:             0.1.0
+synopsis:            A collection of IP cores for Clash
+description:         A collection of IP cores for Clash
+bug-reports:         https://github.com/clash-lang/clash-cores/issues
+license:             BSD-2-Clause
+license-file:        LICENSE
+author:              QBayLogic B.V.
+maintainer:          devops@qbaylogic.com
+copyright:           Copyright © 2019     , Foamspace Corp.,
+                                 2022-2023, QBayLogic B.V.
+category:            Hardware
+-- TODO: Revert to "Simple". See:
+--
+--   https://github.com/clash-lang/clash-compiler/pull/2665#issuecomment-1939044550
+build-type:          Custom
+extra-source-files:  CHANGELOG.md
+
+flag doctests
+  description:
+    You can disable testing with doctests using `-f-doctests`.
+  default: True
+  manual: True
+
+flag unit-tests
+  description:
+    You can disable testing with unit tests using `-f-unit-tests`.
+  default: True
+  manual: True
+
+flag clash-18
+  description:
+    Disable cores that require a Clash version later than 1.8
+  default: False
+
+-- TODO: Remove this workaround. See:
+--
+--   https://github.com/clash-lang/clash-compiler/pull/2665#issuecomment-1939044550
+custom-setup
+  setup-depends:
+    base,
+    Cabal >= 3.10.3.0
+
+common basic-config
+  default-language: Haskell2010
+
+  default-extensions:
+    BinaryLiterals
+    DataKinds
+    DefaultSignatures
+    DeriveAnyClass
+    DeriveGeneric
+    DerivingStrategies
+    FlexibleContexts
+    ImplicitParams
+    MagicHash
+    NoImplicitPrelude
+    PostfixOperators
+    NoStarIsType
+    ScopedTypeVariables
+    TemplateHaskell
+    TypeApplications
+    TypeFamilies
+    TypeOperators
+
+  ghc-options:
+    -Wall -Wcompat
+    -fplugin=GHC.TypeLits.Extra.Solver
+    -fplugin=GHC.TypeLits.Normalise
+    -fplugin=GHC.TypeLits.KnownNat.Solver
+    -- ccc dogfooding: instrument HasCircuitContext-annotated combinators.
+    -fplugin=Clash.CircuitContext.Plugin
+
+  build-depends:
+    base                      >= 4.18  && < 5,
+    clash-circuit-context,
+    clash-lib               >= 1.10 && < 1.12,
+    clash-prelude           >= 1.10 && < 1.12,
+    clash-protocols,
+    constraints               >= 0.9   && < 1.0,
+    containers                >=0.5    && <0.9,
+    deepseq,
+    ghc-typelits-extra        >= 0.3.2,
+    ghc-typelits-knownnat     >= 0.6,
+    ghc-typelits-natnormalise >= 0.6,
+    infinite-list             ^>= 0.1,
+    lens,
+    QuickCheck,
+    string-interpolate        ^>= 0.3,
+    template-haskell          >= 2.12.0.0 && < 2.25,
+
+library
+  import: basic-config
+  hs-source-dirs: src
+
+  exposed-modules:
+    Clash.Cores.Crc
+    Clash.Cores.Crc.Catalog
+    Clash.Cores.Crc.Internal
+    Clash.Cores.Etherbone
+    Clash.Cores.Etherbone.Base
+    Clash.Cores.Etherbone.ConfigMaster
+    Clash.Cores.Etherbone.RecordBuilder
+    Clash.Cores.Etherbone.RecordProcessor
+    Clash.Cores.Etherbone.WishboneMaster
+    Clash.Cores.LatticeSemi.Ecp5.Blackboxes.IO
+    Clash.Cores.LatticeSemi.Ecp5.IO
+    Clash.Cores.LatticeSemi.Ice40.Blackboxes.IO
+    Clash.Cores.LatticeSemi.Ice40.IO
+    Clash.Cores.LineCoding.Lc8b10b
+    Clash.Cores.LineCoding.Lc8b10b.Decoder
+    Clash.Cores.LineCoding.Lc8b10b.Encoder
+    Clash.Cores.Sgmii
+    Clash.Cores.Sgmii.AutoNeg
+    Clash.Cores.Sgmii.BitSlip
+    Clash.Cores.Sgmii.Common
+    Clash.Cores.Sgmii.PcsReceive
+    Clash.Cores.Sgmii.PcsTransmit
+    Clash.Cores.Sgmii.PcsTransmit.CodeGroup
+    Clash.Cores.Sgmii.PcsTransmit.OrderedSet
+    Clash.Cores.Sgmii.RateAdapt
+    Clash.Cores.Sgmii.Sync
+    Clash.Cores.Spi
+    Clash.Cores.Uart
+    Clash.Cores.Xilinx.BlockRam
+    Clash.Cores.Xilinx.BlockRam.BlackBoxes
+    Clash.Cores.Xilinx.BlockRam.Internal
+    Clash.Cores.Xilinx.DcFifo
+    Clash.Cores.Xilinx.DcFifo.Internal.BlackBoxes
+    Clash.Cores.Xilinx.DcFifo.Internal.Instances
+    Clash.Cores.Xilinx.DcFifo.Internal.Types
+    Clash.Cores.Xilinx.Ethernet.Gmii
+    Clash.Cores.Xilinx.Ethernet.Gmii.Internal
+    Clash.Cores.Xilinx.Floating
+    Clash.Cores.Xilinx.Floating.Explicit
+    Clash.Cores.Xilinx.Floating.Internal
+    Clash.Cores.Xilinx.Ibufds
+    Clash.Cores.Xilinx.Ila
+    Clash.Cores.Xilinx.Ila.Internal
+    Clash.Cores.Xilinx.Internal
+    Clash.Cores.Xilinx.Unisim.DnaPortE2
+    Clash.Cores.Xilinx.Unisim.DnaPortE2.Internal
+    Clash.Cores.Xilinx.Vio
+    Clash.Cores.Xilinx.Vio.Internal.BlackBoxes
+    Clash.Cores.Xilinx.Xpm
+    Clash.Cores.Xilinx.Xpm.Cdc
+    Clash.Cores.Xilinx.Xpm.Cdc.ArraySingle
+    Clash.Cores.Xilinx.Xpm.Cdc.Gray
+    Clash.Cores.Xilinx.Xpm.Cdc.Handshake
+    Clash.Cores.Xilinx.Xpm.Cdc.Internal
+    Clash.Cores.Xilinx.Xpm.Cdc.Pulse
+    Clash.Cores.Xilinx.Xpm.Cdc.Single
+    Clash.Cores.Xilinx.Xpm.Cdc.SyncRst
+
+  other-modules:
+    Clash.Core.TermLiteral.Compat
+    Data.Text.Extra
+
+  ghc-options:
+    -fexpose-all-unfoldings
+    -fno-worker-wrapper
+
+  build-depends:
+    ghc-prim                >= 0.3.1.0 && < 1.0,
+    mtl                     >= 2.1.1 && < 2.4,
+    pretty-show,
+    prettyprinter           >= 1.7 && < 1.8,
+    prettyprinter-interp    ^>= 0.2,
+    reducers                >= 3.12.2 && < 4.0,
+    text                    >= 1.2.2 && < 2.2,
+    unordered-containers,
+
+test-suite unit-tests
+  import: basic-config
+  hs-source-dirs: test
+  type: exitcode-stdio-1.0
+  main-is: unit-tests.hs
+  ghc-options: -threaded
+
+  if !flag(unit-tests)
+    buildable: False
+
+  other-modules:
+    Test.Cores.Crc
+    Test.Cores.Etherbone
+    Test.Cores.Etherbone.Internal
+    Test.Cores.Etherbone.RecordBuilder
+    Test.Cores.Etherbone.RecordProcessor
+    Test.Cores.Etherbone.WishboneMaster
+    Test.Cores.Internal.SampleSpi
+    Test.Cores.Internal.Signals
+    Test.Cores.LineCoding.Lc8b10b
+    Test.Cores.Sgmii.AutoNeg
+    Test.Cores.Sgmii.BitSlip
+    Test.Cores.Sgmii.RateAdapt
+    Test.Cores.Sgmii.Sgmii
+    Test.Cores.Sgmii.Sync
+    Test.Cores.Spi
+    Test.Cores.Spi.MultiSlave
+    Test.Cores.Uart
+    Test.Cores.Xilinx.BlockRam
+    Test.Cores.Xilinx.DcFifo
+    Test.Cores.Xilinx.DnaPortE2
+    Test.Cores.Xilinx.Ethernet.Gmii
+
+  build-depends:
+    clash-cores,
+    clash-prelude-hedgehog,
+    hedgehog,
+    infinite-list,
+    tasty                   >= 1.2 && < 1.6,
+    tasty-hedgehog          >= 1.2.0,
+    tasty-hunit,
+    tasty-quickcheck,
+    tasty-th,
+
+test-suite doctests
+  type:             exitcode-stdio-1.0
+  default-language: Haskell2010
+  main-is:          doctests.hs
+  ghc-options:      -Wall -Wcompat -threaded
+  hs-source-dirs:   test
+
+  if !flag(doctests)
+    buildable: False
+  else
+    build-depends:
+      base,
+      clash-cores,
+      doctest-parallel >= 0.2 && < 0.5,
+      filepath,

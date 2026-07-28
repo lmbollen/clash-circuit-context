@@ -12,8 +12,11 @@ run cabal build all -j1 "$@" 2>&1 | tee "$log"
 run cabal test manual-smoke -j1 "$@"
 run cabal test fallback -j1 "$@"
 run cabal test auto-smoke -j1 "$@" 2>&1 | tee -a "$log"
+# timeout: a strict port trace would deadlock on circuit-notation's lazy let
+# knot (silent hang under the threaded RTS) — fail loudly instead.
+run timeout 600 cabal test notation-smoke -j1 "$@"
 
-for g in manual-smoke auto-smoke; do
+for g in manual-smoke auto-smoke notation-smoke; do
   if diff <(grep -v '^\$date' "$g.vcd") "goldens/$g.vcd" >/dev/null; then
     echo "ok: $g.vcd matches golden"
   else

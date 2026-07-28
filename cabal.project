@@ -1,4 +1,10 @@
-packages: .
+packages:
+  .
+  -- Vendored circuit-notation carrying the trace-ports patch. The
+  -- notation-smoke test-suite runs the REAL desugarer against this plugin
+  -- instead of hand-mimicking its output, so it needs this checkout — which is
+  -- why that suite exists only on this branch.
+  deps/circuit-notation
 
 -- clash-prelude 1.11.0 is not on Hackage yet; pin the upstream commit this
 -- package is developed and tested against. Everything used here is stock

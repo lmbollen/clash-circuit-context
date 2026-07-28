@@ -1,0 +1,13 @@
+# SPDX-FileCopyrightText: 2025 Google LLC
+#
+# SPDX-License-Identifier: CC0-1.0
+
+.direnv/
+.ghc.environment.*
+dist-newstyle/
+target/
+rust/target/
+
+test_memory_maps/
+vcd/
+verilog/

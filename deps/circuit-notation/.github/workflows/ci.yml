@@ -1,0 +1,73 @@
+name: CI
+
+# Trigger the workflow on push or pull request, but only for the master branch
+on:
+  push:
+    branches:
+    - master
+  pull_request:
+
+concurrency:
+  group: ${{ github.head_ref || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  # TODO: Not sure how to cache this one.. cachix?
+  nix:
+    name: nix build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - uses: cachix/install-nix-action@v31
+
+      - name: Build
+        run: |
+          nix build
+
+  cabal:
+    name: ${{ matrix.os }} / ghc ${{ matrix.ghc }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        cabal: ["latest"]
+        ghc:
+          - "9.6.7"
+          - "9.8.4"
+          - "9.10.3"
+          - "9.12.4"
+
+    steps:
+    - uses: actions/checkout@v3
+
+    - uses: haskell-actions/setup@v2
+      id: setup-haskell-cabal
+      name: Setup Haskell
+      with:
+        ghc-version: ${{ matrix.ghc }}
+        cabal-version: ${{ matrix.cabal }}
+
+    - name: Freeze
+      run: |
+        cabal update
+        cabal freeze
+
+    - uses: actions/cache@v4
+      name: Cache ~/.cabal/store
+      with:
+        path: ${{ steps.setup-haskell-cabal.outputs.cabal-store }}
+        key: ${{ runner.os }}-${{ matrix.ghc }}-${{ hashFiles('cabal.project.freeze', 'cabal.project') }}
+        restore-keys: |
+          ${{ runner.os }}-${{ matrix.ghc }}-
+
+    - name: Build
+      run: |
+        cabal build all --write-ghc-environment-files=always
+        ghc -Wall -Werror -iexample Example
+        ghc -Wall -Werror -iexample Testing
+        ghc -Wall -Werror -iexample ValueCircuits
+
+    - name: Test
+      run: |
+        cabal test all

@@ -1,0 +1,32 @@
+packages:
+  ./clash-protocols-base
+  ./clash-protocols
+
+tests: True
+
+package clash-prelude
+  -- 'large-tuples' generates tuple instances for various classes up to the
+  -- GHC imposed maximum of 62 elements. This severely slows down compiling
+  -- Clash, and triggers Template Haskell bugs on Windows. Hence, we disable
+  -- it by default. This will be the default for Clash >=1.4.
+  flags: -large-tuples
+
+package clash-protocols-base
+  -- Reduces compile times by ~20%
+  ghc-options: +RTS -qn4 -A128M -RTS -j4
+
+  -- Workaround for Haddock/CPP #if issues https://github.com/haskell/haddock/issues/1382
+  haddock-options: --optghc="-optP -P"
+
+  -- Don't pollute docs with large tuple instances
+  haddock-options: --optghc=-DHADDOCK_ONLY
+
+package clash-protocols
+  -- Reduces compile times by ~20%
+  ghc-options: +RTS -qn4 -A128M -RTS -j4
+
+  -- Workaround for Haddock/CPP #if issues https://github.com/haskell/haddock/issues/1382
+  haddock-options: --optghc="-optP -P"
+
+  -- Don't pollute docs with large tuple instances
+  haddock-options: --optghc=-DHADDOCK_ONLY

@@ -1,53 +1,104 @@
-# `dogfood/bittide` — tracing a real design, with zero dependency changes
+# `dogfood/deps` — tracing a real design, dependencies instrumented too
 
-This branch vendors one instrumented checkout, [`bittide-hardware/`](bittide-hardware/),
-and answers a single question:
+This branch is [`dogfood/bittide`](#see-also) plus the instrumented dependencies
+that bittide builds against. It answers the follow-up question:
 
-> How much of a real Clash design can `clash-circuit-context` trace when you are
-> only allowed to touch **that design** — not any of its dependencies?
+> How much *more* of a real Clash design becomes visible once you are also
+> allowed to touch its dependencies?
 
-Every dependency here is its **pristine upstream pin**. The
-[`dogfood/deps`](#see-also) branch answers the follow-up question — what changes
-when the dependencies are instrumented too — and the diff between the two
-branches is the honest measure of what dependency instrumentation buys you.
+Read the two branches as a pair. `dogfood/bittide` instruments bittide alone and
+leaves every dependency on its pristine upstream pin; this branch swaps four of
+them for local instrumented checkouts. The diff between the branches is the
+honest measure of what dependency instrumentation buys.
 
-## What was changed in `bittide-hardware`
+## The five vendored checkouts
 
-The vendored tree is upstream `bittide-hardware` at commit
-[`e80210f8`](https://github.com/bittide/bittide-hardware/commit/e80210f8495af32c3e97f8cc6fbe71530012c6b3)
-(`origin/main`) plus the instrumentation, ~97 files. It splits into four kinds of
-edit, and only the first is interesting:
+| Checkout | Upstream pin | Instrumentation |
+| --- | --- | --- |
+| `bittide-hardware/` | `e80210f8` (`origin/main`) | Unchanged from `dogfood/bittide` except `cabal.project` (see below) |
+| `clash-protocols/` | `e03dbd89` | `.cabal` only: `ImplicitParams`, the plugin, a `clash-circuit-context` dep |
+| `clash-protocols-memmap/` | `20bacc70` | `.cabal` + `HasCircuitContext` on `deviceWb`/register combinators + a contents tap |
+| `clash-cores/` | `5d084eff` | `.cabal` + `HasCircuitContext` on `etherboneC` |
+| `circuit-notation/` | `8da93a3` on branch `trace-ports` | A committed patch, not working-tree state — see the caveat below |
 
-1. **`HasCircuitContext` + `OPAQUE` on the peripherals to trace.** The plugin
-   turns any `OPAQUE` top-level function carrying `HasCircuitContext` into a
-   scope, and traces its named local bindings inside it. This is the actual
-   opt-in.
-2. **`withoutCircuitContext` at synthesis boundaries.** The `Pnr/` and `Hitl/`
-   instances are synthesis entry points; they discharge the constraint so it
-   does not escape into generated HDL.
-3. **Parenthesising `$` in `circuit` blocks.** `f x $ g -< bus` becomes
-   `(f x g) -< bus`. Mechanical, and needed because the tracing renamer runs on
-   circuit-notation's desugared output.
-4. **Test-side waveform plumbing**: `Tests.Waveform` (in both `bittide` and
-   `bittide-instances`), plus `clash-circuit-context` in the two `.cabal` files
-   and `-fplugin=Clash.CircuitContext.Plugin` in their `common clash` stanzas.
+The only change to `bittide-hardware` relative to `dogfood/bittide` is its
+`cabal.project`: the `source-repository-package` pins for `clash-protocols`,
+`clash-protocols-memmap` and `clash-cores` are commented out (kept for
+provenance, since each checkout sits at exactly that commit) and replaced by
+local paths under `packages`. Diff that one file between the branches to see the
+whole substitution.
 
-Enabling the plugin repo-wide is safe: it is a no-op for any module without a
-`HasCircuitContext`/`HasProbe` signature. Opt-in is **by signature, not by
-module**.
+## What the dependency instrumentation actually buys
 
-Wiring `clash-circuit-context` in is the whole of the build-level change — see
-the top of [`bittide-hardware/cabal.project`](bittide-hardware/cabal.project):
+**The headline: register contents.** `registerWb` and its whole family live in
+`clash-protocols-memmap`, and their stored state is a `where`-binding inside a
+low-level `Circuit go` — invisible to any amount of bittide-side work. A
+one-expression tap inside `registerWbDf` (the shared worker behind
+`registerWb`/`registerWb_`/`registerWbVec*`/`registerWithOffset*`/`*I`, so one
+edit covers all of them) yields **45 `<device>_<register>_content` wires in
+`registerwb_sim`** — `ManyTypes_x2_content`, `ManyTypes_sum0_content`, … — at
+widths matching the register types and carrying real values. The watchdog test
+goes from 168 to **175** wires, gaining the CPU's live register contents by name
+(`Timer_scratchpad_content`, `Uart_data_content`, …) with its byte-exact
+assertion intact.
 
-```cabal
-packages:
-  ...
-  ../../clash-circuit-context.cabal
+Instrumenting the memmap register/device layer accounts for **+54 wires** in the
+firmware DUTs overall (25 → 168 in the watchdog trace), which is the single
+largest win from dependency instrumentation.
+
+Getting that tap right is the interesting part, and it is a lesson about the
+runtime rather than about memmap:
+
+```haskell
+wbS2M2Traced
+  | clashSimulation =
+      (\c s -> c `seq` s)
+        <$> traceSignalC [I.i|#{deviceName}_#{registerName}_content|] packedOut
+        <*> wbS2M2
+  | otherwise = wbS2M2
 ```
 
-Everything below that in the same file is untouched upstream, including the
-`source-repository-package` pins for `clash-protocols`, `clash-protocols-memmap`
-and `clash-cores`. That is the defining property of this branch.
+`traceSignalC` records in lockstep with the tapped signal being **sampled**, so
+the tap has to sit on a path that is always sampled. The obvious spot — the
+register's value output `aOut` — is wrong: wrappers like `registerWb_`
+(`_ignored <- registerWbDf …`) discard it. Those registers *would* still show up,
+but only because `dumpVCDC` drains the packed tail at dump time — the O(cycles)
+space leak the lockstep recorder exists to avoid. Threading it through the bus
+response `wbS2M2`, which the interconnect consumes every cycle for every register
+whether or not anyone reads it, records all variants the efficient way. The
+`clashSimulation` guard keeps synthesis seeing a plain `wbS2M2`, so there is
+**zero synthesis impact**.
+
+**And the anti-headline: `HasCircuitContext` is necessary but not sufficient.**
+Adding the constraint to a dependency buys nothing on its own. Only combinators
+that go through circuit-notation's `circuit`/`-<` desugaring get traced; one
+built directly from the `Circuit` constructor contributes **zero** wires however
+it is annotated, because its internals are `where`-bound inside a function the
+renamer never sees. Concretely: instrumenting `clash-protocols-memmap` added
+54 wires, while `Df.fifo` in `clash-protocols` added **0**. That is why
+`clash-protocols` and `clash-cores` here carry `.cabal`-level changes and almost
+no source changes — there was nothing for the plugin to reach.
+
+Per-dependency measurements are in
+[`docs/dep-instrumentation-assessment.md`](../docs/dep-instrumentation-assessment.md);
+the full findings list, with the F-numbers referenced in code comments, is in
+[`docs/dogfooding-bittide.md`](../docs/dogfooding-bittide.md).
+
+### Caveat: `circuit-notation` is not wired into bittide
+
+The vendored `circuit-notation` carries a `trace-ports` patch (`8da93a3`) that
+makes *all* circuit ports visible to renamer plugins, not just the intermediate
+`<-` ports. On this branch it is exercised only by this repository's own
+`notation-smoke` suite — **not** by the bittide waveforms. Two things block that:
+
+* it is version `0.3.0.0`, while `clash-protocols` requires
+  `circuit-notation >=0.2 && <0.3`, so bittide resolves to the Hackage version;
+* `trace-ports` is opt-in per package via
+  `-fplugin-opt=CircuitNotation:trace-ports`, which no bittide `.cabal` sets.
+
+Relaxing that bound and enabling the option is the natural next step for this
+branch, and it is not done here — so none of the wire counts above include any
+trace-ports effect.
 
 ## Generating the waveforms
 
@@ -92,6 +143,9 @@ cabal test  bittide:unittests
 cabal test  bittide-instances:unittests
 ```
 
+Expect a long first build: unlike `dogfood/bittide`, this branch builds five
+dependency libraries from source rather than reusing cached upstream pins.
+
 VCDs land in `waveforms/` **relative to each package directory** — so
 `bittide/waveforms/` and `bittide-instances/waveforms/`. They are gitignored;
 regenerate rather than commit them.
@@ -105,9 +159,9 @@ also the *useful* run: on success hedgehog grows the size parameter, so the last
 case is the largest; on failure it shrinks, so the last case is the minimal
 counterexample.
 
-### The 30 waveforms
+### The 27 waveforms
 
-**`bittide:unittests` — 16**, from `bittide/tests/`. Plain Clash designs sampled
+**`bittide:unittests` — 13**, from `bittide/tests/`. Plain Clash designs sampled
 with `sampleN`/`simulateN` (`withWaveform`) or small `clash-protocols` circuits
 (`withWaveformC`):
 
@@ -116,11 +170,16 @@ with `sampleN`/`simulateN` (`withWaveform`) or small `clash-protocols` circuits
 | `prop_happy`, `case_trackerWaveform` | `Tests/Transceiver/Prbs.hs` |
 | `prop_handshake`, `prop_noHandshake` | `Tests/Handshake.hs` |
 | `case_xilinxElasticBufferEq`, `…MaxBound`, `…MinBound` | `Tests/ElasticBuffer.hs` |
-| `case_zeroSameDomain`, `case_zeroSrcRst`, `case_zeroDstRst` | `Tests/Counter.hs` |
 | `byteAddressableBlockRamAsBlockRam`, `readWriteByteAddressableBlockram` | `Tests/DoubleBufferedRam.hs` |
 | `case_asciiDebugMuxWaveform` | `Tests/Df.hs` |
 | `case_axi4StreamPacketFifoWaveform` | `Tests/Axi4.hs` |
 | `bench_correctness`, `bench_recording` | `Tests/Bench.hs` — tracing-overhead benchmark |
+
+`Tests/Counter.hs` holds three more call sites (`case_zeroSameDomain`,
+`case_zeroSrcRst`, `case_zeroDstRst`), but they do **not** run: `Tests.Counter` is
+listed in `bittide.cabal`'s `other-modules`, so it compiles, yet `UnitTests.hs`
+never imports it into the tasty tree. That is pre-existing upstream, not something
+the instrumentation introduced. Reach them via the REPL recipe below.
 
 **`bittide-instances:unittests` — 14**, from `bittide-instances/tests/`. Each is
 a RISC-V firmware self-test `sampleC`-ing a `Circuit () (Df dom (BitVector 8))`
@@ -188,61 +247,46 @@ files: a cycle that was **never sampled** renders `z`, an **evaluated but
 undefined** value renders `x`, and a partially-defined value keeps its defined
 bits (`b0x…`) rather than being silently zeroed.
 
-## What you get, and what you don't
+## This repository's own test suite on this branch
 
-With dependencies left pristine, tracing covers bittide's **own** `circuit`
-blocks and instrumented peripherals. The gap this branch exists to demonstrate:
+Because `deps/circuit-notation` is vendored here, this branch also carries the
+`notation-smoke` suite, which runs the real circuit-notation desugarer against
+the plugin instead of hand-mimicking its output. It is absent from `main`, whose
+`cabal.project` is just `packages: .` so a plain clone builds. From the
+repository root:
 
-* `HasCircuitContext` is **necessary but not sufficient**. Only combinators that
-  go through circuit-notation's `circuit`/`-<` desugaring get traced. A
-  combinator built directly from the `Circuit` constructor (`Df.fifo` is the
-  clean example) contributes **zero** wires no matter what constraints it
-  carries — its internals are `where`-bound inside a function the renamer never
-  sees.
-* Register **contents** are invisible. `registerWb` and friends live in
-  `clash-protocols-memmap`; their state is a `where`-binding in a low-level
-  `Circuit go`, so no amount of bittide-side instrumentation reaches it. On
-  `dogfood/deps` a one-expression tap inside `registerWbDf` adds 44 content
-  wires to `registerwb_sim` alone.
-* The constraint is **viral**, and the cost scales with how shared a component
-  is. `timeWb` has 7 direct synthesis call sites plus 2 library intermediaries —
-  9 `withoutCircuitContext` edits for one peripheral. Peripherals instantiated
-  inside `processingElement` (`wbStorage`, `singleMasterInterconnectC`,
-  `watchDogWb`) are worse: every DUT and every synthesis instance uses it.
-
-The full findings list, with the F-numbers referenced in code comments, is in
-[`docs/dogfooding-bittide.md`](../docs/dogfooding-bittide.md) on `main`.
+```bash
+./check.sh              # all four suites + golden VCD diffs
+```
 
 ## See also
 
-* **`main`** — the plugin and runtime themselves, plus `docs/`.
-* **`dogfood/deps`** — this tree plus instrumented `clash-protocols`,
-  `clash-protocols-memmap`, `clash-cores` and `circuit-notation`. Compare
-  `bittide-hardware/cabal.project` between the branches to see the dependency
-  substitution, and
-  [`docs/dep-instrumentation-assessment.md`](../docs/dep-instrumentation-assessment.md)
-  for the measured per-dependency wire counts.
+* **`main`** — the plugin and runtime themselves, plus `docs/`. No vendored
+  dependencies; builds from a plain clone.
+* **`dogfood/bittide`** — bittide instrumented, every dependency pristine. The
+  baseline this branch is measured against.
 
-## Note on the vendored checkout
+## Note on the vendored checkouts
 
-`bittide-hardware/` is committed as plain files, not a submodule. The
-instrumentation is working-tree state on top of upstream `main`, never pushed
-anywhere, so there is no commit a submodule could point at — and the point of
-this branch is that you can read the instrumentation in the diff rather than
-having to reconstruct it.
-
-The upstream base is `e80210f8`, so to see the instrumentation on its own, clone
-upstream at that commit and diff against the vendored tree:
+All five are committed as plain files, not submodules. Four carry
+never-pushed working-tree instrumentation, so there is no commit a submodule
+could point at — and the diff is the artifact worth reading. To recover any one
+checkout's instrumentation on its own, clone its upstream at the pin from the
+table above and diff:
 
 ```bash
-git clone https://github.com/bittide/bittide-hardware /tmp/bh-upstream
-git -C /tmp/bh-upstream checkout -q e80210f8
-diff -ru --exclude=.git /tmp/bh-upstream deps/bittide-hardware
+git clone https://github.com/QBayLogic/clash-protocols-memmap /tmp/memmap
+git -C /tmp/memmap checkout -q 20bacc70
+diff -ru --exclude=.git /tmp/memmap deps/clash-protocols-memmap
 ```
 
-Only tracked sources are vendored (~630 files, ~6.7 MB); build output is excluded
-by bittide's own `.gitignore`, which this repository honours because the tree is
-committed as ordinary files. Two local-only files are deliberately left out:
+`circuit-notation` is the exception: its change is the committed `8da93a3` on a
+local `trace-ports` branch, so `git show 8da93a3` in a checkout of that branch
+gives the patch directly.
+
+Only tracked sources are vendored; build output is excluded by each checkout's
+own `.gitignore`, which this repository honours because the trees are committed
+as ordinary files. Two local-only bittide files are deliberately left out:
 `cabal.project.local` (its contents were folded into the tracked `cabal.project`
-so this tree builds with no extra setup) and `devenv.sh` (a dumped nix
-environment full of absolute `/nix/store` paths — use `nix develop` instead).
+so the tree builds with no extra setup) and `devenv.sh` (a dumped nix environment
+full of absolute `/nix/store` paths — use `nix develop` instead).

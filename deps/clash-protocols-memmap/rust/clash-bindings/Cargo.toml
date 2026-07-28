@@ -1,0 +1,24 @@
+# SPDX-FileCopyrightText: 2026 Google LLC
+#
+# SPDX-License-Identifier: CC0-1.0
+
+[package]
+name = "clash-bindings"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+ufmt = "0.2.0"
+const_panic = "0.2.15"
+clash-macros = { path = "../clash-macros" }
+
+[dependencies.subst_macros]
+git = "https://github.com/QBayLogic/subst_macros.git"
+rev = "1273588cd7b854b8b6294cf54c7e238f77778ac4"
+
+[dev-dependencies.rand]
+version = "0.10.0"
+default-features = false
+
+[lints]
+workspace = true

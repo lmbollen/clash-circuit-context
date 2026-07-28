@@ -1,0 +1,19 @@
+# SPDX-FileCopyrightText: 2025 Google LLC
+#
+# SPDX-License-Identifier: CC0-1.0
+[package]
+name = "clash-macros"
+version = "0.1.0"
+edition = "2024"
+
+[lints]
+workspace = true
+
+[lib]
+proc-macro = true
+
+[dependencies]
+proc-macro-crate = "3.5.0"
+proc-macro2 = "*"
+quote = "1.0"
+syn = {version = "2.0", features = ["full"]}

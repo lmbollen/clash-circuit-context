@@ -1,0 +1,58 @@
+cabal-version:       2.4
+
+name:                cores-hdl-tests
+version:             0.0.0
+synopsis:            Clash cores HDL tests
+-- description:
+homepage:            https://clash-lang.org/
+license:             BSD-2-Clause
+license-file:        LICENSE
+author:              The Clash Authors
+Maintainer:          QBayLogic B.V. <devops@qbaylogic.com>
+copyright:           Copyright © 2022-2024 QBayLogic B.V.
+category:            Testing
+build-type:          Simple
+
+executable cores-hdl-tests
+  main-is: Main.hs
+  default-language: Haskell2010
+  ghc-options:
+    -Wall -Wcompat
+    -fexpose-all-unfoldings
+    -fno-worker-wrapper
+    -threaded
+
+  default-extensions:
+    DeriveDataTypeable
+    OverloadedStrings
+    ViewPatterns
+
+  build-tool-depends:
+    clash-ghc:clash
+
+  build-depends:
+    aeson,
+    base,
+    clash-cores,
+    clash-ghc,
+    clash-lib,
+    clash-prelude,
+    clash-testsuite,
+    data-default,
+    directory,
+    extra,
+    filepath,
+    ghc,
+    Glob,
+    ieee754,
+    optparse-applicative,
+    process,
+    singletons-base,
+    singletons-th,
+    singletons,
+    string-interpolate,
+    tagged,
+    tasty >= 1.5,
+    tasty-hunit,
+    temporary,
+    text,

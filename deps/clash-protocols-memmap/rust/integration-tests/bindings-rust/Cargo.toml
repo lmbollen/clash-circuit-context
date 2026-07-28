@@ -1,0 +1,18 @@
+# SPDX-FileCopyrightText: 2025 Google LLC
+#
+# SPDX-License-Identifier: CC0-1.0
+
+[package]
+name = "bindings-rust"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clash-bindings = { path = "../../clash-bindings" }
+clash-macros = { path = "../../clash-macros" }
+
+[build-dependencies]
+memorymap-compiler = { path = "../../memorymap-compiler" }
+memorymap-compiler-rust = { path = "../../memorymap-compiler-rust" }
+proc-macro2 = "*"
+quote = "*"

@@ -122,3 +122,26 @@ test-suite auto-smoke
     text,
 
   ghc-options: -fplugin=Clash.CircuitContext.Plugin
+
+-- Golden test against the REAL circuit-notation desugarer (not a hand-written
+-- imitation of its output): `circuit` blocks desugared by the actual
+-- parse-stage plugin, ports auto-traced by this plugin's renamer + the
+-- Tagged/unit/tuple Traceable instances. Completing at all is the laziness
+-- proof: the notation ties forward references through a lazy let knot, and a
+-- strict trace would <<loop>>.
+--
+-- Only on dogfood/deps: it needs the trace-ports patch in the vendored
+-- deps/circuit-notation, so it cannot build from a plain clone of main.
+test-suite notation-smoke
+  import: common-options
+  type: exitcode-stdio-1.0
+  main-is: NotationSmoke.hs
+  other-modules: NotationSmokeTP
+  hs-source-dirs: tests
+  build-depends:
+    base,
+    circuit-notation,
+    clash-circuit-context,
+    clash-prelude,
+    containers,
+    text,
