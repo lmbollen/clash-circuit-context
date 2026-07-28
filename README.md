@@ -242,3 +242,28 @@ the plugin) — then diffs both generated VCDs against the goldens in
 `goldens/` and asserts the fall-through warning fires. VCD output is fully
 deterministic by design, so the goldens are byte-identical across GHC 9.6
 and 9.10.
+
+## Proof of concept: tracing a real design
+
+`main` is the plugin alone, and builds from a plain clone. Two branches carry
+the proof of concept — this plugin applied to
+[bittide-hardware](https://github.com/bittide/bittide-hardware), with the
+instrumented checkouts committed so the waveforms can be reproduced:
+
+| Branch | What it shows |
+| --- | --- |
+| `dogfood/bittide` | bittide instrumented, **every dependency on its pristine upstream pin** — what you get when you may only touch your own design |
+| `dogfood/deps` | the above **plus instrumented `clash-protocols`, `clash-protocols-memmap`, `clash-cores` and `circuit-notation`** — what dependency instrumentation adds |
+
+Each branch has a `deps/README.md` covering setup and how to generate all of its
+waveforms. The diff between them is the measure of what instrumenting
+dependencies buys: the headline is register *contents*, invisible from the design
+side because `registerWb`'s state is a `where`-binding inside a low-level
+`Circuit go`.
+
+The findings behind both, including the ones that argue against the current
+design, are in [`docs/dogfooding-bittide.md`](docs/dogfooding-bittide.md) and
+[`docs/dep-instrumentation-assessment.md`](docs/dep-instrumentation-assessment.md).
+The most important: `HasCircuitContext` is necessary but not sufficient — only
+combinators desugared through circuit-notation get traced, so annotating a
+`Circuit`-constructor combinator adds nothing.
