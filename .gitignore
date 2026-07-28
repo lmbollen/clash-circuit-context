@@ -3,6 +3,15 @@ dist-newstyle/
 cabal.project.local*
 /manual-smoke.vcd
 /auto-smoke.vcd
+/notation-smoke.vcd
 *.hi
 *.o
 .pre-commit-config.yaml
+
+# Clash compiler debug output
+.clash/
+
+# Local dependency checkouts used for dogfooding this plugin on real designs.
+# Deliberately absent from main: the two `dogfood/*` branches vendor the
+# instrumented sources they need (see each branch's README).
+/deps/

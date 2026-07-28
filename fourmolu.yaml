@@ -1,0 +1,4 @@
+# Formatting style aligned with clash-lang/clash-shockwaves.
+# For more information, see: https://fourmolu.github.io/config/
+indentation: 2
+column-limit: 90

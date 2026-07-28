@@ -1,7 +1,12 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE LambdaCase #-}
 
-{- | The typechecker-plugin half: decides the 'Clash.CircuitContext.Auto.CanTrace'
+{- |
+Copyright  :  (C) 2026, QBayLogic B.V.
+License    :  BSD2 (see the file LICENSE)
+Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
+
+The typechecker-plugin half: decides the 'Clash.CircuitContext.Auto.CanTrace'
 and @CanProbe@ oracles by approximating the solvability of @Traceable t@
 (resp. @Probeable t@) at the occurrence. The plugin builds NO instance
 dictionaries — it only reduces the Bool-kinded families (plus a cast for
@@ -31,25 +36,30 @@ the rule above) when nothing applies.
 -}
 module Clash.CircuitContext.Plugin.Oracle (oracle) where
 
-import Data.Maybe (isJust, mapMaybe)
+import Data.Maybe (isJust)
 
 import qualified GHC.Builtin.Names as GHC
 import qualified GHC.Builtin.Types as GHC
-import qualified GHC.Core.Class as GHC
+import qualified GHC.Builtin.Types.Literals as GHC (typeNatTyCons)
 import qualified GHC.Core.InstEnv as GHC
 import qualified GHC.Core.Predicate as GHC
 import qualified GHC.Core.TyCo.FVs as GHC
 import qualified GHC.Core.TyCon as GHC
 import qualified GHC.Core.Type as GHC
-import qualified GHC.Plugins as GHC (Role (Nominal, Representational), text)
+import qualified GHC.Iface.Load as GHC (loadSysInterface)
+import qualified GHC.Plugins as GHC (
+  getOccString,
+  moduleName,
+  moduleNameString,
+  nameModule_maybe,
+  text,
+ )
+import qualified GHC.Tc.Utils.Monad as GHC (initIfaceTcRn)
 import qualified GHC.Tc.Utils.TcType as GHC
 import qualified GHC.TcPlugin.API as API
 import qualified GHC.TcPlugin.API.Internal as APIInternal (unsafeLiftTcM)
 import qualified GHC.Types.Name as GHC (getName)
 import qualified GHC.Types.Unique.FM as GHC
-import qualified GHC.Iface.Load as GHC (loadSysInterface)
-import qualified GHC.Tc.Utils.Monad as GHC (initIfaceTcRn)
-import qualified GHC.Types.Var as GHC (isTyVar)
 
 data OracleEnv = OracleEnv
   { canTraceTyCon :: API.TyCon
@@ -123,8 +133,8 @@ rewriteGround _env fam cls _givens [t]
       decision <- solvablePred API.getInstEnvs [] fuel0 (GHC.mkClassPred cls [t])
       case decision of
         Just b ->
-          pure
-            $ API.TcPluginRewriteTo
+          pure $
+            API.TcPluginRewriteTo
               (API.mkTyFamAppReduction "clash-circuit-context" GHC.Nominal [] fam [t] (boolTy b))
               []
         Nothing -> pure API.TcPluginNoRewrite
@@ -165,9 +175,11 @@ solveStuck env givens wanteds = do
       _ -> pure Nothing
 
   dispatch cls famTc
-    | cls == autoTraceClass env, famTc == canTraceTyCon env =
+    | cls == autoTraceClass env
+    , famTc == canTraceTyCon env =
         Just (traceableClass env)
-    | cls == autoProbeClass env, famTc == canProbeTyCon env =
+    | cls == autoProbeClass env
+    , famTc == canProbeTyCon env =
         Just (probeableClass env)
     | otherwise = Nothing
 
@@ -194,7 +206,7 @@ recursion needs them — observed as a wrong ''False' on the module's very
 first oracle query.
 -}
 solvablePred ::
-  Monad m =>
+  (Monad m) =>
   m GHC.InstEnvs ->
   [API.PredType] ->
   Int ->
@@ -208,8 +220,9 @@ solvablePred getEnvs givenPreds = go
     | any (GHC.eqType pred0) givenPreds = pure (Just True)
     | otherwise = case GHC.classifyPredType pred0 of
         GHC.ClassPred cls args
-          | GHC.getName cls == GHC.knownNatClassName ->
-              pure (litOr (all (isJust . GHC.isNumLitTy) args) pred0)
+          | GHC.getName cls == GHC.knownNatClassName
+          , [n] <- args ->
+              knownNat fuel cls n
           | GHC.getName cls == GHC.knownSymbolClassName ->
               pure (litOr (all (isJust . GHC.isStrLitTy) args) pred0)
           | GHC.getName cls == GHC.typeableClassName ->
@@ -219,6 +232,25 @@ solvablePred getEnvs givenPreds = go
 
   litOr True _ = Just True
   litOr False pred0 = negativeOrDefer pred0
+
+  -- @KnownNat n@: a literal is known; a given is known (caught by the
+  -- eqType check above on recursion); and an application of a type-level
+  -- arithmetic function is known iff all its operands are — mirroring what
+  -- ghc-typelits-knownnat/-extra solve in the instrumented module. (Code
+  -- whose types CONTAIN such arithmetic constraints requires those solver
+  -- plugins to typecheck at all, so predicting their success adds no new
+  -- requirement.) This is what lets a @Signal dom (WishboneM2S (30 - CLog 2
+  -- (n + 1)) 4)@ port trace inside a bus-width-polymorphic component.
+  knownNat fuel cls n0
+    | Just _ <- GHC.isNumLitTy n = pure (Just True)
+    | Just (tc, tcArgs) <- GHC.splitTyConApp_maybe n
+    , isNatArithTyCon tc
+    , not (null tcArgs) =
+        conj <$> traverse (go (fuel - 1) . mkKN) tcArgs
+    | otherwise = pure (negativeOrDefer (mkKN n))
+   where
+    n = GHC.expandTypeSynonyms n0
+    mkKN t = GHC.mkClassPred cls [t]
 
   byInstance fuel cls args pred0 = do
     ienvs <- getEnvs
@@ -245,6 +277,26 @@ solvablePred getEnvs givenPreds = go
   negativeOrDefer pred0
     | hasSkolems pred0, null givenPreds = Nothing
     | otherwise = Just False
+
+{- | Type-level Nat arithmetic whose result is 'GHC.TypeNats.KnownNat' when
+its operands are: GHC's built-in @+ - * ^ Div Mod Log2@ families (compared
+by 'TyCon' identity) plus the @ghc-typelits-extra@ families (by name — they
+live in a user package). The corresponding solver plugins
+(@ghc-typelits-knownnat@ with the @-extra@ instances) construct the actual
+evidence during real constraint solving; the oracle only predicts them.
+-}
+isNatArithTyCon :: API.TyCon -> Bool
+isNatArithTyCon tc =
+  tc `elem` GHC.typeNatTyCons
+    || (inMod "GHC.TypeLits.Extra" && occ `elem` extraFams)
+ where
+  occ = GHC.getOccString tc
+  inMod m =
+    case GHC.nameModule_maybe (GHC.getName tc) of
+      Just md -> GHC.moduleNameString (GHC.moduleName md) == m
+      Nothing -> False
+  extraFams =
+    ["Div", "Mod", "DivRU", "DivMod", "CLog", "FLog", "Log", "GCD", "LCM", "Max", "Min"]
 
 hasMetas :: API.PredType -> Bool
 hasMetas = GHC.anyFreeVarsOfType (\v -> GHC.isTyVar v && GHC.isMetaTyVar v)

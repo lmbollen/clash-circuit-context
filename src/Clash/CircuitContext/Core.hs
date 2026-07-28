@@ -8,8 +8,16 @@
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
+-- 'knownDomain' is matched via the 'SDomainConfiguration' GADT; without
+-- MonoLocalBinds (implied by TypeFamilies) those matches are fragile.
+{-# LANGUAGE TypeFamilies #-}
 
-{- | Scoped simulation context: hierarchy, per-simulation trace map, and
+{- |
+Copyright  :  (C) 2026, QBayLogic B.V.
+License    :  BSD2 (see the file LICENSE)
+Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
+
+Scoped simulation context: hierarchy, per-simulation trace map, and
 probes inside mealy machines — all layered on UNMODIFIED clash-prelude.
 
 Everything hangs off one implicit parameter @?circuitContext@:
@@ -49,7 +57,9 @@ module Clash.CircuitContext.Core (
   CircuitContext (..),
   HasCircuitContext,
   noCircuitContext,
+  withoutCircuitContext,
   withCircuitContext,
+  withCircuitContextWindow,
 
   -- * Hierarchy
   HierSeg (..),
@@ -61,47 +71,62 @@ module Clash.CircuitContext.Core (
   traceSignalC,
   dumpVCDC,
 
+  -- * Recorded data (change-compressed)
+  Run,
+  Runs,
+  TraceData,
+  TraceEntry (..),
+  recordedCycles,
+
   -- * Probes inside mealy machines
   ProbeMap,
   ProbeCtx (..),
   HasProbe,
   probe,
   mealyProbed,
+  mealyBProbed,
+  mooreProbed,
+  mooreBProbed,
+  probeFmap,
 ) where
 
+import Clash.Explicit.Mealy (mealy)
+import Clash.Explicit.Moore (moore)
 import Clash.Explicit.Signal (delay, register)
+import Clash.Magic (clashSimulation)
 import Clash.Prelude (
   BitPack (..),
+  Bundle (Unbundled, bundle),
   Clock,
   Enable,
   Index,
   KnownDomain,
   KnownNat,
   Reset,
-  Signal,
   SNat (..),
+  Signal,
   Vec,
   enableGen,
   imap,
+  sample_lazy,
   snatToNum,
   unbundle,
  )
-import Clash.Signal.Internal (knownDomain, SDomainConfiguration (..))
+import Clash.Signal.Internal (SDomainConfiguration (..), Signal ((:-)), knownDomain)
 import Clash.Signal.Trace (
   DeclarationCommand (..),
   SimulationCommand (..),
-  TraceMap,
+  VCDFile (..),
   Value,
   ValueChange (..),
   Var (..),
-  VCDFile (..),
   dumpVCD1#,
-  traceSignal#,
  )
 import Clash.Sized.Internal.BitVector (BitVector (BV))
-import Clash.XException (NFDataX, isX)
+import Clash.XException (NFDataX)
 
-import Data.Bits (testBit)
+import Control.Exception (SomeException, evaluate, try)
+import Data.Bits (testBit, xor, (.&.))
 import qualified Data.ByteString.Lazy as ByteStringLazy
 import Data.Char (isDigit)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
@@ -109,6 +134,10 @@ import qualified Data.IntMap.Strict as IntMap
 import Data.List (foldl', intercalate, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isNothing)
+import qualified Data.Text as Text
+import Data.Time.Clock (UTCTime, getCurrentTime)
+import Data.Time.Format (defaultTimeLocale, formatTime)
+import GHC.Natural (Natural)
 import GHC.Stack (
   CallStack,
   HasCallStack,
@@ -118,16 +147,121 @@ import GHC.Stack (
   srcLocStartCol,
   srcLocStartLine,
  )
-import Data.Time.Clock (UTCTime, getCurrentTime)
-import Data.Time.Format (defaultTimeLocale, formatTime)
-import qualified Data.Text as Text
-import Data.Typeable (Typeable)
-import GHC.Natural (Natural)
-import System.IO.Unsafe (unsafePerformIO)
+import System.IO.Unsafe (unsafeDupablePerformIO, unsafePerformIO)
 import System.Mem.StableName (StableName, hashStableName, makeStableName)
 
--- | name → (clock period in ps, bit width, cycle → packed value)
-type ProbeMap = Map.Map String (Int, Int, IntMap.IntMap Value)
+{- | A maximal span of consecutive cycles holding one packed value:
+@(firstCycle, lastCycle, value)@.
+-}
+type Run = (Int, Int, Value)
+
+{- | Run-length encoded signal history, NEWEST run first.
+
+This is the central memory-design decision of the recorder: accumulators are
+sized by the number of VALUE CHANGES, not by the number of simulated cycles —
+the same compression a VCD applies on output. Storing per-cycle history
+(a list or map entry per cycle, as earlier versions did) makes memory linear
+in simulation length for every traced signal and probe, which for a real
+design (dozens of signals, windows of 10⁵–10⁶ cycles) is gigabytes of
+mostly-repeated values: a space leak by construction, no matter how strictly
+it is forced.
+-}
+type Runs = [Run]
+
+{- | Record @cycle = v@ into a run history. Recording is monotonic by
+construction at every call site — the trace tap walks a list spine in order,
+and probes fire in simulation order — so this only ever extends the newest
+run or starts a new one; re-recording an already-covered cycle (lazy
+re-evaluation) is ignored, keeping writes idempotent. A gap before @cyc@
+deliberately starts a NEW run even for an equal value: for probes a gap means
+"never forced" and must stay observable (rendered @x@), not be absorbed.
+-}
+addCycle :: Int -> Value -> Runs -> Runs
+addCycle cyc v runs = case runs of
+  (s, e, v0) : rest
+    | cyc <= e -> runs
+    | cyc == e + 1 && v == v0 -> (s, cyc, v0) : rest
+  _ -> (cyc, cyc, v) : runs
+
+{- | A run history bounded to a trailing capture window, as a two-chunk gap
+buffer: @WRuns flipCycle current previous@, where @current@ covers cycles
+@[flipCycle, now]@ and @previous@ the preceding chunk. When @current@ grows
+past the window size, @previous@ is dropped and the chunks flip — O(1)
+amortized, and the retained history always spans at least the last window's
+worth of cycles (at most two windows). This is the logic-analyzer model:
+full-fidelity recording of everything, forever, is intrinsically unbounded
+(a CPU's program counter changes every cycle — run-length encoding cannot
+compress it), so a recorder that must not dominate memory needs a window.
+An unlimited recorder is just @window = maxBound@ (the chunks never flip).
+-}
+data WRuns = WRuns !Int !Runs !Runs
+
+-- | Empty windowed history.
+emptyWRuns :: WRuns
+emptyWRuns = WRuns 0 [] []
+
+-- | 'addCycle' into a windowed history; @w@ is the window size in cycles.
+addCycleW :: Int -> Int -> Value -> WRuns -> WRuns
+addCycleW w cyc v (WRuns flipC cur prev)
+  | cyc >= flipC + w = WRuns cyc [(cyc, cyc, v)] cur
+  | otherwise = WRuns flipC (addCycle cyc v cur) prev
+
+-- | Flatten to a plain (newest-first) run history.
+wrunsToRuns :: WRuns -> Runs
+wrunsToRuns (WRuns _ cur prev) = cur ++ prev
+
+-- | name → (clock period in ps, bit width, change-compressed history)
+type ProbeMap = Map.Map String (Int, Int, Runs)
+
+{- | Live, per-signal trace accumulator. Cycles @[0, 'ttNext')@ have been
+consumed (packed and recorded into 'ttRuns'); 'ttRest' is the not-yet-consumed
+packed tail of the signal. Keeping the REST rather than the HEAD of the
+packed stream is what releases the raw signal history: as the design forces
+the traced signal forward, the tap records each cycle's compact packed value
+and drops its reference to the consumed prefix, so the raw per-cycle design
+values (full records, unevaluated closures) become garbage immediately
+instead of being pinned until the dump.
+-}
+data TraceTap
+  = {- | @TraceTap next runs rest@: cycles @[0, next)@ have been consumed
+    (packed and recorded into the windowed @runs@); @rest@ is the
+    not-yet-consumed packed tail.
+    -}
+    TraceTap !Int !WRuns [Value]
+
+-- | Live trace registry: name → (period ps, bit width, accumulator).
+type LiveTraces = Map.Map String (Int, Int, IORef TraceTap)
+
+-- | Frozen snapshot of one trace, as returned by 'withCircuitContext'.
+data TraceEntry = TraceEntry
+  { tePeriod :: !Int
+  , teWidth :: !Int
+  , teRuns :: Runs
+  -- ^ Change-compressed history of the cycles the simulation forced.
+  , teRest :: [Value]
+  {- ^ Packed continuation for cycles the simulation never forced; 'dumpVCDC'
+  drains it on demand when the dump window extends past 'teRuns'.
+  -}
+  }
+
+-- | name → recorded trace, as returned by 'withCircuitContext'.
+type TraceData = Map.Map String TraceEntry
+
+{- | One past the last cycle any trace or probe recorded — the number of
+cycles the simulation ACTUALLY ran.
+
+Use this as the dump window for a /live/ capture: a consumer that stops
+early (an assertion that found its answer) bounds the recording, and
+@'dumpVCDC' (0, 'recordedCycles' …)@ then renders exactly what was simulated
+without draining any signal past that point. Passing a larger, fixed window
+instead makes the dump itself simulate the remaining cycles — which is
+wasted compute whenever the simulation was cut short deliberately.
+-}
+recordedCycles :: TraceData -> ProbeMap -> Int
+recordedCycles td pm = maximum (0 : traceEnds ++ probeEnds)
+ where
+  traceEnds = [e + 1 | TraceEntry _ _ ((_, e, _) : _) _ <- Map.elems td]
+  probeEnds = [e + 1 | (_, _, (_, e, _) : _) <- Map.elems pm]
 
 {- | One hierarchy level: user name plus the encoded source location of the
 instantiation. The location is design information — colliding sibling
@@ -142,23 +276,62 @@ data HierSeg = HierSeg
 
 data CircuitContext = CircuitContext
   { ccHier :: [HierSeg]
-  -- ^ Hierarchy path, innermost first. Each 'component' application
-  -- allocates a fresh list cell here; that heap object is the component
-  -- INSTANCE's identity (see 'ordinalFor').
-  , ccTracer :: Maybe (IORef TraceMap)
+  {- ^ Hierarchy path, innermost first. Each 'component' application
+  allocates a fresh list cell here; that heap object is the component
+  INSTANCE's identity (see 'ordinalFor').
+  -}
+  , ccTracer :: Maybe (IORef LiveTraces)
   -- ^ 'Nothing' disables signal tracing
-  , ccProbes :: Maybe (IORef ProbeMap)
+  , ccProbes :: Maybe (IORef LiveProbes)
   -- ^ 'Nothing' disables mealy probes
+  , ccWindow :: !Int
+  {- ^ Trailing capture window in cycles ('maxBound' = unlimited): recorders
+  keep at least this many trailing cycles of history and may drop older
+  ones. See 'WRuns'.
+  -}
   , ccOrdinals :: Maybe (IORef OrdinalMap)
-  -- ^ Per-simulation instance-ordinal registry; 'Nothing' disables
-  -- instance tagging (fine while nothing is recorded)
+  {- ^ Per-simulation instance-ordinal registry; 'Nothing' disables
+  instance tagging (fine while nothing is recorded)
+  -}
   }
 
 type HasCircuitContext = ?circuitContext :: CircuitContext
 
 -- | Tracing and probing disabled; hierarchy still works.
 noCircuitContext :: CircuitContext
-noCircuitContext = CircuitContext [] Nothing Nothing Nothing
+noCircuitContext = CircuitContext [] Nothing Nothing maxBound Nothing
+
+{- | Run an instrumented ('HasCircuitContext'-constrained) computation with a
+disabled context, /without/ the caller having to acquire the constraint itself.
+
+'HasCircuitContext' is a viral constraint: instrumenting a deep function forces
+it onto every transitive caller. At a boundary where you do NOT want to thread a
+context — most often a synthesis-facing caller — wrap the call:
+
+> outputs = withoutCircuitContext (myComponent clk rst inp)
+
+This replaces the hand-written shim idiom
+
+> myComponentNC clk rst inp = let ?circuitContext = noCircuitContext in myComponent clk rst inp
+
+which otherwise has to duplicate @myComponent@'s entire type signature just to
+drop the constraint. Because instrumentation is HDL-transparent, the wrapped
+call is identical — in both simulation and synthesis — to calling the
+uninstrumented function directly.
+-}
+withoutCircuitContext :: ((HasCircuitContext) => r) -> r
+withoutCircuitContext k = let ?circuitContext = noCircuitContext in k
+{-# INLINE withoutCircuitContext #-}
+
+{- | Is this context fully disabled (no recording)? When so, all
+instrumentation is a no-op and the bookkeeping (hierarchy push, instance
+ordinals, cycle counter, per-cycle @?probe@ binding) is skipped — so a
+simulation that isn't collecting waveforms pays essentially nothing. The
+ordinal registry is the tell: 'withCircuitContext' installs it, and it is
+the one ref every recording path needs.
+-}
+ccDisabled :: CircuitContext -> Bool
+ccDisabled ctx = isNothing (ccOrdinals ctx)
 
 --------------------------------------------------------------------------------
 -- Instance identities
@@ -203,9 +376,10 @@ resolveHier ref = go
   go l@(HierSeg nm loc : rest) =
     (:) <$> (taggedLoc nm loc <$> ordinalFor ref l) <*> go rest
 
--- | Tag a name with an instance ordinal (and call site, if known):
--- @name\@i\@loc@. The @\'\@\'@ character is reserved for this; don't use it
--- in component/trace/probe names.
+{- | Tag a name with an instance ordinal (and call site, if known):
+@name\@i\@loc@. The @\'\@\'@ character is reserved for this; don't use it
+in component/trace/probe names.
+-}
 taggedLoc :: String -> String -> Int -> String
 taggedLoc nm loc i =
   nm <> "@" <> show i <> (if null loc then "" else "@" <> loc)
@@ -233,13 +407,32 @@ produced together with the collected traces and probes. The action must
 /force/ the parts of the circuit it wants traced (sampling does), exactly as
 with the stock global-map API.
 -}
-withCircuitContext :: (HasCircuitContext => IO r) -> IO (r, TraceMap, ProbeMap)
-withCircuitContext k = do
+withCircuitContext :: ((HasCircuitContext) => IO r) -> IO (r, TraceData, ProbeMap)
+withCircuitContext = withCircuitContextWindow maxBound
+
+{- | 'withCircuitContext' with a trailing capture window: recorders keep (at
+least) the last @window@ cycles of history and drop older data, bounding
+memory for signals that change every cycle (program counters, busses) — see
+'WRuns'. Cycles before the retained window render @x@ in the dump.
+-}
+withCircuitContextWindow ::
+  Int -> ((HasCircuitContext) => IO r) -> IO (r, TraceData, ProbeMap)
+withCircuitContextWindow window k = do
   tRef <- newIORef Map.empty
   pRef <- newIORef Map.empty
   oRef <- newIORef emptyOrdinals
-  r <- let ?circuitContext = CircuitContext [] (Just tRef) (Just pRef) (Just oRef) in k
-  (,,) r <$> readIORef tRef <*> readIORef pRef
+  r <-
+    let ?circuitContext = CircuitContext [] (Just tRef) (Just pRef) window (Just oRef)
+     in k
+  live <- readIORef tRef
+  traces <- traverse freezeTrace live
+  probes <- readIORef pRef >>= traverse freezeProbe
+  pure (r, traces, probes)
+ where
+  freezeTrace (per, w, tapRef) = do
+    TraceTap _ runs rest <- readIORef tapRef
+    pure (TraceEntry per w (wrunsToRuns runs) rest)
+  freezeProbe (per, w, accRef) = (,,) per w . wrunsToRuns <$> readIORef accRef
 
 {- | @component "fifo" circuit@: everything traced or probed inside
 @circuit@ is qualified by @…fifo.@.
@@ -249,15 +442,36 @@ cell whose heap identity distinguishes it from every other instance of the
 same name (resolved to ordinals at registration, see 'ordinalFor'), so
 multiple instances of the same (sub)circuit under one parent never collide —
 all are recorded, and 'dumpVCDC' disambiguates downstream (@fifo_0@,
-@fifo_1@, …). OPAQUE so the cell is allocated per application rather than
-floated and shared.
+@fifo_1@, …).
+
+Instrumentation-transparent to Clash: during HDL generation
+('clashSimulation' is 'False') this is exactly @k@ — the whole hierarchy
+machinery is dropped by Clash's dead-code elimination, so a design stays
+synthesizable with 'component' calls left in. In simulation it delegates to
+'simComponent', which is where the (OPAQUE, per-application) cell allocation
+happens.
 -}
-component :: (HasCallStack, HasCircuitContext) => String -> (HasCircuitContext => r) -> r
-component nm k = let ?circuitContext = ctx' in k
+component ::
+  (HasCallStack, HasCircuitContext) => String -> ((HasCircuitContext) => r) -> r
+component nm k
+  | clashSimulation = simComponent nm k
+  | otherwise = k
+{-# INLINE component #-}
+
+{- | Simulation worker for 'component'. OPAQUE so each application allocates a
+fresh @ccHier@ cell (its heap identity is the instance key, see 'ordinalFor')
+rather than being floated and shared. Skips the push entirely when the
+context is disabled, so uninstrumented-in-effect simulation is free.
+-}
+simComponent ::
+  (HasCallStack, HasCircuitContext) => String -> ((HasCircuitContext) => r) -> r
+simComponent nm k
+  | ccDisabled ctx0 = k
+  | otherwise = let ?circuitContext = ctx' in k
  where
   ctx0 = ?circuitContext
   ctx' = ctx0{ccHier = HierSeg nm (callLoc callStack) : ccHier ctx0}
-{-# OPAQUE component #-}
+{-# OPAQUE simComponent #-}
 
 {- | Replicate a named instance by structural position: element @i@ of the
 vector is built under component @name_i@. Use this (or explicit 'component'
@@ -269,7 +483,7 @@ imapComponents ::
   forall n a b.
   (HasCircuitContext, KnownNat n) =>
   String ->
-  (HasCircuitContext => Index n -> a -> b) ->
+  ((HasCircuitContext) => Index n -> a -> b) ->
   Vec n a ->
   Vec n b
 imapComponents nm f = imap (\i x -> component (nm <> "_" <> show i) (f i x))
@@ -285,24 +499,43 @@ as with the stock function — when the returned signal is first forced.
 Every registration gets its own instance id, so re-using a trace name (e.g.
 by applying the same traced subcircuit twice in one 'component') records all
 instances instead of erroring; 'dumpVCDC' disambiguates downstream.
+
+Unlike stock 'Clash.Signal.Trace.traceSignal' there is no 'Typeable'
+requirement: the 'TypeRep' field of a trace only feeds clash's replay
+machinery, which maps created here never reach — and requiring it would
+exclude size-polymorphic payloads (@Unsigned n@ under a @KnownNat n@ given,
+say) from tracing inside polymorphic components.
 -}
 traceSignalC ::
   forall dom a.
-  (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a, Typeable a) =>
+  (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) =>
   String ->
   Signal dom a ->
   Signal dom a
-traceSignalC nm sig = case (ccTracer ctx, ccOrdinals ctx) of
+traceSignalC nm sig
+  | clashSimulation = simTraceSignalC nm sig
+  | otherwise = sig
+{-# INLINE traceSignalC #-}
+
+{- | Simulation worker for 'traceSignalC'. OPAQUE, holding the sole
+'unsafePerformIO' in the design (lazy one-shot registration, exactly like
+stock 'Clash.Signal.Trace.traceSignal1'); identity when tracing is off.
+-}
+simTraceSignalC ::
+  forall dom a.
+  (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) =>
+  String ->
+  Signal dom a ->
+  Signal dom a
+simTraceSignalC nm sig = case (ccTracer ctx, ccOrdinals ctx) of
   (Just ref, Just ordRef) ->
-    -- The only unsafePerformIO in the design: lazy one-shot registration,
-    -- exactly like stock 'Clash.Signal.Trace.traceSignal1'. Instance
-    -- ordinals are resolved inside this same action — no id minting in
-    -- pure code.
+    -- Instance ordinals are resolved inside this same action — no id minting
+    -- in pure code.
     unsafePerformIO $ do
       segs <- resolveHier ordRef (ccHier ctx)
       leafI <- freshOrdinal ordRef
       let key = intercalate "." (reverse (taggedLoc nm loc leafI : segs))
-      traceSignal# ref period key sig
+      registerTrace (ccWindow ctx) ref period key sig
   _ -> sig
  where
   ctx = ?circuitContext
@@ -310,7 +543,117 @@ traceSignalC nm sig = case (ccTracer ctx, ccOrdinals ctx) of
   period :: Int
   period = case knownDomain @dom of
     SDomainConfiguration{sPeriod} -> snatToNum sPeriod
-{-# OPAQUE traceSignalC #-}
+{-# OPAQUE simTraceSignalC #-}
+
+{- | Register a trace and return the signal TAPPED: forcing element /i/ of the
+returned signal (which the design does as the simulation advances) also packs
+that cycle's value and records it — change-compressed — into the trace's
+accumulator, after which the raw value is garbage.
+
+This lockstep recording is the space-leak fix that has to live in the
+infrastructure, not the user's code. The alternative (what stock
+'Clash.Signal.Trace.traceSignal#' does, and what this function used to do) is
+to store a lazy @map packMaskValue (sample_lazy sig)@ and force it at dump
+time — but holding that list's HEAD while the design advances the shared
+signal retains every cycle's raw design value until the dump: memory linear
+in simulation length, with full-record-sized elements. The tap instead keeps
+only the change-compressed 'Runs' plus the un-consumed packed TAIL
+('ttRest'), which references no history.
+
+Value semantics are unchanged: @pack@ per sample via 'packMaskValue'
+(undefined bits masked, exceptions rendered @x@), and 'sample_lazy' so a
+partial binding is never forced outside the guard. Cycles the design never
+forces are drained from 'ttRest' by 'dumpVCDC' on demand, exactly as the
+dump-time forcing used to do. No duplicate-key check: keys carry fresh leaf
+ordinals by construction.
+-}
+registerTrace ::
+  forall dom a.
+  (KnownDomain dom, BitPack a, NFDataX a) =>
+  Int ->
+  IORef LiveTraces ->
+  Int ->
+  String ->
+  Signal dom a ->
+  IO (Signal dom a)
+registerTrace window ref period key sig = do
+  tapRef <- newIORef (TraceTap 0 emptyWRuns packed)
+  atomicModifyIORef' ref $ \m ->
+    (Map.insert key (period, width, tapRef) m, ())
+  pure (tap window tapRef 0 packed sig)
+ where
+  width = snatToNum (SNat @(BitSize a))
+  packed = map packMaskValue (sample_lazy sig)
+
+  -- Walk the raw signal and its packed view in lockstep, recording cycle /i/
+  -- when the TAIL of cell /i/ (i.e. cell /i+1/) is first forced — cons cells
+  -- are memoized by lazy evaluation, so the write happens once per cycle, in
+  -- order.
+  --
+  -- The one-cell delay is essential, not cosmetic. Packing cycle /i/ while
+  -- PRODUCING cell /i/ deadlocks on combinational feedback: in a
+  -- value-level knot (clash-protocols ties @m2s@/@s2m@ through 'Circuit'
+  -- fixpoints), fully evaluating value /i/ can demand — through the other
+  -- half of the knot — spine cell /i/ of this very signal, which is exactly
+  -- the cell under construction: a blackhole re-entry, surfacing as
+  -- @<<loop>>@ single-threaded and as a silent hang under the threaded RTS.
+  -- By the time the design forces the tail, cell /i/ is fully handed over
+  -- and no evaluation is suspended inside it; packing value /i/ then demands
+  -- at most already-memoized (or causally earlier) structure. A value can
+  -- never demand its own FUTURE spine, so recording at the tail cannot
+  -- re-enter the cell being produced.
+  tap :: Int -> IORef TraceTap -> Int -> [Value] -> Signal dom a -> Signal dom a
+  tap window tapRef !cyc pk s = case (pk, s) of
+    (v0 : pkRest, a :- as) ->
+      a
+        :- unsafePerformIO
+          ( do
+              !v <- evaluate v0
+              atomicModifyIORef' tapRef $ \(TraceTap _ runs _) ->
+                (TraceTap (cyc + 1) (addCycleW window cyc v runs) pkRest, ())
+              pure (tap window tapRef (cyc + 1) pkRest as)
+          )
+    _ -> s -- unreachable: both streams are infinite
+
+{- | Force a value to its packed @(mask, value)@ VCD representation, mapping ANY
+exception to an all-undefined (@x@) entry.
+
+This deliberately catches more than 'Clash.XException.XException' (genuinely
+undefined bits): a design routinely contains bindings that are only /defined/
+under a condition — e.g. @fromJust@ / @head@ on a signal that is @Nothing@ /
+empty until a link comes up. Normal simulation never forces such a binding
+outside that condition, but auto-tracing samples it every cycle. A tracer must
+never decide whether the simulation crashes, so a sample that throws is
+recorded as @x@ — exactly how a stock Clash trace renders undefined bits — and
+the offending cycles simply show undefined in the waveform.
+-}
+packMaskValue :: forall a. (BitPack a) => a -> (Natural, Natural)
+packMaskValue a =
+  -- 'unsafeDupablePerformIO': this guard is a pure computation (no side
+  -- effects to protect from re-execution), so the per-sample cost of
+  -- 'unsafePerformIO's duplicate-suppression would buy nothing.
+  unsafeDupablePerformIO $ do
+    -- Canonicalise: clear every @val@ bit that @mask@ marks undefined, so an
+    -- evaluated-but-undefined bit is ALWAYS @(mask=1, val=0)@. Clash's 'pack'
+    -- does not promise a particular @val@ under the mask, and we reserve the
+    -- @(mask=1, val=1)@ encoding exclusively for the NOT-evaluated (gap) case
+    -- (see 'expandRunsX'/'renderVC'). Without this a masked value bit set to 1
+    -- would render as @z@ (not-evaluated) when it is really @x@ (undefined).
+    r <-
+      try
+        ( evaluate
+            ( case pack a of
+                BV mask val ->
+                  let v' = val .&. (fullMask `xor` mask)
+                   in mask `seq` v' `seq` (mask, v')
+            )
+        )
+    pure $ case r of
+      Right t -> t
+      Left (_ :: SomeException) -> (fullMask, 0)
+ where
+  fullMask = 2 ^ (snatToNum (SNat @(BitSize a)) :: Int) - 1 :: Natural
+{-# NOINLINE packMaskValue #-}
 
 {- | Dump the context's traces AND probes to VCD text over
 @(offset, nSamples)@.
@@ -329,40 +672,80 @@ Downstream disambiguation: map keys carry per-instance @\@uid@ tags (see
 multiple instances share a (parent, name) the siblings are renamed
 @name_0@, @name_1@, … in ascending id (construction) order, so all
 instances appear in the VCD with coherent per-instance subtrees.
+
+Returns @Left@ (never throws) when nothing was recorded — an empty run, or
+one where no traced\/probed signal was ever forced. Stock 'dumpVCD1#'
+/errors/ on an empty map; a run collecting no data is normal for
+instrumentation left in place (e.g. a property test case with zero cycles),
+so it must not bring the simulation down.
 -}
-dumpVCDC :: (Int, Int) -> TraceMap -> ProbeMap -> IO (Either String Text.Text)
-dumpVCDC slice@(offset, nSamples) tm pm = do
+dumpVCDC :: (Int, Int) -> TraceData -> ProbeMap -> IO (Either String Text.Text)
+dumpVCDC slice@(offset, nSamples) td pm = do
   now <- getCurrentTime
-  pure
-    ( renderVCDHier now
-        <$> dumpVCD1# slice (disambiguate (Map.union tm (probeTraces pm)))
-    )
+  let combined =
+        disambiguate (Map.union (Map.map traceVals td) (Map.map probeVals pm))
+  pure $
+    if Map.null combined
+      then Left "dumpVCDC: nothing was traced or probed in this run"
+      else renderVCDHier now <$> dumpVCD1# slice combined
  where
-  -- Synthesize a TraceMap entry per probe. dumpVCD1# transposes the value
-  -- lists (ragged lists would misalign columns), so densify to exactly the
-  -- requested window, X-filling cycles that recorded nothing. The TypeRep
-  -- field only matters for replay, which synthesized entries don't support.
-  probeTraces = Map.map toTrace
-  toTrace (per, w, vs) =
+  end = offset + nSamples
+
+  -- Expand the change-compressed stores back to the dense per-cycle lists
+  -- 'dumpVCD1#' expects (it transposes; ragged lists would misalign
+  -- columns). The expansion is lazy and consumed streaming by the render —
+  -- the dense form never has to be resident, which is the point of storing
+  -- runs. The TypeRep field only matters for replay, which these entries
+  -- don't support.
+
+  -- The dump window may extend past what the simulation forced, in which
+  -- case the remaining cycles are drained (packed on demand) from the
+  -- stored continuation — exactly the dump-time forcing the pre-runs
+  -- implementation did. Cycles dropped by a trailing capture window (and
+  -- any probe-style gaps) densify to @x@.
+  traceVals (TraceEntry per w runs rest) =
     ( ByteStringLazy.empty
     , per
     , w
-    , [ IntMap.findWithDefault (xVal w) cyc vs
-      | cyc <- [0 .. offset + nSamples - 1]
-      ]
+    , expandRunsX w covered runs ++ take (end - covered) rest
     )
-  xVal w = ((2 :: Natural) ^ w - 1, 0)
+   where
+    covered = case runs of
+      [] -> 0
+      (_, e, _) : _ -> e + 1
+
+  -- A probe cycle that was never reached stays a gap in the runs; densify
+  -- with @x@ for those cycles, exactly as a missing key rendered before.
+  probeVals (per, w, runs) =
+    (ByteStringLazy.empty, per, w, expandRunsX w end runs)
+
+  -- Densify a run history to per-cycle values on @[0, upto)@, filling gaps
+  -- (never-forced probe cycles, window-dropped history) with @x@. Stops at
+  -- the end of the recorded data if that comes first.
+  expandRunsX w upto runs = go 0 (reverse runs)
+   where
+    -- Gap fill = NOT evaluated / not retained (never-forced probe cycle,
+    -- window-dropped history). Encoded @(fullMask, fullMask)@ so it renders
+    -- @z@ — distinct from an evaluated-but-undefined sample @(fullMask, 0)@
+    -- which renders @x@. This is the not-evaluated vs. undefined distinction:
+    -- @z@ means "we never looked", @x@ means "we looked and it was undefined".
+    xv = let m = (2 :: Natural) ^ w - 1 in (m, m)
+    go c [] = replicate (upto - c) xv
+    go c ((s, e, v) : rs) =
+      replicate (s - c) xv ++ replicate (e - s + 1) v ++ go (e + 1) rs
 
 --------------------------------------------------------------------------------
 -- Downstream disambiguation of instance ids
 --------------------------------------------------------------------------------
 
--- | A path segment: name, instance ordinal (identity key) and encoded call
--- site (design-side ordering key), where tagged.
+{- | A path segment: name, instance ordinal (identity key) and encoded call
+site (design-side ordering key), where tagged.
+-}
 type Seg = (String, Maybe Int, String)
 
--- | Split @name\@ordinal\@loc@ into its fields; untagged segments pass
--- through.
+{- | Split @name\@ordinal\@loc@ into its fields; untagged segments pass
+through.
+-}
 parseSeg :: String -> Seg
 parseSeg s = case splitOn '@' s of
   [nm, ds] | isOrd ds -> (nm, Just (read ds), "")
@@ -371,8 +754,9 @@ parseSeg s = case splitOn '@' s of
  where
   isOrd ds = not (null ds) && all isDigit ds
 
--- | Parse an encoded call site @L\<line\>C\<col\>F\<hash\>@ into a sort key
--- (file hash, line, col).
+{- | Parse an encoded call site @L\<line\>C\<col\>F\<hash\>@ into a sort key
+(file hash, line, col).
+-}
 parseLoc :: String -> Maybe (Word, Int, Int)
 parseLoc ('L' : s0)
   | (l@(_ : _), 'C' : s1) <- span isDigit s0
@@ -429,8 +813,9 @@ data ScopeTree = ScopeTree (Map.Map String ScopeTree) [Var]
 emptyScope :: ScopeTree
 emptyScope = ScopeTree Map.empty []
 
--- | Insert a var along its dot-separated reference path; the leaf segment
--- becomes the var's reference inside its scope.
+{- | Insert a var along its dot-separated reference path; the leaf segment
+becomes the var's reference inside its scope.
+-}
 insertVar :: Var -> ScopeTree -> ScopeTree
 insertVar v = go (splitPath (varReference v))
  where
@@ -499,16 +884,22 @@ renderVCDHier now (VCDFile decCmds simCmds) =
 
   renderVC (ValueChange 1 idCode (0, 0)) = Text.pack ('0' : idCode)
   renderVC (ValueChange 1 idCode (0, 1)) = Text.pack ('1' : idCode)
-  renderVC (ValueChange 1 idCode (1, _)) = Text.pack ('x' : idCode)
+  renderVC (ValueChange 1 idCode (1, 0)) = Text.pack ('x' : idCode)
+  renderVC (ValueChange 1 idCode (1, 1)) = Text.pack ('z' : idCode)
   renderVC (ValueChange 1 idCode v) =
     error ("dumpVCDC: bad 1-bit value " <> show v <> " for " <> show idCode)
   renderVC (ValueChange w idCode (mask, val)) =
     Text.pack ('b' : map digit (reverse [0 .. w - 1]) ++ ' ' : idCode)
    where
+    -- (mask, val) per bit: 0/1 = defined; @x@ = evaluated-undefined
+    -- (mask set, val clear — canonicalised in 'packMaskValue'); @z@ =
+    -- not-evaluated / not-retained gap (mask set, val set — only ever
+    -- produced by 'expandRunsX').
     digit d = case (testBit mask d, testBit val d) of
       (False, False) -> '0'
       (False, True) -> '1'
-      (True, _) -> 'x'
+      (True, False) -> 'x'
+      (True, True) -> 'z'
 
 --------------------------------------------------------------------------------
 -- Probes inside mealy machines
@@ -517,16 +908,51 @@ renderVCDHier now (VCDFile decCmds simCmds) =
 data ProbeCtx = ProbeCtx
   { pcCtx :: CircuitContext
   , pcPeriod :: !Int
-  -- ^ Clock period (ps) of the probed mealy's domain; carried so probe
-  -- values can be dumped to VCD alongside traced signals.
+  {- ^ Clock period (ps) of the probed mealy's domain; carried so probe
+  values can be dumped to VCD alongside traced signals.
+  -}
   , pcPath :: [HierSeg]
-  -- ^ Identity object of the 'mealyProbed' application (a per-application
-  -- hierarchy cell, carrying the mealy's call site): probes from distinct
-  -- instances of the same mealy stay distinct even under identical names.
+  {- ^ Identity object of the 'mealyProbed' application (a per-application
+  hierarchy cell, carrying the mealy's call site): probes from distinct
+  instances of the same mealy stay distinct even under identical names.
+  -}
   , pcCycle :: !Int
+  , pcCache :: IORef (Map.Map String (IORef WRuns))
+  {- ^ Per-INSTANCE cache: probe name → its accumulator. A probe fires every
+  cycle, so its per-cycle cost must not include name qualification —
+  resolving the hierarchy (StableName hashing per segment), building the
+  qualified-name string, and inserting into a global map keyed by long
+  strings are each cheap once but ruinous a million times per probe. The
+  first firing resolves and registers; every later cycle is a lookup of a
+  SHORT name in a map with a handful of entries plus one 'IORef' update.
+  -}
   }
 
+-- | Live probe registry: qualified name → (period ps, bit width, accumulator).
+type LiveProbes = Map.Map String (Int, Int, IORef WRuns)
+
+{- | A fresh probe cache for one mealy\/moore\/'probeFmap' INSTANCE. The
+argument ties the allocation to the instance's identity object ('pcPath'):
+a closed @unsafePerformIO (newIORef …)@ would be floated to the top level by
+full laziness and SHARED across all instances, silently merging their probes
+(observed: sibling instances losing wires in the golden). The free variable
+pins the thunk inside each application; NOINLINE keeps the allocation out of
+reach of inlining-enabled CSE.
+-}
+newProbeCache :: [HierSeg] -> IORef (Map.Map String (IORef WRuns))
+newProbeCache p = unsafePerformIO (p `seq` newIORef Map.empty)
+{-# NOINLINE newProbeCache #-}
+
 type HasProbe = ?probe :: ProbeCtx
+
+{- | A disabled probe context: supplied to a step function on the paths where
+probing does nothing (HDL generation, and probe-free simulation), so
+'probe' has a @?probe@ to resolve but never records. Never forced on those
+paths — 'probe' is identity there — so its fields are irrelevant.
+-}
+noProbe :: ProbeCtx
+noProbe = ProbeCtx noCircuitContext 0 [] 0 (unsafePerformIO (newIORef Map.empty))
+{-# NOINLINE noProbe #-}
 
 {- | Record the value of any expression inside a probed step function:
 
@@ -537,16 +963,48 @@ Returns its argument. The write happens when the expression is forced, keyed
 by (qualified name, cycle): idempotent under re-evaluation and sparks; never
 forced → never recorded. An X value is stored as an all-undefined (masked)
 entry rather than an exception.
+
+Transparent to Clash: during HDL generation this is exactly @a@, so a probed
+step function synthesizes as if the 'probe' calls were not there.
 -}
 probe :: forall a. (HasProbe, BitPack a, NFDataX a) => String -> a -> a
-probe nm a = case (ccProbes ctx, ccOrdinals ctx) of
-  (Just ref, Just ordRef) ->
+probe nm a
+  | clashSimulation = simProbe nm a
+  | otherwise = a
+{-# INLINE probe #-}
+
+{- | Simulation worker for 'probe'. NOINLINE, holding the 'unsafePerformIO'
+write; identity when probing is off.
+-}
+simProbe :: forall a. (HasProbe, BitPack a, NFDataX a) => String -> a -> a
+simProbe nm a = case (ccProbes ctx, ccOrdinals ctx) of
+  (Just liveRef, Just ordRef) ->
     unsafePerformIO $ do
-      segs <- resolveHier ordRef (ccHier ctx)
-      mI <- ordinalFor ordRef (pcPath ?probe)
-      let qual = intercalate "." (reverse (taggedLoc nm mLoc mI : segs))
-      atomicModifyIORef' ref $ \m ->
-        (Map.insertWith merge qual (per, w, IntMap.singleton cyc val) m, ())
+      -- Hot path: this runs EVERY cycle. Only the first firing of a probe
+      -- resolves its hierarchy and qualified name (see 'pcCache'); after
+      -- that a cycle costs one small-map lookup and one 'IORef' update.
+      cache <- readIORef (pcCache ?probe)
+      accRef <- case Map.lookup nm cache of
+        Just accRef -> pure accRef
+        Nothing -> do
+          segs <- resolveHier ordRef (ccHier ctx)
+          mI <- ordinalFor ordRef (pcPath ?probe)
+          let qual = intercalate "." (reverse (taggedLoc nm mLoc mI : segs))
+          accRef <- newIORef emptyWRuns
+          atomicModifyIORef' (pcCache ?probe) $ \c ->
+            (Map.insert nm accRef c, ())
+          atomicModifyIORef' liveRef $ \m ->
+            (Map.insert qual (per, w, accRef) m, ())
+          pure accRef
+      -- Force the packed value NOW, releasing the design value 'a', and
+      -- accumulate change-compressed and STRICT ('$!'): a probe fires every
+      -- cycle, so per-cycle storage (or a lazy merge) makes memory linear in
+      -- simulation length — see 'Runs'. Probes fire in simulation order, and
+      -- a cycle the probed expression never reaches simply leaves a gap in
+      -- the runs, rendered @x@ by 'dumpVCDC'.
+      let !v = val
+      atomicModifyIORef' accRef $ \runs ->
+        let !rs = addCycleW (ccWindow ctx) cyc v runs in (rs, ())
       pure a
   _ -> a
  where
@@ -557,18 +1015,21 @@ probe nm a = case (ccProbes ctx, ccOrdinals ctx) of
   per = pcPeriod ?probe
   cyc = pcCycle ?probe
   w = snatToNum (SNat @(BitSize a))
-  val = case isX (pack a) of
-    Right (BV mask v) -> (mask, v)
-    Left _ -> (fullMask, 0)
-  fullMask = (2 :: Natural) ^ w - 1
-  merge (_, _, new) (p0, w0, old) = (p0, w0, IntMap.union old new)
-{-# NOINLINE probe #-}
+  -- Robust to undefined bits AND partial bindings; see 'packMaskValue'.
+  val = packMaskValue a
+{-# NOINLINE simProbe #-}
 
 {- | Stock 'Clash.Explicit.Mealy.mealy', except the step function may 'probe'
 its internals. Implemented purely with stock combinators: a companion counter
 register provides the cycle identity, and the step is applied under a
-per-cycle @?probe@ binding. One extra register per probed mealy; with probes
-disabled the only residue is that (dead) counter.
+per-cycle @?probe@ binding.
+
+Transparent to Clash /and/ overhead-free when not recording: during HDL
+generation, and in probe-free simulation, this reduces to a plain
+'Clash.Explicit.Mealy.mealy' — no companion counter register, no @?probe@
+plumbing (so no extra hardware in the netlist, and no per-cycle cost in a
+simulation that isn't collecting waveforms). The counter and probe binding
+appear only when a live context is actually recording (see 'simMealyProbed').
 -}
 mealyProbed ::
   forall dom s i o.
@@ -576,16 +1037,41 @@ mealyProbed ::
   Clock dom ->
   Reset dom ->
   Enable dom ->
-  (HasProbe => s -> i -> (s, o)) ->
+  ((HasProbe) => s -> i -> (s, o)) ->
   s ->
   Signal dom i ->
   Signal dom o
-mealyProbed clk rst ena f s0 inp = o
+mealyProbed clk rst ena f s0 inp
+  | clashSimulation = simMealyProbed clk rst ena f s0 inp
+  | otherwise = mealy clk rst ena (\s i -> let ?probe = noProbe in f s i) s0 inp
+{-# INLINE mealyProbed #-}
+
+{- | Simulation worker for 'mealyProbed'. OPAQUE so each application allocates
+a fresh @path@ cell identifying the mealy INSTANCE (see 'ordinalFor').
+Falls back to a plain 'mealy' — no counter — when the context is disabled.
+-}
+simMealyProbed ::
+  forall dom s i o.
+  (HasCallStack, HasCircuitContext, KnownDomain dom, NFDataX s) =>
+  Clock dom ->
+  Reset dom ->
+  Enable dom ->
+  ((HasProbe) => s -> i -> (s, o)) ->
+  s ->
+  Signal dom i ->
+  Signal dom o
+simMealyProbed clk rst ena f s0 inp
+  | ccDisabled ctx = mealy clk rst ena (\st i -> let ?probe = noProbe in f st i) s0 inp
+  | otherwise = o
  where
   ctx = ?circuitContext
   -- A fresh cell per application: this heap object identifies the mealy
   -- INSTANCE (see 'ordinalFor'); OPAQUE keeps it per-application.
   path = HierSeg "mealyProbed" (callLoc callStack) : ccHier ctx
+  -- One name-resolution cache per INSTANCE (see 'pcCache' and
+  -- 'newProbeCache'); like @path@, allocated once per application by the
+  -- enclosing OPAQUE worker.
+  cache = newProbeCache path
   period :: Int
   period = case knownDomain @dom of
     SDomainConfiguration{sPeriod} -> snatToNum sPeriod
@@ -593,7 +1079,163 @@ mealyProbed clk rst ena f s0 inp = o
   -- not the architectural cycle, or probe values land at the wrong VCD
   -- times whenever reset/enable stalls the state register.
   cnt = delay clk enableGen (0 :: Int) ((+ 1) <$> cnt)
-  step n s i = let ?probe = ProbeCtx ctx period path n in f s i
+  step n st i = let ?probe = ProbeCtx ctx period path n cache in f st i
   (s', o) = unbundle (step <$> cnt <*> s <*> inp)
   s = register clk rst ena s0 s'
-{-# OPAQUE mealyProbed #-}
+{-# OPAQUE simMealyProbed #-}
+
+{- | Stock 'Clash.Explicit.Moore.moore', except the /transition/ function may
+'probe' its internals. The mechanism mirrors 'mealyProbed': a companion counter
+supplies the cycle identity and the transition runs under a per-cycle @?probe@
+binding. The output projection is intentionally left unprobed — in a Moore
+machine it is usually a trivial selector, and keeping it out avoids a second
+cycle key. Note that a Moore machine registers its output, so a probe recorded
+at cycle @n@ (the transition computing the state for @n+1@) precedes the output
+it produces by one cycle.
+
+Transparent to Clash /and/ overhead-free when not recording: during HDL
+generation, and in probe-free simulation, this reduces to a plain
+'Clash.Explicit.Moore.moore' — no companion counter, no @?probe@ plumbing.
+-}
+mooreProbed ::
+  forall dom s i o.
+  (HasCallStack, HasCircuitContext, KnownDomain dom, NFDataX s) =>
+  Clock dom ->
+  Reset dom ->
+  Enable dom ->
+  -- | Transition function; may 'probe' its internals.
+  ((HasProbe) => s -> i -> s) ->
+  -- | Output projection (not probed).
+  (s -> o) ->
+  s ->
+  Signal dom i ->
+  Signal dom o
+mooreProbed clk rst ena t out s0 inp
+  | clashSimulation = simMooreProbed clk rst ena t out s0 inp
+  | otherwise = moore clk rst ena (\s i -> let ?probe = noProbe in t s i) out s0 inp
+{-# INLINE mooreProbed #-}
+
+{- | Simulation worker for 'mooreProbed'. OPAQUE so each application allocates a
+fresh @path@ cell identifying the moore INSTANCE (see 'ordinalFor'). Falls
+back to a plain 'moore' — no counter — when the context is disabled.
+-}
+simMooreProbed ::
+  forall dom s i o.
+  (HasCallStack, HasCircuitContext, KnownDomain dom, NFDataX s) =>
+  Clock dom ->
+  Reset dom ->
+  Enable dom ->
+  ((HasProbe) => s -> i -> s) ->
+  (s -> o) ->
+  s ->
+  Signal dom i ->
+  Signal dom o
+simMooreProbed clk rst ena t out s0 inp
+  | ccDisabled ctx = moore clk rst ena (\st i -> let ?probe = noProbe in t st i) out s0 inp
+  | otherwise = out <$> s
+ where
+  ctx = ?circuitContext
+  path = HierSeg "mooreProbed" (callLoc callStack) : ccHier ctx
+  cache = newProbeCache path
+  period :: Int
+  period = case knownDomain @dom of
+    SDomainConfiguration{sPeriod} -> snatToNum sPeriod
+  cnt = delay clk enableGen (0 :: Int) ((+ 1) <$> cnt)
+  step n st i = let ?probe = ProbeCtx ctx period path n cache in t st i
+  s' = step <$> cnt <*> s <*> inp
+  s = register clk rst ena s0 s'
+{-# OPAQUE simMooreProbed #-}
+
+{- | Bundled 'mealyProbed': the step function's input and output are ordinary
+tuples (or other 'Bundle' types) rather than a single packed type, mirroring
+'Clash.Prelude.mealyB'. Drop-in replacement for @mealyB@ that additionally
+probes the step function's internals. Use for the common
+@(a, b) = mealyB go s (in0, in1)@ idiom.
+-}
+mealyBProbed ::
+  forall dom s i o.
+  (HasCallStack, HasCircuitContext, KnownDomain dom, NFDataX s, Bundle i, Bundle o) =>
+  Clock dom ->
+  Reset dom ->
+  Enable dom ->
+  ((HasProbe) => s -> i -> (s, o)) ->
+  s ->
+  Unbundled dom i ->
+  Unbundled dom o
+mealyBProbed clk rst ena f s0 = unbundle . mealyProbed clk rst ena f s0 . bundle
+{-# INLINE mealyBProbed #-}
+
+{- | Bundled 'mooreProbed', mirroring 'Clash.Prelude.mooreB'. See
+'mealyBProbed'.
+-}
+mooreBProbed ::
+  forall dom s i o.
+  (HasCallStack, HasCircuitContext, KnownDomain dom, NFDataX s, Bundle i, Bundle o) =>
+  Clock dom ->
+  Reset dom ->
+  Enable dom ->
+  ((HasProbe) => s -> i -> s) ->
+  (s -> o) ->
+  s ->
+  Unbundled dom i ->
+  Unbundled dom o
+mooreBProbed clk rst ena t out s0 = unbundle . mooreProbed clk rst ena t out s0 . bundle
+{-# INLINE mooreBProbed #-}
+
+{- | Probe the internals of a /combinational/ function applied over a signal.
+
+Clash designs express combinational logic as pure functions lifted over
+signals with @\<$\>@ \/ @\<*\>@ \/ 'liftA2' — e.g. @route \<$\> masterS \<*\> slavesS@
+inside a 'Circuit'. The named @where@\/@let@ bindings inside such a function
+(@toSlaves@, @oneHotSelected@, …) are exactly the internal wires a developer
+wants in the waveform, but they are neither 'Signal's (so 'traceSignalC'
+cannot reach them) nor inside a 'mealyProbed' step (so 'probe' has no cycle
+context). 'probeFmap' supplies that context: it is 'fmap' that additionally
+binds a per-cycle @?probe@, so 'probe' calls inside @f@ — including the ones
+the plugin injects when @f@ carries a 'HasProbe' signature — record.
+
+Cycle identity comes from a companion counter on @clk@ (the function is
+stateless, so there is nothing else to derive it from). Rewrite a multi-input
+application by bundling: @f \<$\> a \<*\> b@ becomes
+@probeFmap clk (\\(x, y) -> f x y) (bundle (a, b))@.
+
+Transparent to Clash and overhead-free when not recording: during HDL
+generation, and in probe-free simulation, this reduces to @f \<$\> sig@ with a
+disabled probe context (no counter, no @?probe@ plumbing, no extra hardware).
+-}
+probeFmap ::
+  forall dom a b.
+  (HasCallStack, HasCircuitContext, KnownDomain dom) =>
+  Clock dom ->
+  ((HasProbe) => a -> b) ->
+  Signal dom a ->
+  Signal dom b
+probeFmap clk f inp
+  | clashSimulation = simProbeFmap clk f inp
+  | otherwise = (\a -> let ?probe = noProbe in f a) <$> inp
+{-# INLINE probeFmap #-}
+
+{- | Simulation worker for 'probeFmap'. OPAQUE so each application allocates a
+fresh @path@ cell identifying this combinational site (see 'ordinalFor').
+Falls back to a plain 'fmap' — no counter — when the context is disabled.
+-}
+simProbeFmap ::
+  forall dom a b.
+  (HasCallStack, HasCircuitContext, KnownDomain dom) =>
+  Clock dom ->
+  ((HasProbe) => a -> b) ->
+  Signal dom a ->
+  Signal dom b
+simProbeFmap clk f inp
+  | ccDisabled ctx = (\a -> let ?probe = noProbe in f a) <$> inp
+  | otherwise = step <$> cnt <*> inp
+ where
+  ctx = ?circuitContext
+  path = HierSeg "probeFmap" (callLoc callStack) : ccHier ctx
+  cache = newProbeCache path
+  period :: Int
+  period = case knownDomain @dom of
+    SDomainConfiguration{sPeriod} -> snatToNum sPeriod
+  cnt = delay clk enableGen (0 :: Int) ((+ 1) <$> cnt)
+  step n a = let ?probe = ProbeCtx ctx period path n cache in f a
+{-# OPAQUE simProbeFmap #-}

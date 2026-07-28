@@ -1,4 +1,9 @@
-{- | The clash-circuit-context GHC plugin. Enable with
+{- |
+Copyright  :  (C) 2026, QBayLogic B.V.
+License    :  BSD2 (see the file LICENSE)
+Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
+
+The clash-circuit-context GHC plugin. Enable with
 
 > ghc-options: -fplugin=Clash.CircuitContext.Plugin
 

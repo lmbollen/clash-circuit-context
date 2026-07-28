@@ -1,6 +1,7 @@
 {-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
+{-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE KindSignatures #-}
@@ -9,9 +10,15 @@
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 
-{- | Plugin ABI: everything "Clash.CircuitContext.Plugin" injects by exact 'Name'
+{- |
+Copyright  :  (C) 2026, QBayLogic B.V.
+License    :  BSD2 (see the file LICENSE)
+Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
+
+Plugin ABI: everything "Clash.CircuitContext.Plugin" injects by exact 'Name'
 lives here; module path and export names are frozen interface.
 
 The 'CanTrace'\/'CanProbe' families have no equations — they are decided by
@@ -29,6 +36,7 @@ module Clash.CircuitContext.Auto (
   -- * Tracing
   CanTrace,
   Traceable (..),
+  GTraceable (..),
   AutoTrace (..),
   autoTrace,
 
@@ -49,47 +57,258 @@ import Clash.Prelude (
   imap,
  )
 import Data.Kind (Type)
-import Data.Typeable (Typeable)
-import GHC.Stack (HasCallStack)
+import Data.Tagged (Tagged (..))
+import GHC.Generics (
+  C,
+  D,
+  Generic (..),
+  K1 (..),
+  M1 (..),
+  S,
+  Selector (..),
+  U1 (..),
+  V1,
+  (:*:) (..),
+  (:+:) (..),
+ )
+import GHC.Stack (HasCallStack, withFrozenCallStack)
 
-import Clash.CircuitContext.Core (HasProbe, HasCircuitContext, probe, traceSignalC)
+import Clash.CircuitContext.Core (HasCircuitContext, HasProbe, probe, traceSignalC)
 
 --------------------------------------------------------------------------------
 -- Tracing
 --------------------------------------------------------------------------------
 
--- | Bool-kinded oracle: reduced exclusively by the plugin, to ''True' iff
--- @Traceable t@ is solvable in the context of the occurrence.
+{- | Bool-kinded oracle: reduced exclusively by the plugin, to ''True' iff
+@Traceable t@ is solvable in the context of the occurrence.
+-}
 type family CanTrace (t :: Type) :: Bool
 
--- | What it means for a type to be traceable; extension point for protocol
--- types.
+{- | What it means for a type to be traceable; extension point for protocol
+types.
+
+For a record of traceable parts (signals, vectors, nested records) the
+method derives generically: derive 'GHC.Generics.Generic' and write an
+EMPTY instance —
+
+> data Bus dom = Bus
+>   { busAddr :: Signal dom (Unsigned 8)
+>   , busStrobe :: Signal dom Bool
+>   }
+>   deriving (Generic)
+>
+> instance KnownDomain dom => Traceable (Bus dom)
+
+A field @fld@ of a value traced as @nm@ is traced as @nm.fld@ — a
+sub-scope in the VCD hierarchy. Positional (non-record) fields are named
+@_0@, @_1@, … by position; for a sum type the constructor the value
+actually takes is traversed. Every field type must itself be 'Traceable'
+(a plain wanted, discharged by ordinary instance resolution — an
+untraceable field is a compile error at the instance, never a silent
+skip).
+
+One thing to keep in mind for the plugin's auto-tracing of bindings of
+such a type: the oracle recognizes the instance by recursing on its
+WRITTEN context, so keep that context to ordinary class constraints, as
+above — no @Generic@\/@GTraceable@ noise (they are default-method
+constraints, not instance constraints, so this comes naturally).
+-}
 class Traceable t where
   traceNamed :: (HasCallStack, HasCircuitContext) => String -> t -> t
+  default traceNamed ::
+    (HasCallStack, HasCircuitContext, Generic t, GTraceable (Rep t)) =>
+    String ->
+    t ->
+    t
+  -- Freeze the stack so every leaf registers under the call site of the
+  -- record trace itself (the auto-traced binding), keeping sibling
+  -- disambiguation design-ordered.
+  traceNamed nm t = withFrozenCallStack (to (snd (gtraceNamed nm 0 (from t))))
 
 instance
-  (KnownDomain dom, BitPack a, NFDataX a, Typeable a) =>
+  (KnownDomain dom, BitPack a, NFDataX a) =>
   Traceable (Signal dom a)
   where
   traceNamed = traceSignalC
 
--- | Vectors of traceable things trace element-wise, names indexed by
--- structural position.
+{- | Vectors of traceable things trace element-wise, names indexed by
+structural position.
+-}
 instance (KnownNat n, Traceable t) => Traceable (Vec n t) where
   traceNamed nm = imap (\i -> traceNamed (nm <> "_" <> show i))
+
+{- | Circuit-notation support. @clash-protocols@' parse-stage plugin desugars
+every @x \<- comp -\< a@ in a @circuit@ block into pattern bindings of
+@'Tagged' port (Fwd port)@ \/ @Tagged port (Bwd port)@ values — bindings this
+plugin's renamer half already wraps (they carry the original port's source
+span). With this instance those ports trace like any 'Signal' binding.
+
+'Tagged' is a newtype: the match below is a coercion, adding no strictness.
+That is load-bearing — the notation ties forward references (@-\<@ a port
+bound by a later statement) through a plain lazy @let@ knot, so a trace must
+never force a value before the design does.
+-}
+instance (Traceable t) => Traceable (Tagged p t) where
+  traceNamed nm (Tagged t) = Tagged (traceNamed nm t)
+
+{- | Nothing to record: @()@ is the @Bwd@ of every @CSignal@-style protocol
+and a component of composite port types. The load-bearing property is NOT
+matching the unit constructor — matching would force a circuit-notation knot
+value before the design does.
+-}
+instance Traceable () where
+  traceNamed _ u = u
+
+{- $tupleInstances
+Tuples trace component-wise through the generic default: positional
+sub-names @nm._0@, @nm._1@, … (composite protocol ports: @Fwd (a, b) =
+(Fwd a, Fwd b)@; @clash-protocols@ defines tuple protocols up to 12).
+Demand-equivalent to identity: forcing the traced tuple to WHNF forces
+exactly the one constructor match a @let@-pattern selector would force
+anyway, and the components stay unforced 'traceNamed' thunks.
+-}
+instance (Traceable a, Traceable b) => Traceable (a, b)
+instance (Traceable a, Traceable b, Traceable c) => Traceable (a, b, c)
+instance
+  (Traceable a, Traceable b, Traceable c, Traceable d) =>
+  Traceable (a, b, c, d)
+instance
+  (Traceable a, Traceable b, Traceable c, Traceable d, Traceable e) =>
+  Traceable (a, b, c, d, e)
+instance
+  (Traceable a, Traceable b, Traceable c, Traceable d, Traceable e, Traceable f) =>
+  Traceable (a, b, c, d, e, f)
+instance
+  ( Traceable a
+  , Traceable b
+  , Traceable c
+  , Traceable d
+  , Traceable e
+  , Traceable f
+  , Traceable g
+  ) =>
+  Traceable (a, b, c, d, e, f, g)
+instance
+  ( Traceable a
+  , Traceable b
+  , Traceable c
+  , Traceable d
+  , Traceable e
+  , Traceable f
+  , Traceable g
+  , Traceable h
+  ) =>
+  Traceable (a, b, c, d, e, f, g, h)
+instance
+  ( Traceable a
+  , Traceable b
+  , Traceable c
+  , Traceable d
+  , Traceable e
+  , Traceable f
+  , Traceable g
+  , Traceable h
+  , Traceable i
+  ) =>
+  Traceable (a, b, c, d, e, f, g, h, i)
+instance
+  ( Traceable a
+  , Traceable b
+  , Traceable c
+  , Traceable d
+  , Traceable e
+  , Traceable f
+  , Traceable g
+  , Traceable h
+  , Traceable i
+  , Traceable j
+  ) =>
+  Traceable (a, b, c, d, e, f, g, h, i, j)
+instance
+  ( Traceable a
+  , Traceable b
+  , Traceable c
+  , Traceable d
+  , Traceable e
+  , Traceable f
+  , Traceable g
+  , Traceable h
+  , Traceable i
+  , Traceable j
+  , Traceable k
+  ) =>
+  Traceable (a, b, c, d, e, f, g, h, i, j, k)
+instance
+  ( Traceable a
+  , Traceable b
+  , Traceable c
+  , Traceable d
+  , Traceable e
+  , Traceable f
+  , Traceable g
+  , Traceable h
+  , Traceable i
+  , Traceable j
+  , Traceable k
+  , Traceable l
+  ) =>
+  Traceable (a, b, c, d, e, f, g, h, i, j, k, l)
+
+{- | Generic worker for the default 'traceNamed': walks the
+'GHC.Generics.Rep' structure and traces every field under
+@\<name\>.\<field\>@. The 'Int' threads the field position left to right
+across a constructor, naming positional fields @_0@, @_1@, ….
+-}
+class GTraceable f where
+  gtraceNamed ::
+    (HasCallStack, HasCircuitContext) => String -> Int -> f p -> (Int, f p)
+
+instance (GTraceable f) => GTraceable (M1 D meta f) where
+  gtraceNamed nm i (M1 x) = M1 <$> gtraceNamed nm i x
+
+instance (GTraceable f) => GTraceable (M1 C meta f) where
+  gtraceNamed nm i (M1 x) = M1 <$> gtraceNamed nm i x
+
+instance (GTraceable f, GTraceable g) => GTraceable (f :*: g) where
+  gtraceNamed nm i0 (x :*: y) = (i2, x' :*: y')
+   where
+    (i1, x') = gtraceNamed nm i0 x
+    (i2, y') = gtraceNamed nm i1 y
+
+-- | Only the branch the value actually takes is traversed.
+instance (GTraceable f, GTraceable g) => GTraceable (f :+: g) where
+  gtraceNamed nm i (L1 x) = L1 <$> gtraceNamed nm i x
+  gtraceNamed nm i (R1 y) = R1 <$> gtraceNamed nm i y
+
+instance GTraceable U1 where
+  gtraceNamed _ i U1 = (i, U1)
+
+instance GTraceable V1 where
+  gtraceNamed _ i v = (i, v)
+
+{- | A leaf field: qualify the name with the record selector (or the field
+position) and trace it.
+-}
+instance (Selector s, Traceable c) => GTraceable (M1 S s (K1 r c)) where
+  gtraceNamed nm i m@(M1 (K1 c)) = (i + 1, M1 (K1 (traceNamed fieldName c)))
+   where
+    fieldName = case selName m of
+      "" -> nm <> "._" <> show i
+      fld -> nm <> "." <> fld
 
 -- | Flag-indexed dispatch; the flag comes from 'CanTrace'.
 class AutoTrace (flag :: Bool) t where
   autoTraceAt :: (HasCallStack, HasCircuitContext) => String -> t -> t
 
-instance Traceable t => AutoTrace 'True t where
+instance (Traceable t) => AutoTrace 'True t where
   autoTraceAt = traceNamed
 
 instance AutoTrace 'False t where
   autoTraceAt _ x = x
 
--- | What the renamer pass wraps around named local declarations in
--- 'HasCircuitContext' functions.
+{- | What the renamer pass wraps around named local declarations in
+'HasCircuitContext' functions.
+-}
 autoTrace ::
   forall t.
   (HasCallStack, HasCircuitContext, AutoTrace (CanTrace t) t) =>
@@ -103,29 +322,32 @@ autoTrace = autoTraceAt @(CanTrace t) @t
 -- Probing
 --------------------------------------------------------------------------------
 
--- | Bool-kinded oracle: reduced exclusively by the plugin, to ''True' iff
--- @Probeable t@ is solvable in the context of the occurrence.
+{- | Bool-kinded oracle: reduced exclusively by the plugin, to ''True' iff
+@Probeable t@ is solvable in the context of the occurrence.
+-}
 type family CanProbe (t :: Type) :: Bool
 
--- | The single universal instance carries exactly 'probe'\'s requirements;
--- the oracle decides @CanProbe t@ by checking ITS context's solvability.
+{- | The single universal instance carries exactly 'probe'\'s requirements;
+the oracle decides @CanProbe t@ by checking ITS context's solvability.
+-}
 class Probeable t where
-  probeNamed :: HasProbe => String -> t -> t
+  probeNamed :: (HasProbe) => String -> t -> t
 
 instance (BitPack t, NFDataX t) => Probeable t where
   probeNamed = probe
 
 class AutoProbe (flag :: Bool) t where
-  autoProbeAt :: HasProbe => String -> t -> t
+  autoProbeAt :: (HasProbe) => String -> t -> t
 
-instance Probeable t => AutoProbe 'True t where
+instance (Probeable t) => AutoProbe 'True t where
   autoProbeAt = probeNamed
 
 instance AutoProbe 'False t where
   autoProbeAt _ x = x
 
--- | What the renamer pass wraps around named local declarations in
--- 'HasProbe' functions.
+{- | What the renamer pass wraps around named local declarations in
+'HasProbe' functions.
+-}
 autoProbe ::
   forall t.
   (HasProbe, AutoProbe (CanProbe t) t) =>

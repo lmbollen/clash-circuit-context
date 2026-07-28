@@ -1,34 +1,43 @@
-cabal-version:      2.4
-name:               clash-circuit-context
-version:            0.1.0.0
-synopsis:           Scoped simulation tracing for Clash designs + GHC plugin
+cabal-version: 2.4
+name: clash-circuit-context
+version: 0.1.0.0
+synopsis: Scoped simulation tracing for Clash designs + GHC plugin
 description:
   Scoped simulation tracing on unmodified clash-prelude (hierarchy,
   per-simulation trace maps, mealy probes, hierarchical VCD dumping) plus a
   GHC plugin that instruments designs automatically: OPAQUE toplevel
   functions with a HasCircuitContext constraint become components, and named
   local declarations are traced/probed under their binder names.
-homepage:           https://github.com/lmbollen/clash-circuit-context
-bug-reports:        https://github.com/lmbollen/clash-circuit-context/issues
-license:            BSD-2-Clause
-license-file:       LICENSE
-author:             QBayLogic
-maintainer:         Lucas Bollen <lucas@qbaylogic.com>
-copyright:          Copyright (c) 2026, QBayLogic B.V.
-category:           Hardware
-build-type:         Simple
+
+homepage: https://github.com/lmbollen/clash-circuit-context
+bug-reports: https://github.com/lmbollen/clash-circuit-context/issues
+license: BSD-2-Clause
+license-file: LICENSE
+author: QBayLogic
+maintainer: Lucas Bollen <lucas@qbaylogic.com>
+copyright: Copyright (c) 2026, QBayLogic B.V.
+category: Hardware
+build-type: Simple
 extra-doc-files:
   CHANGELOG.md
   README.md
 
-tested-with:        GHC ==9.6.7 || ==9.10.3
+tested-with: ghc ==9.6.7 || ==9.10.3
 
 source-repository head
-  type:     git
+  type: git
   location: https://github.com/lmbollen/clash-circuit-context.git
 
+common common-options
+  default-language: Haskell2010
+  ghc-options:
+    -Wall
+    -Wcompat
+    -haddock
+
 library
-  hs-source-dirs:   src
+  import: common-options
+  hs-source-dirs: src
   exposed-modules:
     Clash.CircuitContext
     Clash.CircuitContext.Auto
@@ -37,61 +46,79 @@ library
     Clash.CircuitContext.Plugin.Names
     Clash.CircuitContext.Plugin.Oracle
     Clash.CircuitContext.Plugin.Rename
+
+  -- On `tagged`: circuit-notation desugars ports to Data.Tagged values, and
+  -- the Traceable instance for Tagged lives in Auto.hs. Same range
+  -- clash-prelude pins. (Kept out of the list itself: cabal-gild hoists
+  -- interior comments to the top, where they read as being about `base`.)
   build-depends:
-    base              >=4.18 && <4.21,
-    bytestring        >=0.11 && <0.13,
-    clash-prelude     ^>=1.11,
-    containers        >=0.6  && <0.9,
-    ghc               >=9.6  && <9.11,
-    ghc-tcplugin-api  ^>=0.19,
-    syb               >=0.7  && <0.8,
-    text              >=2.0  && <2.2,
-    time              >=1.12 && <1.15
-  default-language: Haskell2010
-  ghc-options:      -Wall
+    base >=4.18 && <4.21,
+    bytestring >=0.11 && <0.13,
+    clash-prelude >=1.9 && <1.12,
+    containers >=0.6 && <0.9,
+    ghc >=9.6 && <9.11,
+    ghc-tcplugin-api ^>=0.19,
+    syb >=0.7 && <0.8,
+    tagged >=0.8 && <0.9,
+    text >=2.0 && <2.2,
+    time >=1.12 && <1.15,
+
+  ghc-options:
+    -- Clash normalizes through the runtime combinators inside user designs,
+    -- so every unfolding must be available — not just the ones GHC happens
+    -- to expose. OPAQUE workers are exempt by definition, which is exactly
+    -- right: their heap/instance identity must survive (see
+    -- https://github.com/clash-lang/clash-compiler/pull/2511).
+    -- Worker/wrapper would split functions Clash has to look through into
+    -- unstable worker names; the OPAQUE pragmas protect the identity-bearing
+    -- workers, this protects the rest.
+    -fexpose-all-unfoldings
+    -fno-worker-wrapper
 
 -- Manual autoTrace calls (no renamer rewrite) against the real runtime;
 -- validates the oracle's trace/fallback decisions per type.
 test-suite fallback
-  type:             exitcode-stdio-1.0
-  main-is:          Fallback.hs
-  hs-source-dirs:   tests
+  import: common-options
+  type: exitcode-stdio-1.0
+  main-is: Fallback.hs
+  hs-source-dirs: tests
   build-depends:
     base,
-    clash-prelude,
     clash-circuit-context,
-    containers
-  default-language: Haskell2010
+    clash-prelude,
+    containers,
+    tagged,
+
   -- The plugin is required even for MANUAL autoTrace calls: its tc half
   -- reduces CanTrace/CanProbe. (The renamer half is a no-op here: the
   -- constrained functions have no local bindings.)
-  ghc-options:      -Wall -fplugin=Clash.CircuitContext.Plugin
+  ghc-options: -fplugin=Clash.CircuitContext.Plugin
 
 -- The manually instrumented smoke design (golden-test basis).
 test-suite manual-smoke
-  type:             exitcode-stdio-1.0
-  main-is:          ManualSmoke.hs
-  hs-source-dirs:   tests
+  import: common-options
+  type: exitcode-stdio-1.0
+  main-is: ManualSmoke.hs
+  hs-source-dirs: tests
   build-depends:
     base,
-    clash-prelude,
     clash-circuit-context,
+    clash-prelude,
     containers,
-    text
-  default-language: Haskell2010
-  ghc-options:      -Wall
+    text,
 
 -- Golden test: the smoke design written naturally, instrumented entirely by
 -- the plugin (component wrap, where->let, auto trace/probe).
 test-suite auto-smoke
-  type:             exitcode-stdio-1.0
-  main-is:          AutoSmoke.hs
-  hs-source-dirs:   tests
+  import: common-options
+  type: exitcode-stdio-1.0
+  main-is: AutoSmoke.hs
+  hs-source-dirs: tests
   build-depends:
     base,
-    clash-prelude,
     clash-circuit-context,
+    clash-prelude,
     containers,
-    text
-  default-language: Haskell2010
-  ghc-options:      -Wall -fplugin=Clash.CircuitContext.Plugin
+    text,
+
+  ghc-options: -fplugin=Clash.CircuitContext.Plugin

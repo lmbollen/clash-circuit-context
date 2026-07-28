@@ -21,6 +21,21 @@ for g in manual-smoke auto-smoke; do
   fi
 done
 
+# Value-fidelity invariants (see Core.hs packMaskValue/expandRunsX/renderVC):
+#  - a never-sampled cycle renders 'z' (NOT evaluated), never a false '0';
+#  - an evaluated-but-undefined value renders 'x', with any DEFINED bits kept
+#    (a partial value like 'b0x…' proves we don't zero-out undefined bits).
+if grep -qE '^bz+ ' auto-smoke.vcd; then
+  echo "ok: not-evaluated cycles render 'z' (distinct from undefined 'x')"
+else
+  echo "FAIL: expected a 'z' (not-evaluated) value in auto-smoke.vcd"; fail=1
+fi
+if grep -qE '^b[01]+x' auto-smoke.vcd; then
+  echo "ok: partial undefined keeps defined bits (no false zero)"
+else
+  echo "FAIL: expected a partial 'b…x' value (defined+undefined) in auto-smoke.vcd"; fail=1
+fi
+
 # The guarded-body warning must have fired during auto-smoke compilation
 # (only checkable on a fresh build; skip silently when cached).
 if grep -q "Compiling Main.*AutoSmoke" "$log" 2>/dev/null; then

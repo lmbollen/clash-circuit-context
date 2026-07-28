@@ -1,4 +1,9 @@
-{- | Resolution of the plugin ABI 'Name's. Injection is by exact 'Name', so
+{- |
+Copyright  :  (C) 2026, QBayLogic B.V.
+License    :  BSD2 (see the file LICENSE)
+Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
+
+Resolution of the plugin ABI 'Name's. Injection is by exact 'Name', so
 instrumented modules need no imports of the Auto module — only a package
 dependency on clash-circuit-context.
 
@@ -25,8 +30,9 @@ data AbiNames = AbiNames
   , abiHasProbe :: GHC.Name
   }
 
--- | 'Nothing' when the module being compiled does not depend (transitively)
--- on clash-circuit-context; callers should pass the program through unchanged.
+{- | 'Nothing' when the module being compiled does not depend (transitively)
+on clash-circuit-context; callers should pass the program through unchanged.
+-}
 lookupAbiNames :: GHC.TcM (Maybe AbiNames)
 lookupAbiNames = do
   hscEnv <- GHC.getTopEnv
@@ -53,8 +59,8 @@ lookupAbiNames = do
  where
   findMod hscEnv nm = do
     found <-
-      GHC.liftIO
-        $ GHC.findImportedModule hscEnv (GHC.mkModuleName nm) GHC.NoPkgQual
+      GHC.liftIO $
+        GHC.findImportedModule hscEnv (GHC.mkModuleName nm) GHC.NoPkgQual
     pure $ case found of
       GHC.Found _ md -> Just md
       _ -> Nothing

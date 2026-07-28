@@ -22,7 +22,6 @@ module Main where
 import qualified Prelude as P
 
 import Control.Exception (evaluate)
-import qualified Data.IntMap.Strict as IntMap
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TIO
@@ -40,12 +39,13 @@ rst = resetGen
 ena :: Enable System
 ena = enableGen
 
--- | Accumulator whose step function probes an internal expression: the
--- pre-registration sum, invisible at any Signal.
-acc :: HasCircuitContext => Signal System Int -> Signal System Int
+{- | Accumulator whose step function probes an internal expression: the
+pre-registration sum, invisible at any Signal.
+-}
+acc :: (HasCircuitContext) => Signal System Int -> Signal System Int
 acc = mealyProbed clk rst ena step 0
  where
-  step :: HasProbe => Int -> Int -> (Int, Int)
+  step :: (HasProbe) => Int -> Int -> (Int, Int)
   step s i = let s' = probe "step" (s + i) in (s', s)
 
 -- NOTE: the traced expression must be composed INLINE under 'component'. A
@@ -59,14 +59,17 @@ acc = mealyProbed clk rst ena step 0
 -- renders them as acc_0 and acc_1, ordered by call site (design order).
 -- A further two instances are replicated over a Vec and named by structural
 -- position (vacc_0, vacc_1) via imapComponents.
-top :: HasCircuitContext => Signal System Int -> Signal System Int
+top :: (HasCircuitContext) => Signal System Int -> Signal System Int
 top inp =
-  component "top"
-    ( traceSignalC "out"
+  component
+    "top"
+    ( traceSignalC
+        "out"
         ( component "acc" (traceSignalC "sum" (acc inp))
             + component "acc" (traceSignalC "sum" (acc (inp + 1)))
             + sum
-              ( imapComponents @2 "vacc"
+              ( imapComponents @2
+                  "vacc"
                   (\_i s -> traceSignalC "sum" (acc s))
                   (inp :> (inp + 2) :> Nil)
               )
@@ -85,8 +88,8 @@ main = do
   putStrLn
     ( "probe map:    "
         <> show
-          [ (nm, w, IntMap.toList vs)
-          | (nm, (_per, w, vs)) <- Map.toList probes
+          [ (nm, w, [(c, v) | (cs, ce, v) <- P.reverse runs, c <- [cs .. ce]])
+          | (nm, (_per, w, runs)) <- Map.toList probes
           ]
     )
   vcd <- dumpVCDC (0, 8) traces probes
