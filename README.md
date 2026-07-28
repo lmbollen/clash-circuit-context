@@ -147,9 +147,34 @@ or project-wide (`ghc-options: -fplugin=Clash.CircuitContext.Plugin`).
 
 ### Opting out
 
-* Prefix a binder with `_` to leave it uninstrumented.
-* Omit the `OPAQUE` pragma or the constraint to keep a function untouched.
-* Don't enable the plugin on a module to leave the whole module untouched.
+Instrumentation is opt-in **by signature, not by module**, so enabling the
+plugin project-wide is safe — a module with no `HasCircuitContext`/`HasProbe`
+signature is untouched. To opt back out, at four granularities:
+
+| Granularity | How |
+| --- | --- |
+| One binding | Prefix the binder with `_`: `_hidden = acc inp` is skipped. Works for `circuit` ports too (`_dbg`). |
+| One function | Omit the `OPAQUE` pragma (no component scope) or the constraint (no instrumentation at all). |
+| One module | Don't enable the plugin on it. |
+| A call, and everything under it | `withoutCircuitContext` — discharges the constraint without duplicating the callee's signature just to drop it. |
+
+```haskell
+-- A synthesis entry point calling an instrumented circuit:
+topEntity = withoutCircuitContext (myInstrumentedCircuit clk rst)
+```
+
+`withoutCircuitContext` is exactly `let ?circuitContext = noCircuitContext in …`.
+Because instrumentation is HDL-transparent, the wrapped call is identical — in
+simulation *and* synthesis — to calling an uninstrumented function.
+
+What is *not* cheap is the opposite direction. `HasCircuitContext` propagates to
+callers, so instrumenting a widely-shared component means either threading the
+constraint repo-wide or writing `withoutCircuitContext` at every boundary — in
+the bittide dogfooding, 9 edits for one peripheral (`timeWb`: 7 synthesis call
+sites plus 2 library intermediaries). Opting out is cheap; opting *in* spreads.
+A non-viral opt-in — tracing a component "from the outside" — is the main open
+design question, tracked as finding F1 in
+[`docs/dogfooding-bittide.md`](docs/dogfooding-bittide.md).
 
 ## Manual API
 
@@ -222,8 +247,9 @@ actually collects a waveform.
   to a function's callers. Supply the context once, at a boundary — a test
   does it with `withCircuitContext`; a synthesis entry point (or any caller
   you don't want to thread the constraint through) does it with
-  `let ?circuitContext = noCircuitContext in …`. This is a compile-time
-  concern only; it does not affect the generated hardware (see below).
+  `withoutCircuitContext` (see [Opting out](#opting-out)). This is a
+  compile-time concern only; it does not affect the generated hardware
+  (see below).
 * The traceability oracle is a conservative approximation: an exotic
   instance context it cannot decide falls back to *not tracing* (never a
   compile error). Golden-test your trace key sets if you depend on them.
