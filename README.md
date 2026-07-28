@@ -235,13 +235,18 @@ actually collects a waveform.
 ./check.sh -w ghc-9.10.3         # or any other GHC ≥ 9.6
 ```
 
-`check.sh` builds everything and runs three suites — `manual-smoke`
-(hand-instrumented reference), `fallback` (oracle decisions per type), and
+`check.sh` builds everything and runs four suites — `manual-smoke`
+(hand-instrumented reference), `fallback` (oracle decisions per type),
 `auto-smoke` (the same design written naturally, instrumented entirely by
-the plugin) — then diffs both generated VCDs against the goldens in
-`goldens/` and asserts the fall-through warning fires. VCD output is fully
-deterministic by design, so the goldens are byte-identical across GHC 9.6
-and 9.10.
+the plugin), and `notation-smoke` (the real circuit-notation desugarer,
+against the vendored `deps/circuit-notation`) — then diffs the generated VCDs
+against the goldens in `goldens/` and asserts the fall-through warning fires.
+VCD output is fully deterministic by design, so the goldens are byte-identical
+across GHC 9.6 and 9.10.
+
+`notation-smoke` exists only on this branch: it needs the `trace-ports` patch in
+`deps/circuit-notation`, so on `main` — whose `cabal.project` is just
+`packages: .` — `check.sh` runs the other three.
 
 ## Proof of concept: tracing a real design
 

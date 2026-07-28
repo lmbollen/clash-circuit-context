@@ -35,10 +35,10 @@ Your Clash source code then becomes the source of truth, no need to manually upd
 ### What components does this repository contain?
 
  - [`clash-protocols-memmap`](./clash-protocols-memmap)
-   
+
    This is the package that contains the structures for representing and building memory maps. Includes a validator and JSON output.
    Best used with a byte-addressible protocol, like Wishbone.
- 
+
 - [`clash-bitpackc`](./clash-bitpackc)
 
    This package contains a Haskell typeclass `BitPackC` which allows Haskell/Clash types to have a C compatible representation. Useful for making sure that software accessing data knows exactly how to de-/encode datatypes.
