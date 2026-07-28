@@ -19,14 +19,25 @@ honest measure of what dependency instrumentation buys.
 | `clash-protocols/` | `e03dbd89` | `.cabal` only: `ImplicitParams`, the plugin, a `clash-circuit-context` dep |
 | `clash-protocols-memmap/` | `20bacc70` | `.cabal` + `HasCircuitContext` on `deviceWb`/register combinators + a contents tap |
 | `clash-cores/` | `5d084eff` | `.cabal` + `HasCircuitContext` on `etherboneC` |
-| `circuit-notation/` | `8da93a3` on branch `trace-ports` | A committed patch, not working-tree state — see the caveat below |
+| `circuit-notation/` | `8da93a3` on branch `trace-ports` | A committed patch (not working-tree state): `trace-ports` mode, [below](#trace-ports-component-boundary-buses) |
 
-The only change to `bittide-hardware` relative to `dogfood/bittide` is its
-`cabal.project`: the `source-repository-package` pins for `clash-protocols`,
-`clash-protocols-memmap` and `clash-cores` are commented out (kept for
-provenance, since each checkout sits at exactly that commit) and replaced by
-local paths under `packages`. Diff that one file between the branches to see the
-whole substitution.
+`bittide-hardware` differs from `dogfood/bittide` in exactly four files, and
+none of them is design code:
+
+* `cabal.project` — the `source-repository-package` pins for `clash-protocols`,
+  `clash-protocols-memmap` and `clash-cores` are commented out (kept for
+  provenance, since each checkout sits at exactly that commit) and replaced by
+  local paths under `packages`, along with `../circuit-notation`;
+* `cabal.project.freeze` — the `circuit-notation` pin moves from `0.2.0.0` to
+  `0.3.0.0`;
+* `bittide/bittide.cabal` and `bittide-instances/bittide-instances.cabal` — each
+  gains `-fplugin-opt=Protocols.Plugin:trace-ports`.
+
+```bash
+git diff dogfood/bittide dogfood/deps -- deps/bittide-hardware
+```
+
+shows the whole substitution.
 
 ## What the dependency instrumentation actually buys
 
@@ -45,6 +56,34 @@ assertion intact.
 Instrumenting the memmap register/device layer accounts for **+54 wires** in the
 firmware DUTs overall (25 → 168 in the watchdog trace), which is the single
 largest win from dependency instrumentation.
+
+### Turning it off again
+
+Instrumenting a dependency does not commit its users to recording anything.
+Tracing is opt-in **by signature, not by module**, and there are three ways back
+out — all three are used in this tree:
+
+| Granularity | How | Where you can see it here |
+| --- | --- | --- |
+| A whole function | Omit `HasCircuitContext` from its signature | Every un-instrumented peripheral; `clash-protocols` gained the plugin but almost no constraints |
+| One binding | Prefix its name with `_` | Ports and scratch bindings a designer doesn't want in the waveform |
+| A call and everything under it | `withoutCircuitContext` | The `Pnr/` and `Hitl/` synthesis entry points, which must not carry the constraint into generated HDL |
+
+```haskell
+-- bittide's synthesis instances, in effect:
+topEntity = withoutCircuitContext (myInstrumentedCircuit clk rst)
+```
+
+It is HDL-transparent: the wrapped call generates identical hardware to calling
+an uninstrumented function. So a dependency can ship instrumented combinators
+without imposing anything on users who never supply a context — which is what
+makes instrumenting `clash-protocols-memmap` viable at all.
+
+What is *not* cheap is the reverse direction. `HasCircuitContext` is viral, so
+opting a widely-shared component *in* costs 9 edits for one peripheral
+(`timeWb`: 7 synthesis call sites plus 2 library intermediaries), and peripherals
+inside `processingElement` are worse. Opting out is easy; opting in spreads. See
+finding F1 in [`docs/dogfooding-bittide.md`](../docs/dogfooding-bittide.md).
 
 Getting that tap right is the interesting part, and it is a lesson about the
 runtime rather than about memmap:
@@ -84,21 +123,90 @@ Per-dependency measurements are in
 the full findings list, with the F-numbers referenced in code comments, is in
 [`docs/dogfooding-bittide.md`](../docs/dogfooding-bittide.md).
 
-### Caveat: `circuit-notation` is not wired into bittide
+### `trace-ports`: component boundary buses
 
 The vendored `circuit-notation` carries a `trace-ports` patch (`8da93a3`) that
-makes *all* circuit ports visible to renamer plugins, not just the intermediate
-`<-` ports. On this branch it is exercised only by this repository's own
-`notation-smoke` suite — **not** by the bittide waveforms. Two things block that:
+makes a `circuit` block's **interface** ports visible to renamer plugins, not
+just its intermediate `<-` ports. Without it, you see a component's internal
+wiring but not the buses crossing its boundary.
 
-* it is version `0.3.0.0`, while `clash-protocols` requires
-  `circuit-notation >=0.2 && <0.3`, so bittide resolves to the Hackage version;
-* `trace-ports` is opt-in per package via
-  `-fplugin-opt=CircuitNotation:trace-ports`, which no bittide `.cabal` sets.
+It is enabled here, which took three changes beyond vendoring the checkout:
 
-Relaxing that bound and enabling the option is the natural next step for this
-branch, and it is not done here — so none of the wire counts above include any
-trace-ports effect.
+1. `clash-protocols` (both packages) required `circuit-notation >=0.2 && <0.3`;
+   raised to `<0.4`.
+2. bittide's `cabal.project.freeze` pinned `circuit-notation ==0.2.0.0`; bumped
+   to `0.3.0.0`.
+3. `circuit-notation` 0.3 added three `ExternalNames` fields for its *value
+   circuits* feature (`signalTagName`, `fwdTagName`, `dSignalTagName`).
+   `Protocols.Plugin` is circuit-notation's plugin with renamed constructors
+   (`CN.mkPlugin`), so it has to supply them. `Protocols` has no value-port
+   markers, so they are bound to a loud `error` rather than silently aliased to
+   `Tagged` — a construct we do not support should fail, not mis-desugar.
+
+Then `-fplugin-opt=Protocols.Plugin:trace-ports` in the three packages that also
+run the tracing plugin (`bittide`, `bittide-instances`,
+`clash-protocols-memmap`). Note the option is namespaced by the plugin **module
+GHC was given** — `Protocols.Plugin`, not `CircuitNotation`.
+
+#### Measured effect
+
+Ten of the fourteen firmware waveforms have a like-for-like baseline (both runs
+produced by `cabal test`; the other four baselines came from `withWaveformC`
+REPL runs, which add a test-side wire of their own and so are not comparable).
+Across those ten:
+
+**1817 → 1961 wires (+144, +7.9 %): 146 added, 2 removed.**
+
+| Waveform | Before | After | Δ |
+| --- | --- | --- | --- |
+| `addressable_bytes_wb_test` | 143 | 157 | +14 |
+| `capture_ugn_self_test` | 151 | 165 | +14 |
+| `clock_control_wb_self_test` | 181 | 195 | +14 |
+| `dna_port_self_test` | 138 | 152 | +14 |
+| `registerwb_c_sim` | 266 | 280 | +14 |
+| `time_self_test`, `time_c_test` | 157 | 171 | +14 |
+| `watchdog_self_test` | 175 | 189 | +14 |
+| `elastic_buffer_wb_test` | 255 | 272 | +17 |
+| `axi_stream_self_test` | 194 | 209 | +17 −2 |
+
+The uniform +14 is the CPU's shared periphery, identical in every DUT because
+every DUT wraps the same `processingElement`. For `registerwb_sim`:
+
+| Added | What it is |
+| --- | --- |
+| `manyTypesWb.{wb0_Fwd, wb_Fwd_0, wb_Fwd_1}` | Wishbone buses at the register device's ports (72 bits each) |
+| `wbStorage_{0,1}.{wb0_Fwd, wb_Fwd, wbMm_Fwd._1}` | both storage instances' bus ports |
+| `uartInterfaceWb.{bus_Fwd._1, wb0_Fwd, wb_Fwd}` | the UART peripheral's bus ports |
+| `processingElement.jtagIn_Fwd` | JTAG into the CPU |
+| `uartTx_Bwd` | the DUT's own top-level backpressure |
+
+So trace-ports is a modest but qualitatively different gain: not more internal
+signals, but the **interface** each instrumented component presents — you can
+now see the bus at a peripheral's port, not only its internal wiring. It costs
+nothing where there is no notation to desugar: the `xilinxElasticBuffer`
+waveforms are 13 wires before and after, being plain Clash.
+
+Compiling all of `bittide` + `bittide-instances` against 0.3 with the flag on
+produced **no** desugaring regressions (307 modules clean), which was the main
+risk: 0.3 also contains a value-ports refactor touching arity and as-pattern
+handling.
+
+#### The two lost wires — a caveat worth knowing
+
+`axi_stream_self_test` lost `dut.brReadAddr` (10 b) and `dut.otpA` (1 b). They
+did not move scope; they are simply no longer traced. Both are `where`-bindings
+inside `Protocols.Df.fifo` in `clash-protocols`.
+
+That package does **not** enable `trace-ports` — so the cause is almost certainly
+the `circuit-notation` 0.2 → 0.3 upgrade that the patch rides on (or the
+`Protocols.Plugin` edit it forced), not the flag. Isolating it would need a third
+build (0.3 with the flag off), which has not been run, so treat the attribution
+as inference and the fact as measured.
+
+Either way the lesson generalises: **an upgrade of the notation desugarer can
+silently change which signals get traced**, in both directions. Trace key sets
+are worth golden-testing, exactly as `main`'s README recommends — a dropped wire
+produces no error, just a slightly emptier waveform.
 
 ## Generating the waveforms
 

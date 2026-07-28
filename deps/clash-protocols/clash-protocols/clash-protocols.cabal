@@ -99,7 +99,11 @@ library
     cpp-options: -DLARGE_TUPLES
   build-depends:
     -- To be removed; we need 'Test.Tasty.Hedgehog.Extra' to fix upstream issues
-    circuit-notation >=0.2 && <0.3,
+    -- ccc dogfooding: raised from <0.3 to pick up the vendored 0.3 checkout,
+    -- whose trace-ports mode makes circuit interface ports visible to
+    -- renamer plugins. 0.3 also adds three ExternalNames fields for value
+    -- circuits; see the note in Protocols.Plugin.
+    circuit-notation >=0.2 && <0.4,
     clash-prelude-hedgehog,
     clash-protocols-base,
     constraints >=0.9 && <1,

@@ -98,6 +98,39 @@ or project-wide (`ghc-options: -fplugin=Clash.CircuitContext.Plugin`).
 3. **Auto-probe** — same rule for `HasProbe` signatures: bindings become
    `autoProbe "<binder>" …`, recording one value per simulated cycle from
    inside e.g. a mealy step function.
+
+## Opting out
+
+Instrumentation is **opt-in by signature, not by module**, so enabling the
+plugin project-wide is safe: a module with no `HasCircuitContext`/`HasProbe`
+signature is untouched. There are three ways to opt back out, at three
+granularities:
+
+| Granularity | How | Use when |
+| --- | --- | --- |
+| A whole function | **Omit the constraint.** No `HasCircuitContext` in the signature ⇒ no component wrap, no auto-trace. | The default. Nothing to undo. |
+| One binding | **Prefix its name with `_`.** `_hidden = acc inp` is skipped. | A binding you don't want in the waveform — scratch values, debug wiring, a `circuit` port you don't care about (`_dbg`). |
+| A call and everything under it | **`withoutCircuitContext`.** | Calling an instrumented function from a context that shouldn't record — most importantly a synthesis entry point. |
+
+```haskell
+-- Discharges the constraint for one call, without duplicating the callee's
+-- signature just to drop it:
+topEntity = withoutCircuitContext (myInstrumentedCircuit clk rst)
+```
+
+`withoutCircuitContext` is exactly `let ?circuitContext = noCircuitContext in …`,
+and instrumentation is HDL-transparent, so the wrapped call generates identical
+hardware to calling an uninstrumented function — in simulation *and* synthesis.
+
+The honest caveat: what is *not* easy is the constraint's **virality**. Because
+`HasCircuitContext` propagates to callers, instrumenting a widely-shared
+component means either threading the constraint repo-wide or writing
+`withoutCircuitContext` at every boundary — 9 edits for one peripheral in the
+bittide dogfooding (`timeWb`: 7 synthesis call sites plus 2 library
+intermediaries). Opting *out* is cheap; the cost is in how far opting *in*
+spreads. A non-viral opt-in — tracing a component "from the outside" — is the
+main open design question, tracked as finding F1 in
+[`docs/dogfooding-bittide.md`](docs/dogfooding-bittide.md).
 4. **Innermost signature wins** — a local signature switches the mode for
    its subtree, so a `HasProbe` step function nested in a
    `HasCircuitContext` component probes rather than traces.
@@ -222,8 +255,9 @@ actually collects a waveform.
   to a function's callers. Supply the context once, at a boundary — a test
   does it with `withCircuitContext`; a synthesis entry point (or any caller
   you don't want to thread the constraint through) does it with
-  `let ?circuitContext = noCircuitContext in …`. This is a compile-time
-  concern only; it does not affect the generated hardware (see below).
+  `withoutCircuitContext` (see [Opting out](#opting-out)). This is a
+  compile-time concern only; it does not affect the generated hardware
+  (see below).
 * The traceability oracle is a conservative approximation: an exotic
   instance context it cannot decide falls back to *not tracing* (never a
   compile error). Golden-test your trace key sets if you depend on them.

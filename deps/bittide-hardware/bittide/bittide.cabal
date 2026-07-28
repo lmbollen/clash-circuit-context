@@ -113,6 +113,10 @@ common clash
     -fplugin=GHC.TypeLits.Normalise
     -fplugin=GHC.TypeLits.KnownNat.Solver
     -fplugin=Protocols.Plugin
+    -- ccc dogfooding: re-bind each `circuit` block's INTERFACE ports through
+    -- source-located let indirections, so the tracing renamer sees them as
+    -- ordinary local binders and traces them like the intermediate <- ports.
+    -fplugin-opt=Protocols.Plugin:trace-ports
     -- Auto-instrumentation for simulation waveforms: no-op for modules
     -- without HasCircuitContext/HasProbe signatures (opt-in is by
     -- signature, not by module).

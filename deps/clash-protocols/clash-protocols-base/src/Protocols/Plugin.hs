@@ -117,7 +117,27 @@ plugin =
       , CN.runCircuitName = CN.thName 'taggedCircuit
       , CN.tagBundlePat = CN.thName 'TaggedBundle
       , CN.tagName = CN.thName 'Tagged
+      , -- circuit-notation >=0.3 added these three for its "value circuits"
+        -- feature: markers (Signal/DSignal/SignalV/FwdV/DSignalV) that pin a
+        -- port to a raw signal inside a @circuitV@ block. "Protocols" does not
+        -- repurpose that feature -- it has no such markers -- so these names
+        -- are never looked up. They are consulted only when the corresponding
+        -- marker appears in source, so failing loudly beats silently binding
+        -- them to 'Tagged' and mis-desugaring a construct we do not support.
+        CN.signalTagName = unsupportedValueMarker "Signal"
+      , CN.fwdTagName = unsupportedValueMarker "FwdV"
+      , CN.dSignalTagName = unsupportedValueMarker "DSignalV"
       , CN.tagTName = CN.thName ''Tagged
       , CN.trivialBwd = CN.thName 'units
       , CN.consPat = CN.thName '(:>!)
       }
+
+{- | A circuit-notation "value circuit" marker that @Protocols@ does not
+support. See the note in 'plugin'.
+-}
+unsupportedValueMarker :: String -> GHC.RdrName
+unsupportedValueMarker marker =
+  error $
+    "Protocols.Plugin: the circuit-notation value-port marker "
+      <> marker
+      <> " is not supported by the Protocols repurposing of the plugin."

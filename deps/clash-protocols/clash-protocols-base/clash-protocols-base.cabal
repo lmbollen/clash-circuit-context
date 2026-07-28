@@ -68,7 +68,11 @@ library
   if flag(large-tuples)
     cpp-options: -DLARGE_TUPLES
   build-depends:
-    circuit-notation >=0.2 && <0.3,
+    -- ccc dogfooding: raised from <0.3 to pick up the vendored 0.3 checkout,
+    -- whose trace-ports mode makes circuit interface ports visible to
+    -- renamer plugins. 0.3 also adds three ExternalNames fields for value
+    -- circuits; see the note in Protocols.Plugin.
+    circuit-notation >=0.2 && <0.4,
     deepseq >=1.4.1 && <1.6,
     extra >=1.6.17 && <1.9,
     ghc >=9.6 && <9.13,

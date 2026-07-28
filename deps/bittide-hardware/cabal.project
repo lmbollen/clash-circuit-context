@@ -22,6 +22,10 @@ packages:
   ../clash-protocols-memmap/clash-protocols-memmap
   ../clash-protocols-memmap/clash-bitpackc
   ../clash-cores
+  -- circuit-notation 0.3 + the trace-ports patch. Needed here (rather than the
+  -- Hackage 0.2) because trace-ports is what makes a `circuit` block's INTERFACE
+  -- ports visible to the tracing renamer, not just its intermediate <- ports.
+  ../circuit-notation
 
 -- We depend on the clash-circuit-context *library* only; its own test-suites
 -- pin a patched circuit-notation that is absent from this project.
