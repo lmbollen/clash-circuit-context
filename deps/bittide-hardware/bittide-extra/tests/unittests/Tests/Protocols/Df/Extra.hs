@@ -1,0 +1,384 @@
+-- SPDX-FileCopyrightText: 2026 Google LLC
+--
+-- SPDX-License-Identifier: Apache-2.0
+{-# LANGUAGE OverloadedStrings #-}
+
+module Tests.Protocols.Df.Extra where
+
+import Clash.Prelude
+
+import Clash.Cores.Xilinx.BlockRam (tdpbram)
+import Clash.Hedgehog.Sized.BitVector
+import Clash.Hedgehog.Sized.Index
+import Clash.Hedgehog.Sized.Unsigned
+import Clash.Hedgehog.Sized.Vector
+import Data.Maybe
+import Data.String.Interpolate (i)
+import Hedgehog (Gen, Property, assert, cover, footnote, forAll, (===))
+import Hedgehog.Gen.Extra (genSmallInt)
+import Protocols
+import Protocols.Df.Extra (skid, tdpbramRamOp)
+import Protocols.Experimental.Hedgehog (
+  ExpectOptions (..),
+  defExpectOptions,
+  idWithModelSingleDomain,
+  idWithModelSingleDomainT,
+  propWithModelSingleDomain,
+ )
+import Protocols.Experimental.Simulate (SimulationConfig (..), StallAck (..), driveC, sampleC)
+import Protocols.Internal (circuitMonitor)
+import Test.Tasty (TestTree)
+import Test.Tasty.Hedgehog (testProperty)
+import Test.Tasty.TH (testGroupGenerator)
+
+import qualified Clash.Prelude as C
+import qualified Data.List as L
+import qualified Hedgehog as H
+import qualified Hedgehog.Gen as Gen
+import qualified Hedgehog.Range as Range
+import qualified Protocols.Df.Extra as Df
+import qualified Protocols.Experimental.Df as Df
+import qualified Prelude as P
+
+genData :: Gen a -> Gen [a]
+genData genA = do
+  n <- genSmallInt
+  Gen.list (Range.singleton n) genA
+
+-- | Wrapper around 'skid' that discards the Ready signal
+skidDropReady ::
+  forall dom a.
+  (NFDataX a, HiddenClockResetEnable dom) =>
+  Circuit (Df dom a) (Df dom a)
+skidDropReady = circuit $ \dfIn -> do
+  (dfOut, _ready) <- skid -< dfIn
+  idC -< dfOut
+
+prop_skid :: Property
+prop_skid =
+  idWithModelSingleDomain
+    @C.System
+    defExpectOptions
+    (genData genSmallInt)
+    (C.exposeClockResetEnable id)
+    (C.exposeClockResetEnable skidDropReady)
+
+-- | Merges two BitVectors according to a mask.
+mergeWithMask ::
+  forall bv m.
+  (KnownNat m, KnownNat bv) =>
+  BitVector (bv * m) ->
+  BitVector (bv * m) ->
+  BitVector m ->
+  BitVector (bv * m)
+mergeWithMask (unpack -> old) (unpack -> new) (unpack -> mask) =
+  pack (mux @(Vec m) @(BitVector bv) mask new old)
+
+-- | Simply try reading the initial contents of a blockram
+prop_fromBlockRam :: Property
+prop_fromBlockRam =
+  idWithModelSingleDomain @System
+    defExpectOptions
+    (genData (genUnsigned Range.linearBounded))
+    (\_ _ _ -> model)
+    top
+ where
+  mem = iterate d16 succ 0 :: Vec 16 Int
+
+  dut :: forall dom. (HiddenClockResetEnable dom) => Circuit (Df dom (Unsigned 4)) (Df dom Int)
+  dut = circuit $ \rd -> do
+    wr <- Df.empty
+    Df.fromBlockRam (\ena -> withEnable ena (blockRam mem)) -< (rd, wr)
+
+  top clk rst ena0 = withClockResetEnable @System clk rst ena0 dut
+  model = fmap (mem !!)
+
+-- | First write a new configuration to the blockram, then read it back
+prop_fromBlockRamWrites :: Property
+prop_fromBlockRamWrites = H.property $ do
+  oldMem <- forAll $ genVec @16 $ Gen.integral Range.linearBounded
+  newMem <- forAll $ genVec @16 $ Gen.integral Range.linearBounded
+  let
+    writes = L.zip [0 ..] (toList newMem)
+    model = fmap (newMem !!)
+
+    dut :: forall dom. (HiddenClockResetEnable dom) => Circuit (Df dom (Unsigned 4)) (Df dom Int)
+    dut = circuit $ \rd0 -> do
+      wr <- Df.drive def (fmap Just writes)
+      rd1 <- Df.stall def{resetCycles = 0} StallWithNack [100] -< rd0
+      Df.fromBlockRam (\ena -> withEnable ena (blockRam oldMem)) -< (rd1, wr)
+
+    top clk rst ena0 = withClockResetEnable @System clk rst ena0 dut
+
+  idWithModelSingleDomainT @System
+    defExpectOptions
+    (genData (genUnsigned Range.linearBounded))
+    (\_ _ _ -> model)
+    top
+
+-- | Write a configuration to the blockram with byte enables, then read it back
+prop_fromBlockRamWithMaskWrites :: Property
+prop_fromBlockRamWithMaskWrites = H.property $ do
+  oldMem <- forAll $ genVec @8 genDefinedBitVector
+  newValues <- forAll $ genVec genDefinedBitVector
+  masks <- forAll $ genVec genDefinedBitVector
+
+  let
+    newMem = zipWith3 mergeWithMask oldMem newValues masks
+
+    -- First write old memory with full masks, then write new values with given masks
+    writes =
+      L.zip3 [0 ..] (L.repeat maxBound) (toList oldMem)
+        <> L.zip3 [0 ..] (toList masks) (toList newValues)
+    model = fmap (newMem !!)
+
+    dut ::
+      forall dom. (HiddenClockResetEnable dom) => Circuit (Df dom (Unsigned 3)) (Df dom (BitVector 32))
+    dut = circuit $ \rd0 -> do
+      wr <- Df.drive def{resetCycles = 0} (fmap Just writes)
+      rd1 <- Df.stall def{resetCycles = 0} StallWithNack [50] -< rd0
+      Df.fromBlockRamWithMask (exposeEnable $ blockRamByteAddressableU d8) -< (rd1, wr)
+
+    top clk rst ena0 = withClockResetEnable @System clk rst ena0 dut
+
+  idWithModelSingleDomainT @System
+    defExpectOptions{eoStopAfterEmpty = Just 100}
+    (genData (genUnsigned Range.linearBounded))
+    (\_ _ _ -> model)
+    top
+
+prop_fromDSignal :: Property
+prop_fromDSignal =
+  idWithModelSingleDomain @System
+    defExpectOptions
+    (genData genSmallInt)
+    (\_ _ _ -> id)
+    dut
+ where
+  reference clk ena = withClock clk $ withEnable ena $ delayN d10 (0 :: Int)
+  dut clk rst _ = Df.fromDSignal clk rst (reference clk)
+
+{- | Verify that the circuit always produces less backpressure than it receives
+This should check that the circuit can run at without more stalls than strictly necessary
+-}
+prop_fromDSignalBackpressure :: Property
+prop_fromDSignalBackpressure = H.property $ do
+  inputData <- forAll $ Gen.list (Range.linear 0 20) $ Gen.maybe $ pure ()
+  stalls <- forAll (Gen.list (Range.linear 0 10) (Gen.integral (Range.linear 0 10)))
+  let
+    reference clk ena = withClock @System clk $ withEnable ena $ delayN d5 ()
+    dut clk rst = Df.fromDSignal clk rst (reference clk)
+    -- The driver, sampler stall, and 'fromDSignal' all share this reset window
+    -- ('resetCycles' must match the 'resetGenN' below). Keeping it aligned means
+    -- the driver only presents data once the DUT is out of reset, so a
+    -- reset-induced NACK is never miscounted as backpressure.
+    resetCycles = 10
+    simConfig = def{resetCycles}
+    top clk rst = circuit $ do
+      (drive1, driveMonitor) <- circuitMonitor <| driveC simConfig inputData
+      (sample1, sampleMonitor) <- circuitMonitor <| dut clk rst -< drive1
+      withReset rst Df.consume <| Df.stall simConfig StallCycle stalls -< sample1
+      idC -< (driveMonitor, sampleMonitor)
+
+    isStalled (fwd, (Ack bwd)) = isJust fwd && not bwd
+    isTransfer (fwd, (Ack bwd)) = isJust fwd && bwd
+    isIdle (fwd, _) = isNothing fwd
+
+    getStalls = L.scanl (\acc inps -> if isStalled inps then succ acc else acc) (0 :: Int)
+    getTransfers = L.foldl (\acc inps -> if isTransfer inps then succ acc else acc) (0 :: Int)
+    -- Count idle cycles only within the active window: the reset window before the
+    -- first transfer and the trailing cycles after the last transfer always idle,
+    -- so they'd swamp the count. Dropping them means a back-to-back run can
+    -- legitimately reach zero idle cycles.
+    getIdles signals =
+      L.length (L.filter isIdle (dropTrailing (L.dropWhile isIdle signals)))
+     where
+      dropTrailing = L.reverse . L.dropWhile isIdle . L.reverse
+    -- Sample long enough to always drain every input through the stalling
+    -- sampler: the reset window, one cycle per input, every stall cycle the
+    -- sampler inserts, the pipeline latency (5), and some slack for bookkeeping.
+    timeout = resetCycles + L.length inputData + L.sum stalls + 5 + 20
+    (driveSignals, sampleSignals) =
+      sampleC simConfig{timeoutAfter = timeout} (top clockGen (C.resetGenN (SNat @10)))
+    driveStalls = getStalls driveSignals
+    sampleStalls = getStalls sampleSignals
+
+  assert (getTransfers driveSignals == L.length (catMaybes inputData))
+  assert (getTransfers sampleSignals == L.length (catMaybes inputData))
+  cover 2 "Idle cycles in driver" (getIdles driveSignals > 0)
+  cover 2 "Idle cycles in sampler" (getIdles sampleSignals > 0)
+  cover 5 "Non-idle cycles in driver" (getIdles driveSignals == 0)
+  cover 5 "Non-idle cycles in sampler" (getIdles sampleSignals == 0)
+
+  footnote
+    $ [i|Drive stalls: #{show (runLengthEncode driveStalls)} \nSample stalls: #{show (runLengthEncode sampleStalls)}|]
+  assert $ and $ L.zipWith (<=) driveStalls sampleStalls
+
+-- | Utility function to run-length encode a list
+runLengthEncode :: (Eq a) => [a] -> [(a, Int)]
+runLengthEncode = go Nothing
+ where
+  go (Just (a, n)) (x : xs)
+    | a == x = go (Just (a, n + 1)) xs
+    | otherwise = (a, n) : go (Just (x, 1)) xs
+  go Nothing (x : xs) = go (Just (x, 1)) xs
+  go (Just s) [] = [s]
+  go Nothing [] = []
+
+prop_iterate :: Property
+prop_iterate =
+  propWithModelSingleDomain
+    defExpectOptions{eoResetCycles = 10}
+    gen
+    (\_ _ _ -> model)
+    dut
+    prop
+ where
+  f = (+ 1) :: Int -> Int
+  model = const $ L.take 100 (P.iterate f 0)
+
+  -- After 100 cycles stall comes out of reset and stalls communication to
+  -- terminate the simulation.
+  dut =
+    exposeClockResetEnable
+      (Df.stall def{resetCycles = 100} StallCycle [1000] <| Df.iterate f 0 :: Circuit () (Df System Int))
+  gen = pure ()
+  prop expected actual = do
+    let len = L.length actual
+    footnote [i|Expected length: #{show (L.length expected)} Actual length: #{show len}|]
+    assert (len >= 5)
+    L.take len expected === actual
+
+prop_bypassFifo :: Property
+prop_bypassFifo =
+  idWithModelSingleDomain
+    @System
+    defExpectOptions
+    (genData genSmallInt)
+    (C.exposeClockResetEnable id)
+    (C.exposeClockResetEnable (Df.bypassFifo d1 (Df.fifo d8)))
+
+prop_stallNext :: Property
+prop_stallNext = H.property $ do
+  stalls <- forAll $ Gen.list (Range.linear 0 100) Gen.bool
+  idWithModelSingleDomainT
+    @System
+    defExpectOptions{eoStopAfterEmpty = Just 150}
+    (genData genSmallInt)
+    (\_ _ _ -> id)
+    (C.exposeClockResetEnable (Df.stallNext (fromList (stalls <> L.repeat True))))
+
+-- Start of shamelessly copied code from bittide
+
+{- | Version of 'blockRamByteAddressable' with undefined initial contents. It is similar
+to 'blockRam' with the addition that it takes a byte select signal that controls
+which nBytes at the write address are updated.
+-}
+blockRamByteAddressableU ::
+  forall dom memDepth n m addr.
+  ( HiddenClockResetEnable dom
+  , Enum addr
+  , NFDataX addr
+  , KnownNat memDepth
+  , 1 <= memDepth
+  , KnownNat n
+  , KnownNat m
+  ) =>
+  -- | Memory depth
+  SNat memDepth ->
+  -- | Read address.
+  Signal dom addr ->
+  -- | Write operation.
+  Signal dom (Maybe (addr, BitVector (n * m))) ->
+  -- | Byte enables that determine which nBytes get replaced.
+  Signal dom (BitVector n) ->
+  -- | Data at read address (1 cycle delay).
+  Signal dom (BitVector (n * m))
+blockRamByteAddressableU SNat readAddr newEntry byteSelect =
+  pack <$> readBytes
+ where
+  writeBytes = unbundle $ splitWriteInBytes <$> newEntry <*> byteSelect
+  readBytes = bundle $ ram readAddr <$> writeBytes
+  ram = blockRamU NoClearOnReset (SNat @memDepth)
+
+{- | Takes singular write operation (Maybe (Index maxIndex, writeData)) and splits it up
+according to a supplied byteselect bitvector into a vector of byte sized write operations
+(Maybe (Index maxIndex, Byte)).
+-}
+splitWriteInBytes ::
+  forall addr m n.
+  (KnownNat n, KnownNat m) =>
+  -- | Incoming write operation.
+  Maybe (addr, BitVector (n * m)) ->
+  -- | Incoming byte enables.
+  BitVector m ->
+  -- | Per byte write operation.
+  Vec m (Maybe (addr, BitVector n))
+splitWriteInBytes (Just (addr, writeData)) byteSelect =
+  (\m d -> if m then Just d else Nothing)
+    <$> unpack byteSelect
+    <*> fmap (addr,) (unpack writeData)
+splitWriteInBytes Nothing _ = repeat Nothing
+
+-- End of shamelessly copied code from bittide
+
+-- | A helper function to extract the address from a 'RamOp'
+ramAddr :: RamOp addr a -> Maybe (Index addr)
+ramAddr (RamRead addr) = Just addr
+ramAddr (RamWrite addr _) = Just addr
+ramAddr _ = Nothing
+
+{- | Writes new memory contents to the blockram with byte enables, then reads it back
+uses even addresses on the left port and odd addresses on the right port to verify that both
+ports are working correctly.
+-}
+prop_fromDualPortedBramWithMask_writeRead :: Property
+prop_fromDualPortedBramWithMask_writeRead = H.property $ do
+  newValues <- forAll $ genVec @16 (genDefinedBitVector @32)
+  masks <- forAll $ genVec genDefinedBitVector
+  nWrites <- forAll $ genIndex Range.linearBounded
+  let
+    oldMem = repeat 0
+    newMem = zipWith3 mergeWithMask oldMem newValues masks
+    addresses = [0 .. nWrites]
+
+    -- First write old memory with full masks, then write new values with given masks
+    writeOps =
+      L.zipWith3
+        (\addr m d -> RamWrite addr (m, d))
+        (addresses <> addresses)
+        (L.replicate (L.length addresses) maxBound <> toList masks)
+        (L.replicate (L.length addresses) 0 <> toList newValues)
+
+    readOps = fmap RamRead addresses
+
+    -- Partition reads and writes based on address parity to ensure both ports are used.
+    (writeOpsLeft, writeOpsRight) = L.partition (even . fromJust . ramAddr) writeOps
+    (readOpsLeft, readOpsRight) = L.partition (even . fromJust . ramAddr) readOps
+    getReadResults (RamRead a : rest) = newMem !! a : getReadResults rest
+    getReadResults (_ : rest) = getReadResults rest
+    getReadResults [] = []
+    model (lefts, rights) = (getReadResults lefts, getReadResults rights)
+
+    dut ::
+      forall dom.
+      (HiddenClockResetEnable dom) =>
+      Circuit
+        (Df dom (RamOp 16 (BitVector 4, BitVector 32)), Df dom (RamOp 16 (BitVector 4, BitVector 32)))
+        (Df dom (BitVector 32), Df dom (BitVector 32))
+    dut =
+      Df.fromDualPortedBramWithMask
+        (tdpbramRamOp tdpbram hasClock hasClock)
+        hasClock
+        hasClock
+
+    top = exposeClockResetEnable @System dut
+
+  idWithModelSingleDomainT @System
+    defExpectOptions
+    (pure $ (writeOpsLeft <> readOpsLeft, writeOpsRight <> readOpsRight))
+    (\_ _ _ -> model)
+    top
+
+tests :: TestTree
+tests = $(testGroupGenerator)

@@ -1,0 +1,103 @@
+-- SPDX-FileCopyrightText: 2022 Google LLC
+--
+-- SPDX-License-Identifier: CC0-1.0
+packages:
+  bittide-cpus/
+  bittide-experiments/
+  bittide-extra/
+  bittide-instances/
+  bittide-shake/
+  bittide/
+  gdb-hs/
+  ghc-typelits-extra-lemmas/
+  vivado-hs/
+  -- The tracing runtime + GHC plugin under test. Path-relative so this tree
+  -- builds straight out of the clash-circuit-context checkout that vendors it.
+  ../../clash-circuit-context.cabal
+
+-- We depend on the clash-circuit-context *library* only; its own test-suites
+-- pin a patched circuit-notation that is absent from this project.
+package clash-circuit-context
+  tests: False
+  benchmarks: False
+
+write-ghc-environment-files: always
+-- index state, to go along with the cabal.project.freeze file. update the index
+-- state by running `cabal update` twice and looking at the index state it
+-- displays to you (as the second update will be a no-op)
+index-state: 2026-06-12T08:52:58Z
+tests: True
+
+package bittide
+  -- Tweak haddock stylesheet to enable word wrapping of types.
+  -- We specify the default Linuwial theme as an alternate
+  -- so we're able to import its css file from the custom theme.
+  haddock-options: --theme=linuwial-wrap-types.css --theme=Linuwial
+
+package zlib
+  flags: +pkg-config
+
+package *
+  ghc-options: +RTS -qn4 -K512M -H -I5 -T -RTS
+semaphore: true
+jobs: $ncpus
+
+-- NOTE (dogfood/bittide): every dependency below is the PRISTINE upstream pin.
+-- Instrumentation on this branch is confined to bittide's own sources, which is
+-- the whole point: it shows what tracing you get with zero dependency changes.
+-- The dogfood/deps branch replaces these pins with local instrumented
+-- checkouts; diff the two branches' cabal.project to see exactly which.
+source-repository-package
+  type: git
+  location: https://github.com/QBayLogic/clash-protocols-memmap
+  tag: 20bacc70c1ef1802cfa02228bfddbc7e8cd86f03
+  subdir:
+    clash-protocols-memmap
+    clash-bitpackc
+
+source-repository-package
+  type: git
+  location: https://github.com/clash-lang/clash-protocols.git
+  tag: e03dbd8917cb7c93911810824e54e4423a0ae08b
+  subdir:
+    clash-protocols
+    clash-protocols-base
+
+-- TODO: Switch to Clash 1.10.1. It should have all the performance upgrades we want.
+source-repository-package
+  type: git
+  location: https://github.com/clash-lang/clash-compiler.git
+  tag: 3df8daf03f3fffc0a9873c3a85ca928e8d919354
+  subdir:
+    clash-prelude
+    clash-ghc
+    clash-lib
+    clash-prelude-hedgehog
+    clash-lib-hedgehog
+
+-- TODO: Switch to released package once it is on Hackage
+source-repository-package
+  type: git
+  location: https://github.com/clash-lang/clash-cores.git
+  tag: 5d084eff6cdc630ecd14be53bdc4fa30a5a4fd95
+
+-- Allow us to load multiple packages into a REPL session at once. For example:
+--
+--   cabal repl bittide bittide:unittests
+--
+-- Can also be used in combination with ghcid:
+--
+--   ghcid -c cabal repl bittide bittide:unittests
+--
+-- Note that it is not limited to units from the same Cabal file:
+--
+--   cabal repl bittide bittide:unittests bittide-instances bittide-instance:unittests
+--
+-- Finally, we maintain a script that loads _all_ development packages:
+--
+--   repld
+--
+-- This is also usable in combination with ghcid:
+--
+--   ghcid -c repld
+multi-repl: True

@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: 2022 Google LLC
+#
+# SPDX-License-Identifier: CC0-1.0
+
+[toolchain]
+channel = "nightly-2026-04-16"
+components = ["rustfmt", "clippy", "rust-src"]
+targets = ["riscv32imc-unknown-none-elf", "x86_64-unknown-linux-gnu"]

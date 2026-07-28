@@ -1,0 +1,15 @@
+# SPDX-FileCopyrightText: 2022 Google LLC
+#
+# SPDX-License-Identifier: CC0-1.0
+
+[build]
+target = "riscv32imc-unknown-none-elf"
+rustflags = [
+  # XXX: These two seem to be ignored
+  "-C", "force-frame-pointers=yes",
+  "-C", "force-unwind-tables=yes"
+]
+target-dir = "../_build/cargo/firmware-binaries"
+
+[unstable]
+build-std = ["core,panic_abort"]

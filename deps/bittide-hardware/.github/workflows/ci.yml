@@ -1,0 +1,894 @@
+# SPDX-FileCopyrightText: 2022 Google LLC
+#
+# SPDX-License-Identifier: Apache-2.0
+
+# Note [Use of `cabal list-bin`]
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+# Several steps below resolve a binary via `$(cabal list-bin pkg:target)` instead of
+# invoking it through `cabal run` (or via the `nix/bin/shake` wrapper, which itself
+# calls `cabal run shake`). The reason is that `cabal run` triggers cabal's planner,
+# which compares the freshly-elaborated `ElaboratedConfiguredPackage` against the one
+# stored in `dist-newstyle/build/.../cache/config`. That stored value records the
+# full `$PATH` (as `extra-prog-path`). Jobs that run without `--ignore-environment`
+# (because `with_vivado.sh` needs basic Ubuntu in `$PATH`) end up with a different
+# `$PATH` than the build job that produced the cache, so the planner reports
+# "configuration changed" for every package and cascades into recompiles.
+# `list-bin` only resolves the path on disk, so it skips the planner entirely.
+
+name: CI
+
+# XXX: What we'd really like is run on every pull request / pull request change,
+#      which allows GitHub to cancel runs after (force) pushes. Triggering on
+#      these seems to be broken since January 19th 2023 however. Note that not
+#      everyone likes auto-cancellation so we should probably recognize [no-skip]
+#      commits.
+on:
+  schedule:
+    # Works out to be approx midnight (CET/CEST) accounting for UTC offset and
+    # GitHub scheduling. See the comment at 'branches-ignore' for more
+    # information on our development flow. This job will run in context of the
+    # branch 'main'.
+    - cron:  '0 19 * * *'
+
+  push:
+      branches-ignore:
+        # Developers request to merge their changes into 'main'. In order to
+        # do so, relatively cheap tests should pass CI. Every night, CI runs our
+        # full test suite on 'main'. If these pass, a pull request may be
+        # created to get 'main' up to date with 'main'. Note that this should
+        # be automated in the future, but this will require some engineering.
+        - 'main'
+
+env:
+  HW_SERVER_URL: hoeve.local:3121
+  S3_PASSWORD: ${{ secrets.S3_PASSWORD }}
+  SYNTHESIS_BOARD: xilinx.com:kcu105:part0:1.7
+  CACHIX_AUTH_TOKEN: ${{ secrets.CACHIX_AUTH_TOKEN }}
+  CARGO_INCREMENTAL: 0
+
+  # See Note [Use of `cabal list-bin`]
+  bittide_cpus_datadir: "${{ github.workspace }}/bittide-cpus/"
+  bittide_datadir: "${{ github.workspace }}/bittide/"
+  bittide_experiments_datadir: "${{ github.workspace }}/bittide-experiments/"
+  bittide_extra_datadir: "${{ github.workspace }}/bittide-extra/"
+  bittide_instances_datadir: "${{ github.workspace }}/bittide-instances/"
+  bittide_shake_datadir: "${{ github.workspace }}/bittide-shake/"
+  gdb_hs_datadir: "${{ github.workspace }}/gdb-hs/"
+  ghc_typelits_extra_lemmas_datadir: "${{ github.workspace }}/ghc-typelits-extra-lemmas/"
+  vivado_hs_datadir: "${{ github.workspace }}/vivado-hs/"
+
+  # Suppress warnings related to locals
+  LC_ALL: C
+  LANG: C
+
+concurrency:
+ group: ${{ github.head_ref || github.run_id }}
+ cancel-in-progress: true
+
+jobs:
+  cachix:
+    name: Populate Cachix cache
+    runs-on: [self-hosted, compute]
+    defaults:
+      run:
+        shell: git-nix-shell {0}
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      options: --memory=15g
+    steps:
+    - uses: actions/checkout@v6
+
+    - name: Generate flake inputs list
+      run: nix flake --extra-experimental-features "nix-command flakes" archive --json | jq -r '.path,(.inputs|to_entries[].value.path)' > flake_inputs
+
+    - name: Push flake inputs to Cachix
+      run: cachix push bittide-hardware < flake_inputs
+
+    - name: Generate dev profile
+      run: nix develop --extra-experimental-features "nix-command flakes" --profile dev -c true
+
+    - name: Push dev profile to Cachix
+      run: cachix push bittide-hardware dev
+
+  lint:
+    name: Basic linting
+    runs-on: [self-hosted, compute]
+    needs: [build]
+
+    defaults:
+      run:
+        shell: git-nix-shell {0}
+
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      options: --memory=15g
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - run: cache clean
+      - run: cache pull cabal
+      - run: cache pull build
+
+      - name: Check formatting issues
+        run: |
+          # TODO: Replace (quick) scripts below with git hooks
+          format
+
+      - name: Check that all self-hosted jobs run in a docker container
+        run: |
+          .github/scripts/self_hosted_docker_check.py
+
+      - name: Check that we don't introduce accidental infinite loops in type checkers
+        run: .github/scripts/check_fconstraint_solver_iterations.sh
+
+      - name: Update Cabal index info
+        run: |
+          if [[ $(cat cache_found) == 0 ]]; then
+            cabal update
+          else
+            echo "Restored cache, no need to update cabal package list"
+          fi
+      - name: Check that cabal.project.freeze is up to date with the cabal.project file
+        run: |
+          cabal freeze
+          git diff --exit-code cabal.project.freeze
+
+      - name: Check that relevant Cabal files have a common header
+        run: .github/scripts/check_consistent_cabal_common.py
+
+      - name: Check that no Cabal or Haskell files use forbidden pragmas
+        run: |
+          FORBIDDEN_PRAGMAS=("RecordWildCards")
+
+          __ensure_pragmas_absent() {
+            local GITROOT
+            local PRAGMA
+            GITROOT="$(git rev-parse --show-toplevel)"
+            for PRAGMA in "${FORBIDDEN_PRAGMAS[@]}"
+            do
+              [ -z "$(rg "\{-# ?LANGUAGE "$PRAGMA" ?#-\}" "$GITROOT")" ] || return 1
+            done
+          }
+
+          __ensure_pragmas_absent
+
+  build:
+    name: Build Haskell+Rust
+    runs-on: [self-hosted, compute]
+    defaults:
+      run:
+        shell: git-nix-shell {0} --ignore-environment
+
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      options: --memory=15g
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set -Werror when _not_ in debug mode
+        run: |
+          .github/scripts/set_werror_flag.sh
+
+      - run: cache clean
+      - run: cache pull cabal --missing-ok --write-cache-found
+      - run: cache pull dist-newstyle --missing-ok
+      - run: cache pull cargo --missing-ok
+
+      - name: Update Cabal index info
+        run: |
+          if [[ $(cat cache_found) == 0 ]]; then
+            cabal update
+          else
+            echo "Restored cache, no need to update cabal package list"
+          fi
+
+      - run: cabal build all |& tee cabal_build_log
+
+      - run: .github/scripts/check_cabal_log.sh cabal_build_log
+
+      - run: ./cargo.sh fetch
+      - run: ./cargo.sh build --frozen --release
+      - run: ./cargo.sh build --frozen
+
+      - run: cache push cabal
+      - run: cache push dist-newstyle
+      - run: cache push cargo
+      - run: cache push build
+
+  generate-control-reports:
+    name: Generate control reports
+    runs-on: [self-hosted, compute]
+    defaults:
+      run:
+        shell: git-nix-shell {0} --ignore-environment --keep GH_TOKEN --keep REPORT_URL --keep REPORT_NAME
+    needs: [
+      bittide-instances-hardware-in-the-loop,
+      bittide-instances-matrices,
+     ]
+    strategy:
+      matrix:
+        target: ${{ fromJson(needs.bittide-instances-matrices.outputs.clock-report) }}
+      fail-fast: false
+
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      options: --memory=15g
+
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REPORT_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+      REPORT_NAME: ${{ matrix.target.top }}-${{ matrix.target.iteration }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - run: cache pull cabal
+      - run: cache pull build
+
+      - name: Download HITL data
+        run: |
+          gh run download ${{ github.run_id }} -p "${{ matrix.target.top }}-${{ matrix.target.iteration }}-hitl-data"
+
+      - name: Generate clock control CSVs
+        run: |
+          # Enable globbing for the `*`s in the next commands
+          set +f
+
+          # Note these aren't necessary to generate the reports, but are useful for debugging
+          cabal run --offline bittide-instances:samples-to csv ${{ matrix.target.top }}-${{ matrix.target.iteration }}-hitl-data/hitl/*/*.bin
+          cabal run --offline bittide-instances:samples-to ppm-csv ${{ matrix.target.top }}-${{ matrix.target.iteration }}-hitl-data/hitl/*/*.bin
+
+      - name: Generate clock control reports
+        run: |
+          cabal run --offline bittide-instances:samples-to multi-report ${{ matrix.target.top }}-${{ matrix.target.iteration }}-hitl-data/hitl
+
+      - name: Upload report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ${{ matrix.target.top }}-${{ matrix.target.iteration }}-clock-report
+          path: |
+            ${{ matrix.target.top }}-${{ matrix.target.iteration }}-hitl-data/hitl/*.pdf
+          retention-days: 14
+
+      - name: Upload sources
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: ${{ matrix.target.top }}-${{ matrix.target.iteration }}-clock-report-sources
+          path: |
+            ${{ matrix.target.top }}-${{ matrix.target.iteration }}-hitl-data/hitl/*/*.json
+            ${{ matrix.target.top }}-${{ matrix.target.iteration }}-hitl-data/hitl/*/*.bin
+            ${{ matrix.target.top }}-${{ matrix.target.iteration }}-hitl-data/hitl/*/*.csv
+          retention-days: 14
+
+  should-run-haskell-tests:
+    name: Decide whether to run Haskell tests
+    runs-on: [self-hosted, compute]
+    defaults:
+      run:
+        shell: git-nix-shell {0}
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      options: --memory=15g
+    outputs:
+      run_tests: ${{ steps.check.outputs.run_tests }}
+    steps:
+      - uses: actions/checkout@v6
+      - id: check
+        name: Check for non-empty debug.json
+        run: |
+          if [[ -f .github/synthesis/debug.json ]]; then
+            if [[ $(jq 'length' .github/synthesis/debug.json) -gt 0 ]]; then
+              echo "Found non-empty debug.json, will skip Haskell tests."
+              echo "run_tests=false" >> "$GITHUB_OUTPUT"
+            else
+              echo "Found empty debug.json, will run Haskell tests."
+              echo "run_tests=true" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            echo "No debug.json found, will run Haskell tests."
+            echo "run_tests=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  haskell-tests:
+    name: HT # Short name because the GitHub UI truncates "long" names..
+    runs-on: [self-hosted, compute]
+    defaults:
+      run:
+        shell: git-nix-shell {0} ${{ matrix.shell_args }}
+    needs: [build, should-run-haskell-tests]
+    if: ${{ needs.should-run-haskell-tests.outputs.run_tests == 'true' }}
+
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      options: --memory=15g
+      volumes:
+        - /opt/tools:/opt/tools
+
+    strategy:
+      matrix:
+        test_suite:
+          - unittests
+          - doctests
+
+        package:
+          - bittide
+          - bittide-experiments
+          - bittide-extra
+          - bittide-instances
+          - gdb-hs
+          - ghc-typelits-extra-lemmas
+
+        shell_args:
+          - --ignore-environment
+
+        with_vivado:
+          - false
+
+        # No tests:
+        # - bittide-shake
+
+        # `vivado-hs` unit tests need to run with Vivado
+        include:
+          - package: vivado-hs
+            test_suite: doctests
+            shell_args: --ignore-environment
+
+          - package: vivado-hs
+            test_suite: unittests
+            with_vivado: true
+
+      fail-fast: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - run: cache pull cabal
+      - run: cache pull build
+
+      - name: Run ${{ matrix.test_suite }} (with Vivado)
+        if: ${{ matrix.with_vivado }}
+        run: |
+          # See Note [Use of `cabal list-bin`].
+          # We need to run with '-j2', because Vivado takes up a lot of memory.
+          .github/scripts/with_vivado.sh \
+            "$(cabal list-bin ${{ matrix.package }}:${{ matrix.test_suite }})" -j2
+
+      - name: Run ${{ matrix.test_suite }}
+        if: ${{ ! matrix.with_vivado }}
+        run: |
+          cabal run --offline ${{ matrix.package }}:${{ matrix.test_suite }}
+
+
+  rust-lints:
+    name: Rust Lints
+    runs-on: [self-hosted, compute]
+    defaults:
+      run:
+        shell: git-nix-shell {0} --ignore-environment
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      options: --memory=15g
+    needs: [build]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - run: cache pull cargo
+      - run: cache pull build
+
+      - name: Rust formatting
+        run: |
+          ./cargo.sh fmt --all -- --check
+
+      - name: Clippy check
+        run: |
+          ./cargo.sh clippy --all-features -- -Dwarnings
+
+  rust-tests:
+    name: Rust Tests
+    runs-on: [self-hosted, compute]
+    defaults:
+      run:
+        shell: git-nix-shell {0} --ignore-environment
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      options: --memory=15g
+    needs: [build]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - run: cache pull cargo
+      - run: cache pull build
+
+      - name: Run Rust tests (debug mode, little endian)
+        run: |
+          cd firmware-support/bittide-hal
+          cargo test --locked
+
+      - name: Run Rust tests (release mode, little endian)
+        run: |
+          cd firmware-support/bittide-hal
+          cargo test --locked --release
+
+  firmware-support-tests:
+    name: Firmware Support Unit Tests
+    runs-on: [self-hosted, compute]
+    defaults:
+      run:
+        shell: git-nix-shell {0} --ignore-environment
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      options: --memory=15g
+    needs: [build]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - run: cache pull cabal
+      - run: cache pull cargo
+      - run: cache pull build
+
+      - name: Running Rust Tests
+        run: |
+          cargo test --all
+        working-directory: firmware-support/
+
+      - name: Running C Native Tests
+        run: |
+          ./run_tests.sh
+        working-directory: firmware-support/bittide-hal-c/
+
+  firmware-limit-checks:
+    name: Firmware Limit Checks
+    runs-on: [self-hosted, compute]
+    defaults:
+      run:
+        shell: git-nix-shell {0} --ignore-environment
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      options: --memory=15g
+    needs: [build]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - run: cache pull cargo
+      - run: cache pull build
+
+      - name: Checking firmware binary limits
+        run: .github/scripts/run_elf_limits_checks.sh
+
+  bittide-instances-matrices:
+    name: bittide-instances matrices generation
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Pick JSON file
+        run: |
+          if [[ "${{ github.event_name }}" == "schedule" || $(.github/scripts/force_expensive_checks.sh) == "true" ]]; then
+            cp .github/synthesis/all.json checks.json
+          elif [[ -f .github/synthesis/debug.json ]]; then
+            cp .github/synthesis/debug.json checks.json
+          else
+            cp .github/synthesis/main.json checks.json
+          fi
+
+      - name: Set HDL matrix
+        id: set-hdl
+        run: |
+          cat checks.json
+          echo "matrix=$(cat checks.json | tr '\n' ' ')" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Set Vivado matrix
+        id: set-vivado
+        run: |
+          # All rows whose stage is something Vivado actually has to do (i.e.
+          # not pure HDL generation). The 'bittide-instances-vivado' job runs
+          # only over these rows.
+          jq '[.[] | select(.stage!="hdl")]' checks.json > checks.vivado.json
+          cat checks.vivado.json
+          echo "matrix=$(cat checks.vivado.json | tr '\n' ' ')" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Set HITL matrix
+        id: set-hitl
+        run: |
+          # Expand each entry by its `repeat` field (default 1), tagging each
+          # expansion with a 1-based `iteration` so downstream jobs can give
+          # repeated runs distinct artifact names.
+          jq '[.[] | select(.stage=="test") | . as $row | ($row.repeat // 1) as $rep | ($rep | tostring | length) as $w | range($rep) | $row + {iteration: ((. + 1) | tostring | (("0" * $w) + .)[-$w:])}]' \
+            checks.json > checks.hitl.json
+          cat checks.hitl.json
+          echo "matrix=$(cat checks.hitl.json | tr '\n' ' ')" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Set clock report matrix
+        id: set-clock-report
+        run: |
+          jq '[.[] | select(.cc_report==true)]' checks.hitl.json > checks.clock-report.json
+          cat checks.clock-report.json
+          echo "matrix=$(cat checks.clock-report.json | tr '\n' ' ')" | tee -a "$GITHUB_OUTPUT"
+
+    outputs:
+      hdl: ${{ steps.set-hdl.outputs.matrix }}
+      vivado: ${{ steps.set-vivado.outputs.matrix }}
+      hitl: ${{ steps.set-hitl.outputs.matrix }}
+      clock-report: ${{ steps.set-clock-report.outputs.matrix }}
+
+  # HDL generation. Mirrors the Build Haskell+Rust job's `--ignore-environment`
+  # discipline so the cabal store / dist-newstyle stay consistent.
+  # See Note [Use of `cabal list-bin`].
+  bittide-instances-hdl:
+    name: hdl
+    runs-on: [self-hosted, compute]
+    defaults:
+      run:
+        shell: git-nix-shell {0} --ignore-environment
+    needs: [build, bittide-instances-matrices]
+
+    strategy:
+      matrix:
+        target: ${{ fromJson(needs.bittide-instances-matrices.outputs.hdl) }}
+      fail-fast: false
+
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      options: --memory=15g
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Determine whether HDL generation should run
+        id: check_hdl_gen_status
+        run: |
+          cache pull clash --prefix="${{ matrix.target.top }}" --missing-ok --write-cache-found
+
+          if [[ $(cat cache_found) == 0 ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Pull caches (if HDL generation should run)
+        if: ${{ steps.check_hdl_gen_status.outputs.should_run == 'true'  }}
+        run: |
+          cache pull cabal
+          cache pull cargo
+          cache pull build
+
+      - name: HDL generation
+        if: ${{ steps.check_hdl_gen_status.outputs.should_run == 'true'  }}
+        run: |
+          shake ${{ matrix.target.top }}:hdl
+          cache push clash --prefix="${{ matrix.target.top }}"
+
+      - name: Create non-empty vivado directory
+        if: ${{ matrix.target.stage == 'hdl' }}
+        run: |
+          # Workaround for https://github.com/bittide/bittide-hardware/issues/523
+          mkdir -p _build/vivado
+          touch _build/vivado/workaround-issue-523
+
+      # For stage=hdl rows, no Vivado job runs after this, so we must push
+      # build-post-synth here so 'artifacts' has something to fetch. For other stages,
+      # the Vivado job pushes build-post-synth itself, so skip here.
+      - name: cache push build-post-synth (hdl-only rows)
+        if: ${{ matrix.target.stage == 'hdl' }}
+        run: cache push build-post-synth --prefix="${{ matrix.target.top }}"
+
+      - name: Archive build artifacts (if anything failed)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: _build-${{ matrix.target.top }}-failure-hdl
+          path: |
+            _build/clash
+
+  # Vivado synthesis / place-and-route / bitstream. Runs without
+  # `--ignore-environment` because `with_vivado.sh` needs basic Ubuntu in $PATH.
+  # See Note [Use of `cabal list-bin`].
+  bittide-instances-vivado:
+    name: vivado
+    runs-on: [self-hosted, compute]
+    defaults:
+      run:
+        # We leave out '--ignore-environment', as 'with_vivado.sh' relies on basic Ubuntu
+        shell: git-nix-shell {0}
+    needs: [bittide-instances-hdl, bittide-instances-matrices]
+
+    strategy:
+      matrix:
+        target: ${{ fromJson(needs.bittide-instances-matrices.outputs.vivado) }}
+      fail-fast: false
+
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      volumes:
+        - /opt/tools:/opt/tools
+      options: --init --mac-address="6c:5a:b0:6c:13:0b" --memory=15g
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Pull HDL artifacts (clash cache)
+        run: cache pull clash --prefix="${{ matrix.target.top }}"
+
+      # We need the cabal store / dist-newstyle so that `cabal list-bin` can resolve
+      # the `shake` binary path; see Note [Use of `cabal list-bin`]. We also need
+      # cargo because shake's `:test` rule shells out to `cargo build` for the
+      # firmware binaries.
+      - run: cache pull cabal
+      - run: cache pull cargo
+      - run: cache pull build
+
+      - name: Determine whether synthesis should run
+        id: check_synthesis_status
+        run: |
+          target="${{ matrix.target.stage }}"
+
+          # Only the local runner connected to the bittide demonstrator (hoeve)
+          # should perform the jobs which need hardware access. And that runner
+          # should do only that, so we let other 'compute' runners do the
+          # bitstream generation.
+          if [[ "${target}" == "test" ]]; then
+            target="bitstream"
+          fi
+
+          if [[ "${target}" == "program" ]]; then
+            echo "Illegal Shake target on CI: program"
+            exit 1
+          fi
+
+          cache pull synth --prefix="${{ matrix.target.top }}-${target}" --missing-ok --write-cache-found
+          if [[ $(cat cache_found) == 0 ]]; then
+            echo "should_run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "should_run=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Synthesis
+        if: ${{ steps.check_synthesis_status.outputs.should_run == 'true'  }}
+        run: |
+          target="${{ matrix.target.stage }}"
+
+          # Only the local runner connected to the bittide demonstrator (hoeve)
+          # should perform the jobs which need hardware access. And that runner
+          # should do only that, so we let other 'compute' runners do the
+          # bitstream generation.
+          if [[ "${target}" == "test" ]]; then
+            target="bitstream"
+          fi
+
+          export VIVADO_HS_LOG_DIR="$(git rev-parse --show-toplevel)/_build/hitl/vivado-gensynth/"
+          if [[ ! -d "${VIVADO_HS_LOG_DIR} " ]]; then
+            mkdir -p "${VIVADO_HS_LOG_DIR}"
+          fi
+          # See Note [Use of `cabal list-bin`].
+          shake_bin="$(cabal list-bin bittide-shake:shake)"
+          .github/scripts/with_vivado.sh \
+            "${shake_bin}" ${{ matrix.target.top }}:"${target}"
+
+          # Pushing synthesis results to cache
+          cache push synth --prefix="${{ matrix.target.top }}-${target}"
+
+      - name: cache push build-post-synth
+        run: cache push build-post-synth --prefix="${{ matrix.target.top }}"
+
+      - name: Archive build artifacts (if anything failed)
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: _build-${{ matrix.target.top }}-failure-vivado
+          path: |
+            _build/clash
+            _build/vivado
+            !_build/vivado/*/ip
+
+  bittide-instances-publish-artifacts:
+    name: artifacts
+    runs-on: [self-hosted, compute]
+    needs: [bittide-instances-hdl, bittide-instances-vivado, bittide-instances-matrices]
+    defaults:
+      run:
+        shell: git-nix-shell {0} --ignore-environment
+
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      options: --memory=15g
+
+    strategy:
+      matrix:
+        target: ${{ fromJson(needs.bittide-instances-matrices.outputs.hdl) }}
+      fail-fast: false
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Get build artifacts from local server
+        run: cache pull build-post-synth --prefix="${{ matrix.target.top }}"
+
+      - name: Archive build artifacts
+        uses: actions/upload-artifact@v7
+        if: ${{ !cancelled() }}
+        with:
+          name: _build-${{ matrix.target.top }}
+          # We don't pack `ip`, as it is generally useless for debugging while
+          # also taking up a lot of space.
+          path: |
+            _build/clash
+            _build/vivado
+            !_build/vivado/*/ip
+          retention-days: 14
+
+  bittide-instances-hardware-in-the-loop:
+    name: HITL
+    runs-on: [self-hosted, hardware-access]
+    defaults:
+      run:
+        # We leave out '--ignore-environment', as 'with_vivado.sh' relies on basic Ubuntu
+        shell: git-nix-shell {0}
+    needs: [bittide-instances-vivado, bittide-instances-matrices]
+
+    strategy:
+      matrix:
+        target: ${{ fromJson(needs.bittide-instances-matrices.outputs.hitl) }}
+      fail-fast: false
+
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      volumes:
+        - /opt/tools:/opt/tools
+        - /dev:/dev
+      ports:
+        - 1234:1234
+
+      # XXX: User '1001' corresponds to 'bittide' on Linux installation that has
+      #      access to the hardware. We need to set this, lest Docker will write
+      #      files as 'root' and the runner software will be unable to run
+      #      cleaning jobs.
+      options: >-
+        --memory=15g
+        --userns host
+        --privileged
+        --user 1001:1001
+        --group-add plugdev
+        --group-add dialout
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - run: cache pull cabal
+      - run: cache pull cargo
+      - run: cache pull build
+      - name: cache pull build-post-synth
+        run: cache pull build-post-synth --prefix="${{ matrix.target.top }}"
+
+      - name: Run tests on hardware
+        run: |
+          export VIVADO_HS_LOG_DIR="$(git rev-parse --show-toplevel)/_build/hitl/vivado-run-${{ matrix.target.iteration }}/"
+          if [[ ! -d "${VIVADO_HS_LOG_DIR} " ]]; then
+            mkdir -p "${VIVADO_HS_LOG_DIR}"
+          fi
+          # See Note [Use of `cabal list-bin`].
+          shake_bin="$(cabal list-bin bittide-shake:shake)"
+          .github/scripts/with_vivado.sh \
+            "${shake_bin}" ${{ matrix.target.top }}:test
+
+      - name: Archive HITL data
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.target.top }}-${{ matrix.target.iteration }}-hitl-data
+          path: |
+            _build/vivado/*/ila-data
+            _build/hitl/*
+          overwrite: true
+          retention-days: 14
+
+  mdbook:
+    name: Build and publish mdBook
+    runs-on: [self-hosted, compute]
+    defaults:
+      run:
+        shell: git-nix-shell {0} --ignore-environment
+    container:
+      image: ghcr.io/clash-lang/nixos-bittide-hardware:2026-05-11
+      options: --memory=15g
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Build mdBook
+        run: |
+          cd docs
+          mdbook build
+
+      - name: Upload book artifact
+        uses: actions/upload-artifact@v7
+        with:
+          path: _build/book
+
+      # Deployment: see .github/workflows/deploy-documentation.yml
+
+  notify-slack:
+    name: Notify Slack on scheduled failure
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    needs: [all]
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Post failure notification to Slack
+        uses: slackapi/slack-github-action@v3.0.3
+        with:
+          method: chat.postMessage
+          token: ${{ secrets.SLACK_BOT_TOKEN }}
+          payload: |
+            channel: ${{ secrets.SLACK_CHANNEL_ID }}
+            text: "Nightly CI failed on `${{ github.ref_name }}`: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            blocks:
+              - type: "section"
+                text:
+                  type: "mrkdwn"
+                  text: "*Nightly CI failed* on `${{ github.ref_name }}` (commit `${{ github.sha }}`)\n<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|View run>"
+
+  fail-on-debug:
+    name: Fail on debug
+    runs-on: ubuntu-slim
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Check if 'debug.json' is present
+        run: |
+          # If this is a debug run, always fail. We never want this to be merged.
+          if [[ -f .github/synthesis/debug.json ]]; then
+            echo "This is a debug run, which may never succeed. Remove '.github/synthesis/debug.json' before trying to merge."
+            exit 1
+          fi
+
+  all:
+    name: All jobs finished
+    if: ${{ !cancelled() }}
+    needs: [
+        bittide-instances-hardware-in-the-loop,
+        bittide-instances-hdl,
+        bittide-instances-matrices,
+        bittide-instances-publish-artifacts,
+        bittide-instances-vivado,
+        build,
+        cachix,
+        fail-on-debug,
+        firmware-limit-checks,
+        firmware-support-tests,
+        generate-control-reports,
+        haskell-tests,
+        rust-tests,
+        lint,
+        mdbook,
+        rust-lints,
+        should-run-haskell-tests,
+      ]
+    runs-on: ubuntu-slim
+    steps:
+      - uses: actions/checkout@v6
+      - uses: clash-lang/all-jobs-ok@v2
+        with:
+          needs: ${{ toJSON(needs) }}
+          exclude: |
+            notify-slack

@@ -11,7 +11,19 @@ cabal.project.local*
 # Clash compiler debug output
 .clash/
 
-# Local dependency checkouts used for dogfooding this plugin on real designs.
-# Deliberately absent from main: the two `dogfood/*` branches vendor the
-# instrumented sources they need (see each branch's README).
-/deps/
+# Dogfooding checkouts. This branch (dogfood/bittide) vendors exactly ONE:
+# the instrumented bittide-hardware tree. Every other dependency is consumed
+# from its pristine upstream pin, so the sibling checkouts stay ignored here —
+# the dogfood/deps branch is where those get vendored.
+/deps/.gitdirs/
+/deps/circuit-notation/
+/deps/clash-protocols/
+/deps/clash-protocols-memmap/
+/deps/clash-cores/
+
+# Generated waveforms: regenerate with the commands in deps/README.md rather
+# than committing megabytes of VCD.
+waveforms/
+
+# Local-only nix/devenv shim that leaks into the checkout.
+/deps/bittide-hardware/devenv.sh

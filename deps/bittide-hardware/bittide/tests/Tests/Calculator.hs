@@ -1,0 +1,59 @@
+-- SPDX-FileCopyrightText: 2025 Google LLC
+--
+-- SPDX-License-Identifier: Apache-2.0
+{-# LANGUAGE OverloadedLists #-}
+
+module Tests.Calculator where
+
+import Clash.Prelude hiding (indices)
+
+import Bittide.Calculator
+
+import Test.Tasty (TestTree, defaultMain)
+import Test.Tasty.HUnit (Assertion, testCase, (@?=))
+import Test.Tasty.TH (testGroupGenerator)
+
+type NumNodes = 3
+
+{- FOURMOLU_DISABLE -} -- data / tabular format
+parts :: Vec NumNodes (Vec (NumNodes - 1) (Int, Int))
+parts =
+    ((1, 0) :> (3, 4) :> Nil)
+ :> ((3, 1) :> (4, 6) :> Nil)
+ :> ((5, 2) :> (5, 8) :> Nil)
+ :> Nil
+
+indices :: Vec NumNodes (Vec (NumNodes - 1) Int)
+indices =
+    (0 :> 1 :> Nil)
+ :> (2 :> 3 :> Nil)
+ :> (4 :> 5 :> Nil)
+ :> Nil
+
+fpgaSetup :: Vec NumNodes (String, Vec (NumNodes - 1) (Index NumNodes))
+fpgaSetup =
+     ("A", 1 :> 2 :> Nil)
+  :> ("B", 2 :> 0 :> Nil)
+  :> ("C", 0 :> 1 :> Nil)
+  :> Nil
+{- FOURMOLU_ENABLE -}
+
+case_toFpgaIndexed :: Assertion
+case_toFpgaIndexed = toFpgaIndexed fpgaSetup indices @?= expected
+ where
+  expected = [(1, 0), (2, 1)] :> [(2, 2), (0, 3)] :> [(0, 4), (1, 5)] :> Nil
+
+internalSwitchDelay :: Int
+internalSwitchDelay = 4
+
+case_toCounterMap :: Assertion
+case_toCounterMap =
+  toCounterMap internalSwitchDelay (toFpgaIndexed fpgaSetup parts) @?= expected
+ where
+  expected = [(1, 2), (2, 7)] :> [(0, 5), (2, 1)] :> [(0, 3), (1, 6)] :> Nil
+
+tests :: TestTree
+tests = $(testGroupGenerator)
+
+main :: IO ()
+main = defaultMain tests

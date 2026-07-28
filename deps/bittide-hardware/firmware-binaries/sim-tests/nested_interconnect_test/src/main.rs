@@ -1,0 +1,113 @@
+#![no_std]
+#![cfg_attr(not(test), no_main)]
+#![allow(const_item_mutation)]
+
+// SPDX-FileCopyrightText: 2025 Google LLC
+//
+// SPDX-License-Identifier: Apache-2.0
+
+use bittide_hal::hals::nested_interconnect as hal;
+use clash_macros::unsigned;
+use ufmt::{uwrite, uwriteln};
+
+use core::fmt::Write;
+#[cfg(not(test))]
+use riscv_rt::entry;
+
+const INSTANCES: hal::DeviceInstances = unsafe { hal::DeviceInstances::new() };
+
+fn test_result(result: &str) -> ! {
+    let uart = &mut INSTANCES.uart;
+    uwriteln!(uart, "RESULT: {}", result).unwrap();
+    loop {
+        continue;
+    }
+}
+
+fn test_ok() -> ! {
+    test_result("OK")
+}
+
+fn test_fail(msg: &str) -> ! {
+    let mut full_msg = heapless::String::<150>::new();
+    write!(full_msg, "FAIL: {msg}").unwrap();
+    test_result(&full_msg)
+}
+
+fn expect<T: ufmt::uDebug + PartialEq>(msg: &str, expected: T, actual: T) {
+    if expected != actual {
+        let mut err = heapless::String::<150>::new();
+        uwrite!(err, "{}: expected {:?}, got {:?}", msg, expected, actual).unwrap();
+        test_fail(&err);
+    }
+}
+
+#[cfg_attr(not(test), entry)]
+fn main() -> ! {
+    // Test data: (status_value, control_value) for each peripheral
+    let test_values = [
+        (0x12345678u32, 0xABCDEF01u32),
+        (0xDEADBEEFu32, 0xCAFEBABEu32),
+        (0x55AA55AAu32, 0xAA55AA55u32),
+    ];
+
+    // Get mutable references to all peripherals
+    let mut peripherals = [
+        &mut INSTANCES.unnested_peripherals_0,
+        &mut INSTANCES.unnested_peripherals_1,
+        &mut INSTANCES.unnested_peripherals_2,
+        &mut INSTANCES.l1_nested_peripherals_0,
+        &mut INSTANCES.l1_nested_peripherals_1,
+        &mut INSTANCES.l1_nested_peripherals_2,
+        &mut INSTANCES.l2_nested_peripherals_0,
+        &mut INSTANCES.l2_nested_peripherals_1,
+        &mut INSTANCES.l2_nested_peripherals_2,
+    ];
+
+    // Test each peripheral
+    for (i, (peripheral, (status_val, control_val))) in
+        peripherals.iter_mut().zip(test_values.iter()).enumerate()
+    {
+        let mut name_buf = heapless::String::<50>::new();
+
+        // Read initial values (should be 0)
+        write!(name_buf, "peripheral{i}.status.init").unwrap();
+        expect(&name_buf, 0u32, peripheral.status().into_inner());
+        name_buf.clear();
+
+        write!(name_buf, "peripheral{i}.control.init").unwrap();
+        expect(&name_buf, 0u32, peripheral.control().into_inner());
+        name_buf.clear();
+
+        // Write and read back status
+        peripheral.set_status(unsigned!(*status_val, n = 32));
+        write!(name_buf, "peripheral{i}.status.readback").unwrap();
+        expect(&name_buf, *status_val, peripheral.status().into_inner());
+        name_buf.clear();
+
+        // Write and read back control
+        peripheral.set_control(unsigned!(*control_val, n = 32));
+        write!(name_buf, "peripheral{i}.control.readback").unwrap();
+        expect(&name_buf, *control_val, peripheral.control().into_inner());
+    }
+
+    // Verify all peripherals are still accessible
+    for (i, (peripheral, (status_val, _))) in
+        peripherals.iter_mut().zip(test_values.iter()).enumerate()
+    {
+        let mut name_buf = heapless::String::<50>::new();
+        write!(name_buf, "peripheral{i}.status.final").unwrap();
+        expect(&name_buf, *status_val, peripheral.status().into_inner());
+    }
+
+    test_ok()
+}
+
+#[panic_handler]
+fn panic_handler(_info: &core::panic::PanicInfo) -> ! {
+    let uart = unsafe { &mut hal::DeviceInstances::new().uart };
+    uwriteln!(uart, "RESULT: PANIC").unwrap();
+    loop {
+        continue;
+    }
+}

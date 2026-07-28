@@ -1,0 +1,115 @@
+cabal-version: 3.8
+name: vivado-hs
+version: 0.1.0.0
+synopsis: Haskell wrapper around Vivado TCL
+homepage: https://github.com/bittide/bittide
+license: Apache-2.0
+license-file: LICENSE
+author: QBayLogic B.V.
+maintainer: devops@qbaylogic.com
+copyright: Google LLC
+category: Development
+build-type: Simple
+
+common common-options
+  default-extensions:
+    -- TemplateHaskell is used to support convenience functions such as
+    -- 'listToVecTH' and 'bLit'.
+    BangPatterns
+    BinaryLiterals
+    ConstraintKinds
+    DataKinds
+    DefaultSignatures
+    DeriveAnyClass
+    DeriveDataTypeable
+    DeriveFoldable
+    DeriveFunctor
+    DeriveGeneric
+    DeriveLift
+    DeriveTraversable
+    DerivingStrategies
+    ImplicitParams
+    InstanceSigs
+    KindSignatures
+    LambdaCase
+    NoStarIsType
+    OverloadedRecordDot
+    PolyKinds
+    QuasiQuotes
+    RankNTypes
+    ScopedTypeVariables
+    StandaloneDeriving
+    TemplateHaskell
+    TupleSections
+    TypeApplications
+    TypeFamilies
+    TypeOperators
+    ViewPatterns
+
+  ghc-options:
+    -Wall
+    -Wcompat
+
+library
+  import: common-options
+  exposed-modules:
+    Vivado
+    Vivado.Tcl
+    Vivado.VivadoM
+
+  other-modules:
+    Vivado.Internal
+
+  build-depends:
+    base,
+    containers,
+    deepseq,
+    exceptions,
+    extra,
+    mtl,
+    process,
+    string-interpolate,
+    temporary,
+
+  hs-source-dirs: src
+  default-language: GHC2021
+
+test-suite unittests
+  import: common-options
+  type: exitcode-stdio-1.0
+  main-is: unittests.hs
+  other-modules:
+    Tests.Vivado
+
+  build-depends:
+    async,
+    base,
+    tasty,
+    tasty-hunit,
+    tasty-th,
+    vivado-hs,
+
+  ghc-options:
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
+
+  hs-source-dirs: tests
+  default-language: GHC2021
+
+test-suite doctests
+  type: exitcode-stdio-1.0
+  default-language: Haskell2010
+  main-is: doctests.hs
+  ghc-options:
+    -Wall
+    -Wcompat
+    -threaded
+
+  hs-source-dirs: tests
+  build-depends:
+    base,
+    doctest-parallel >=0.3.0.1,
+    filepath,
+    vivado-hs,
+    word8,

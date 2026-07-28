@@ -1,0 +1,352 @@
+cabal-version: 3.8
+name: bittide
+synopsis:
+  Bittide hardware descriptions, which should be
+  target independent, loosely connected / standalone
+
+version: 0.1
+license: Apache-2.0
+license-file: LICENSE
+author: QBayLogic B.V.
+maintainer: devops@qbaylogic.com
+copyright: Copyright © 2022-2024 Google LLC
+data-files:
+  data/clock_configs/*.csv
+
+-- One day we'll be able to replace this by 'default-language: GHC2024' and
+-- disabling a few extensions :)
+common ghc2024
+  default-extensions:
+    -- GHC2024, excluding:
+    -- ImplicitPrelude:          We want Clash.Prelude
+    -- ImplicitStagePersistence: Not a thing yet in the GHC we use
+    -- ImportQualifiedPost:      Okay on its own, but trips up fourmolu
+    -- StarIsType:               We want '*' to mean multiplication on type level
+    BangPatterns
+    BinaryLiterals
+    ConstrainedClassMethods
+    ConstraintKinds
+    DataKinds
+    DeriveDataTypeable
+    DeriveFoldable
+    DeriveFunctor
+    DeriveGeneric
+    DeriveLift
+    DeriveTraversable
+    DerivingStrategies
+    DisambiguateRecordFields
+    DoAndIfThenElse
+    EmptyCase
+    EmptyDataDecls
+    EmptyDataDeriving
+    ExistentialQuantification
+    ExplicitForAll
+    ExplicitNamespaces
+    FieldSelectors
+    FlexibleContexts
+    FlexibleInstances
+    ForeignFunctionInterface
+    GADTSyntax
+    GADTs
+    GeneralisedNewtypeDeriving
+    HexFloatLiterals
+    InstanceSigs
+    KindSignatures
+    LambdaCase
+    MonoLocalBinds
+    MonomorphismRestriction
+    MultiParamTypeClasses
+    NamedFieldPuns
+    NamedWildCards
+    NumericUnderscores
+    PatternGuards
+    PolyKinds
+    PostfixOperators
+    RankNTypes
+    RelaxedPolyRec
+    RoleAnnotations
+    ScopedTypeVariables
+    StandaloneDeriving
+    StandaloneKindSignatures
+    TraditionalRecordSyntax
+    TupleSections
+    TypeApplications
+    TypeOperators
+    TypeSynonymInstances
+
+common clash
+  -- TemplateHaskell is used to support convenience functions such as
+  -- 'listToVecTH' and 'bLit'.
+  --
+  -- `NoImplicitPrelude` is used because Clash offers Clash.Prelude
+  default-extensions:
+    NoImplicitPrelude
+    NoStarIsType
+    QuasiQuotes
+    TemplateHaskell
+
+  ghc-options:
+    -- Plugins to support type-level constraint solving on naturals:
+    --   - GHC.TypeLits.Extra.Solver
+    --   - GHC.TypeLits.Normalise
+    --   - GHC.TypeLits.KnownNat.Solver
+    --
+    -- Clash needs access to the source code in compiled modules:
+    --   -fexpose-all-unfoldings
+    --
+    -- Worker wrappers introduce unstable names for functions that might have
+    -- blackboxes attached for them. You can disable this, but be sure to add
+    -- a no-specialize pragma to every function with a blackbox.
+    --   -fno-worker-wrapper
+    --
+    -- Strict annotations - while sometimes preventing space leaks - trigger
+    -- optimizations Clash can't deal with. See:
+    --
+    --    https://github.com/clash-lang/clash-compiler/issues/2361
+    --
+    -- These flags disables the optimization:
+    --   -fno-unbox-small-strict-fields
+    --   -fno-unbox-strict-fields
+    -Wall
+    -Wcompat
+    -fplugin=GHC.TypeLits.Extra.Solver
+    -fplugin=GHC.TypeLits.Normalise
+    -fplugin=GHC.TypeLits.KnownNat.Solver
+    -fplugin=Protocols.Plugin
+    -- Auto-instrumentation for simulation waveforms: no-op for modules
+    -- without HasCircuitContext/HasProbe signatures (opt-in is by
+    -- signature, not by module).
+    -fplugin=Clash.CircuitContext.Plugin
+    -fconstraint-solver-iterations=20
+    -fexpose-all-unfoldings
+    -fno-worker-wrapper
+    -fno-unbox-small-strict-fields
+    -fno-unbox-strict-fields
+
+  build-depends:
+    clash-protocols,
+    ghc-typelits-extra >=0.4.4,
+    ghc-typelits-knownnat >=0.7.7,
+    ghc-typelits-natnormalise >=0.7.7,
+
+common extra
+  default-extensions:
+    DefaultSignatures
+    DeriveAnyClass
+    ImplicitParams
+    OverloadedRecordDot
+    TypeFamilies
+    ViewPatterns
+
+  ghc-options:
+    -Wall
+    -Wcompat
+
+common sane-records
+  default-extensions:
+    DisambiguateRecordFields
+    DuplicateRecordFields
+    NamedFieldPuns
+    NoFieldSelectors
+    OverloadedRecordDot
+
+library
+  import: ghc2024, clash, extra, sane-records
+  hs-source-dirs: src
+  build-depends:
+    Cabal >=3.12.1.0,
+    aeson,
+    array,
+    base,
+    binary,
+    bittide-cpus,
+    bittide-extra,
+    bytestring,
+    cassava,
+    clash-bitpackc,
+    clash-circuit-context,
+    clash-cores,
+    clash-lib,
+    clash-prelude >=1.10 && <1.12,
+    clash-protocols,
+    clash-protocols-memmap,
+    clash-vexriscv,
+    constraints >=0.13.3 && <0.15,
+    containers,
+    deepseq,
+    directory,
+    elf,
+    exceptions,
+    extra,
+    filepath,
+    ghc-typelits-extra-lemmas,
+    infinite-list,
+    mtl,
+    pretty-show,
+    process,
+    random,
+    string-interpolate ^>=0.3,
+    template-haskell,
+    text,
+
+  exposed-modules:
+    Bittide.Arithmetic.PartsPer
+    Bittide.Arithmetic.Time
+    Bittide.Axi4
+    Bittide.Axi4.Internal
+    Bittide.BitView
+    Bittide.BootPe
+    Bittide.Calculator
+    Bittide.CaptureUgn
+    Bittide.ClockControl
+    Bittide.ClockControl.Callisto.Types
+    Bittide.ClockControl.Callisto.Util
+    Bittide.ClockControl.CallistoSw
+    Bittide.ClockControl.Config
+    Bittide.ClockControl.Freeze
+    Bittide.ClockControl.ParseRegisters
+    Bittide.ClockControl.Registers
+    Bittide.ClockControl.Si5391A
+    Bittide.ClockControl.Si5395J
+    Bittide.ClockControl.Si539xSpi
+    Bittide.ClockControl.Topology
+    Bittide.ClockControl.Topology.LinkMasks
+    Bittide.Counter
+    Bittide.Df
+    Bittide.DoubleBufferedRam
+    Bittide.ElasticBuffer
+    Bittide.ElasticBuffer.AutoCenter
+    Bittide.Ethernet.Mac
+    Bittide.Handshake
+    Bittide.Jtag
+    Bittide.PacketStream
+    Bittide.ProcessingElement
+    Bittide.ProcessingElement.DeviceTreeCompiler
+    Bittide.ProcessingElement.ReadElf
+    Bittide.ProcessingElement.Util
+    Bittide.ProgrammableMux
+    Bittide.RingBuffer
+    Bittide.SharedTypes
+    Bittide.Shutter
+    Bittide.Sync
+    Bittide.Transceiver
+    Bittide.Transceiver.Cdc
+    Bittide.Transceiver.Comma
+    Bittide.Transceiver.Prbs
+    Bittide.Transceiver.ResetManager
+    Bittide.Transceiver.Wishbone
+    Bittide.Transceiver.WordAlign
+    Bittide.WireDemoProcessingElement
+    Bittide.Wishbone
+    Clash.Cores.Extra
+    Clash.Cores.UART.Extra
+    Clash.Cores.Xilinx.Ddr4
+    Clash.Cores.Xilinx.Gth
+    Clash.Cores.Xilinx.Gth.Internal
+    Clash.Cores.Xilinx.SystemMonitor
+    Clash.Cores.Xilinx.Xpm.Cdc.Handshake.Extra
+    Clash.Explicit.Reset.Extra
+    Clash.Functor.Extra
+    Clash.Sized.Extra
+    Data.Constraint.Nat.Extra
+    Project.FilePath
+    System.IO.Temp.Extra
+
+  other-modules:
+    Paths_bittide
+
+  autogen-modules:
+    Paths_bittide
+
+test-suite doctests
+  type: exitcode-stdio-1.0
+  default-language: Haskell2010
+  main-is: doctests.hs
+  ghc-options:
+    -Wall
+    -Wcompat
+    -threaded
+
+  hs-source-dirs: tests
+  build-depends:
+    base,
+    bittide,
+    doctest-parallel >=0.3.0.1,
+    filepath,
+    word8,
+
+test-suite unittests
+  import: ghc2024, clash, extra, sane-records
+  hs-source-dirs: tests
+  type: exitcode-stdio-1.0
+  main-is: UnitTests.hs
+  ghc-options:
+    -Wall
+    -Wcompat
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N12
+
+  other-modules:
+    Tests.Axi4
+    Tests.Axi4.Generators
+    Tests.Axi4.Properties
+    Tests.Axi4.Types
+    Tests.Bench
+    Tests.BitView
+    Tests.Calculator
+    Tests.CaptureUgn
+    Tests.Clash.Protocols.Wishbone.Extra
+    Tests.ClockControl.Freeze
+    Tests.ClockControl.Si539xSpi
+    Tests.Counter
+    Tests.DelayWishbone
+    Tests.Df
+    Tests.DoubleBufferedRam
+    Tests.ElasticBuffer
+    Tests.Handshake
+    Tests.ProcessingElement.ReadElf
+    Tests.ProgrammableMux
+    Tests.Shared
+    Tests.Transceiver
+    Tests.Transceiver.Prbs
+    Tests.Transceiver.WordAlign
+    Tests.Waveform
+    Tests.WireDemoProcessingElement
+    Tests.Wishbone
+    Tests.Wishbone.Arbiter
+    Tests.Wishbone.Utils
+
+  build-depends:
+    HUnit,
+    base,
+    bittide,
+    bittide-extra,
+    bytestring,
+    clash-bitpackc,
+    clash-circuit-context,
+    clash-cores,
+    clash-lib,
+    clash-prelude,
+    clash-prelude-hedgehog,
+    clash-protocols,
+    clash-protocols-memmap,
+    constraints >=0.13.3 && <0.15,
+    containers,
+    deepseq,
+    directory,
+    elf,
+    extra,
+    filepath,
+    ghc-typelits-extra-lemmas,
+    hedgehog >=1.0 && <1.5,
+    lifted-async,
+    pretty-show,
+    string-interpolate,
+    tasty >=1.5 && <1.7,
+    tasty-expected-failure,
+    tasty-hedgehog >=1.2 && <1.5,
+    tasty-hunit,
+    tasty-th,
+    template-haskell,
+    text,

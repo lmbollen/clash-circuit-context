@@ -1,0 +1,177 @@
+-- SPDX-FileCopyrightText: 2024 Google LLC
+--
+-- SPDX-License-Identifier: Apache-2.0
+
+module Bittide.Instances.Hitl.Driver.VexRiscvTcp where
+
+import Prelude
+
+import Bittide.Hitl
+import Bittide.Instances.Hitl.Utils.Program
+import Bittide.Instances.Hitl.Utils.Usb (resetUsbDeviceByLocation)
+
+import Control.Concurrent
+import Control.Concurrent.Async
+import Control.Exception (SomeException (..), catch)
+import Control.Monad.Catch (throwM)
+import Control.Monad.IO.Class
+import Data.Time
+import Data.Time.Clock.POSIX
+import Project.FilePath
+import Project.Handle
+import System.Directory
+import System.Exit
+import System.FilePath
+import System.IO
+import Test.Tasty.HUnit
+
+import Vivado.Tcl
+import Vivado.VivadoM
+
+import qualified Bittide.Instances.Hitl.Utils.Driver as D
+import qualified Bittide.Instances.Hitl.Utils.OpenOcd as Ocd
+import qualified Bittide.Instances.Hitl.Utils.Serial as Serial
+import qualified Data.ByteString.Lazy as BS
+import qualified Gdb
+import qualified Network.Simple.TCP as NS
+import qualified Streaming.ByteString as SBS
+import qualified System.Timeout.Extra as T
+
+-- | Directory to dump TCP data sent by clients
+tcpDataDir :: FilePath
+tcpDataDir = buildDir </> "data" </> "tcp"
+
+withServer :: ((NS.Socket, NS.SockAddr) -> IO a) -> IO a
+withServer = NS.listen NS.HostAny "1234"
+
+startServer :: IO (NS.Socket, NS.SockAddr)
+startServer = do
+  (serverSock, serverAddr) <- NS.bindSock (NS.Host "0.0.0.0") "1234"
+  putStrLn $ "Listening for connections on " <> show serverAddr
+  NS.listenSock serverSock 2048
+  pure (serverSock, serverAddr)
+
+waitForClients :: Int -> NS.Socket -> IO [(NS.Socket, NS.SockAddr)]
+waitForClients numberOfClients serverSock = do
+  mapM
+    ( \i ->
+        NS.accept
+          serverSock
+          ( \(clientSock, clientAddr) -> do
+              putStrLn $ show i <> " | Connection established from: " ++ show clientAddr
+              pure (clientSock, clientAddr)
+          )
+    )
+    [1 .. numberOfClients]
+
+driverFunc ::
+  String ->
+  [(HwTarget, DeviceInfo)] ->
+  VivadoM ExitCode
+driverFunc _name [d@(_, dI)] = do
+  projectDir <- liftIO $ findParentContaining "cabal.project"
+
+  let
+    hitlDir = projectDir </> "_build" </> "hitl"
+    mkLogPath str = (hitlDir </> str <> ".log")
+    ocdOutLog = mkLogPath "openocd-stdout"
+    ocdErrLog = mkLogPath "openocd-stderr"
+    gdbOutLog = mkLogPath "gdb-out.log"
+    openocdEnv = [("OPENOCD_STDOUT_LOG", ocdOutLog), ("OPENOCD_STDERR_LOG", ocdErrLog)]
+
+  D.assertProbe "probe_test_start" d
+
+  -- Reset USB adapter, see documentation of "Bittide.Instances.Hitl.Utils.Usb"
+  liftIO $ resetUsbDeviceByLocation dI.usbAdapterLocation
+
+  Ocd.withOpenOcdWithEnv openocdEnv dI.usbAdapterLocation 3333 6666 4444 $ \ocd -> do
+    liftIO $ do
+      hSetBuffering ocd.stderrHandle LineBuffering
+      putStr "Waiting for OpenOCD to halt..."
+      expectLine_ ocd.stderrHandle Ocd.waitForInitComplete
+      putStrLn "  Done"
+
+      putStrLn "Opening serial port..."
+    Serial.withSerial dI.serial Serial.defaultBaud $ \serialHandle -> do
+      liftIO $ hSetBuffering serialHandle.handle LineBuffering
+
+      liftIO $ putStrLn "Starting GDB..."
+      Gdb.withGdb $ \gdb -> do
+        liftIO $ do
+          Gdb.setLogging gdb gdbOutLog
+          Gdb.setFile gdb $ firmwareBinariesDir "riscv32imc" Release </> "smoltcp_client"
+          Gdb.setTarget gdb 3333
+          assertEither =<< Gdb.loadBinary gdb
+          Gdb.setBreakpoints
+            gdb
+            [ "core::panicking::panic"
+            , "ExceptionHandler"
+            , "smoltcp_client::gdb_panic"
+            ]
+          Gdb.setBreakpointHook gdb
+          Gdb.continue gdb
+        D.assertProbe "probe_test_start" d
+
+        liftIO $ putStrLn "Starting TCP server"
+        liftIO $ withServer $ \(serverSock, _) -> do
+          let
+            -- Dump remaining serial output on failure
+            loggingSequence = do
+              threadDelay 1_000_000 -- Wait 1 second for data loggers to catch up
+              putStrLn "Serial output"
+              serialOut <- readRemainingChars serialHandle.handle
+              putStrLn serialOut
+
+            tryWithTimeout :: String -> Int -> IO a -> IO a
+            tryWithTimeout n t io =
+              catch (T.tryWithTimeout T.PrintActionTime n t io) $
+                \(err :: SomeException) -> loggingSequence >> throwM err
+
+          putStrLn "Waiting for \"Starting TCP Client\""
+
+          tryWithTimeout "Handshake softcore" 10_000_000 $
+            waitForLine serialHandle.handle "Starting TCP Client"
+
+          let numberOfClients = 1
+          putStrLn $ "Waiting for " <> show numberOfClients <> " clients to connect to TCP server."
+          clients <-
+            tryWithTimeout "Wait for clients" 60_000_000 $
+              waitForClients numberOfClients serverSock
+
+          putStrLn "Receiving client data"
+          createDirectoryIfMissing True tcpDataDir
+          tryWithTimeout "Receive client data" 60_000_000 $
+            mapConcurrently_ runTcpTest clients
+
+          putStrLn "Closing client connections"
+          tryWithTimeout "Closing connections" 10_000_000 $
+            mapConcurrently_ (NS.closeSock . fst) clients
+          putStrLn "Closing server connection"
+          loggingSequence
+
+          return ExitSuccess
+driverFunc _name _ = error "Ethernet/VexRiscvTcp driver func should only run with one hardware target"
+
+runTcpTest :: (NS.Socket, NS.SockAddr) -> Assertion
+runTcpTest (sock, sockAddr) = do
+  putStrLn $ "Testing TCP connection from " <> show sockAddr
+  start <- getPOSIXTime
+  bs <- SBS.toLazy_ $ SBS.reread (const $ NS.recv sock (1024 * 1024)) ()
+  stop <- getPOSIXTime
+  let
+    size = BS.length bs
+    diff = nominalDiffTimeToSeconds $ stop - start
+    speed = fromIntegral size / diff
+  putStrLn $
+    show sockAddr
+      <> " sent "
+      <> show size
+      <> " bytes in "
+      <> show (round diff :: Integer)
+      <> " seconds ("
+      <> show (round speed :: Integer)
+      <> " bytes/s)"
+  assertEqual
+    "Expected and actual bytestring are not equal"
+    bs
+    (BS.replicate (BS.length bs) 0x00)

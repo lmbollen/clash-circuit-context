@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+exec cabal repl \
+  bittide-cpus \
+  bittide-experiments \
+  bittide-extra \
+  bittide-instances \
+  bittide-shake \
+  bittide \
+  ghc-typelits-extra-lemmas \
+  gdb-hs \
+  vivado-hs \
+  $@

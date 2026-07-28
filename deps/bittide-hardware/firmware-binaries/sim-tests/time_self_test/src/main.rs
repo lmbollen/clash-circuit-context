@@ -1,0 +1,41 @@
+#![no_std]
+#![cfg_attr(not(test), no_main)]
+
+// SPDX-FileCopyrightText: 2024 Google LLC
+//
+// SPDX-License-Identifier: Apache-2.0
+
+use ufmt::uwriteln;
+
+use bittide_hal::{hals::time_wb as hal, manual_additions::timer::self_test::self_test};
+#[cfg(not(test))]
+use riscv_rt::entry;
+
+const INSTANCES: hal::DeviceInstances = unsafe { hal::DeviceInstances::new() };
+
+#[cfg_attr(not(test), entry)]
+fn main() -> ! {
+    // Initialize peripherals.
+    let mut uart = INSTANCES.uart;
+    let timer = INSTANCES.timer;
+    let test_results = self_test(timer);
+    uwriteln!(uart, "Start time self test").unwrap();
+    for (name, result) in test_results {
+        match result {
+            Some((s, None)) => uwriteln!(uart, "{}: Some({})", name, s).unwrap(),
+            Some((s, Some(fail))) => uwriteln!(uart, "{}: Some({}. {:?})", name, s, fail).unwrap(),
+            None => uwriteln!(uart, "{}: None", name).unwrap(),
+        };
+    }
+    uwriteln!(uart, "Done").unwrap();
+    loop {
+        continue;
+    }
+}
+
+#[panic_handler]
+fn panic_handler(_info: &core::panic::PanicInfo) -> ! {
+    loop {
+        continue;
+    }
+}

@@ -1,0 +1,466 @@
+-- SPDX-FileCopyrightText: 2025 Google LLC
+--
+-- SPDX-License-Identifier: Apache-2.0
+-- Auto-instrument the DUT + local 'manyTypesWb' peripheral for scoped
+-- simulation tracing (opt-in; transparent to HDL).
+
+module Bittide.Instances.Tests.RegisterWb where
+
+import Clash.Prelude
+
+-- Local
+
+import Bittide.Cpus.Riscv32imc (vexRiscv0)
+import Bittide.Extra.Maybe (toMaybe)
+import Bittide.Instances.Common (
+  PeConfigElfSource (NameOnly),
+  dumpVcdFromEnvVar,
+  emptyPeConfig,
+  peConfigFromElf,
+ )
+import Bittide.Instances.Domains (Basic50)
+import Bittide.ProcessingElement (
+  PeConfig (..),
+  processingElement,
+ )
+import Bittide.SharedTypes (withLittleEndian)
+import Bittide.Wishbone (uartBytes, uartInterfaceWb)
+import Clash.CircuitContext (HasCircuitContext, withoutCircuitContext)
+import Project.FilePath (CargoBuildType (Release))
+
+import Clash.Class.BitPackC (BitPackC, ByteOrder)
+import Data.Char (chr)
+import Data.Maybe (catMaybes)
+import Protocols
+import Protocols.Experimental.Simulate (sampleC)
+import Protocols.Experimental.Wishbone (Wishbone, WishboneMode (Standard))
+import Protocols.Idle (idleSource)
+import Protocols.MemoryMap (MemoryMap, Mm, getMMAny, unMemmap)
+import Protocols.MemoryMap.Registers.WishboneStandard (
+  BusActivity (..),
+  deviceConfig,
+  deviceWbI,
+  registerConfig,
+  registerWb,
+  registerWb_,
+ )
+import Protocols.MemoryMap.TypeDescription.TH
+import Test.Tasty.HUnit (HasCallStack)
+import VexRiscv (DumpVcd (NoDumpVcd))
+
+type U8 = Unsigned 8
+type U16 = Unsigned 16
+type U32 = Unsigned 32
+type U64 = Unsigned 64
+type U96 = Unsigned 96
+
+type B8 = BitVector 8
+type B16 = BitVector 16
+type B32 = BitVector 32
+type B64 = BitVector 64
+type B96 = BitVector 96
+
+type S8 = Signed 8
+type S16 = Signed 16
+type S32 = Signed 32
+type S64 = Signed 64
+type S96 = Signed 96
+
+data MyZeroSizedType = MyZeroSizedType
+  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack)
+deriveTypeDescription ''MyZeroSizedType
+
+data Abc = A | B | C
+  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack)
+deriveTypeDescription ''Abc
+
+data Xyz = H | I | J | K | L | M | N | O | P | Q | R | S | T | U | V | W | X | Y | Z
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+deriveTypeDescription ''Xyz
+
+data F = F {f :: Float, u :: Double}
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+deriveTypeDescription ''F
+
+data X3 = X3 B16 B8 B8
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+deriveTypeDescription ''X3
+
+data X2 = X2 B8 X3
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+deriveTypeDescription ''X2
+
+data P0 = P0 U16 U8 U8
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+deriveTypeDescription ''P0
+
+data P1 = P1 U16 U8 U16
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+deriveTypeDescription ''P1
+
+data P2 = P2 U16 U8 (Index 10)
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+deriveTypeDescription ''P2
+
+data P3 = P3 P2 U8
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+deriveTypeDescription ''P3
+
+data SoP
+  = SoP0
+  | SoP1 {u :: Unsigned 32}
+  | SoP2
+  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack)
+deriveTypeDescription ''SoP
+
+data Inner = Inner
+  { innerA :: BitVector 8
+  , innerB :: BitVector 16
+  }
+  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack)
+deriveTypeDescription ''Inner
+
+data OnlyReferencedInVec = OnlyReferencedInVec (BitVector 8) (BitVector 13)
+  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack)
+deriveTypeDescription ''OnlyReferencedInVec
+
+-- | Example that exports a bunch of different types.
+manyTypesWb ::
+  forall wordSize aw dom.
+  ( HasCircuitContext
+  , HasCallStack
+  , HiddenClock dom
+  , HiddenReset dom
+  , KnownNat wordSize
+  , KnownNat aw
+  , 1 <= wordSize
+  , 4 <= aw
+  , ?byteOrder :: ByteOrder
+  ) =>
+  Circuit
+    (ToConstBwd Mm, Wishbone dom 'Standard aw wordSize)
+    ()
+manyTypesWb = circuit $ \(mm, wb) -> do
+  [ wbS0
+    , wbS1
+    , wbS2
+    , wbS3
+    , wbS4
+    , wbU0
+    , wbU1
+    , wbU2
+    , wbU3
+    , wbBv0
+    , wbBv1
+    , wbBv2
+    , wbF0
+    , wbF1
+    , wbD0
+    , wbD1
+    , wbB0
+    , wbV0
+    , wbV1
+    , wbV2
+    , wbUnit
+    , wbUnitW
+    , wbZS
+    , wbSum0
+    , wbSum1
+    , wbSop0
+    , wbSop1
+    , wbE0
+    , wbOI0
+    , wbX2
+    , wbMe0
+    , wbMe1
+    , wbP0
+    , wbP1
+    , wbP2
+    , wbP3
+    , wbT0
+    , wbI20
+    , wbMI12
+    , wbMaybeB96
+    , wbMaybeU96
+    , wbMaybeS96
+    , wbEitherAbc
+    , wbOnlyInVec
+    ] <-
+    deviceWbI (deviceConfig "ManyTypes") -< (mm, wb)
+
+  registerWb_ hasClock hasReset (registerConfig "s0" "") initWbS0 -< (wbS0, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "s1" "") initWbS1 -< (wbS1, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "s2" "") initWbS2 -< (wbS2, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "s3" "") initWbS3 -< (wbS3, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "s4" "") initWbS4 -< (wbS4, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "u0" "") initWbU0 -< (wbU0, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "u1" "") initWbU1 -< (wbU1, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "u2" "") initWbU2 -< (wbU2, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "u3" "") initWbU3 -< (wbU3, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "bv0" "") initWbBv0 -< (wbBv0, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "bv1" "") initWbBv1 -< (wbBv1, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "bv2" "") initWbBv2 -< (wbBv2, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "f0" "") initWbF0 -< (wbF0, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "f1" "") initWbF1 -< (wbF1, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "d0" "") initWbD0 -< (wbD0, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "d1" "") initWbD1 -< (wbD1, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "b0" "") initWbB0 -< (wbB0, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "v0" "") initWbV0 -< (wbV0, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "v1" "") initWbV1 -< (wbV1, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "v2" "") initWbV2 -< (wbV2, Fwd noWrite)
+
+  (_unit, Fwd unitActivity) <-
+    registerWb hasClock hasReset (registerConfig "unit" "") initUnit -< (wbUnit, Fwd noWrite)
+
+  let unitWritten = toMaybe <$> (unitActivity .== Just (BusWrite ())) <*> pure True
+
+  registerWb_ hasClock hasReset (registerConfig "unitW" "") initUnitW
+    -< (wbUnitW, Fwd unitWritten)
+  registerWb_ hasClock hasReset (registerConfig "zs" "") initZS -< (wbZS, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "sum0" "") initSum0 -< (wbSum0, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "sum1" "") initSum1 -< (wbSum1, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "sop0" "") initSop0 -< (wbSop0, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "sop1" "") initSop1 -< (wbSop1, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "e0" "") initWbE0 -< (wbE0, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "oi" "") initOI0 -< (wbOI0, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "x2" "") initWbX2 -< (wbX2, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "me0" "") initWbMe0 -< (wbMe0, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "me1" "") initWbMe1 -< (wbMe1, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "p0" "") initP0 -< (wbP0, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "p1" "") initP1 -< (wbP1, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "p2" "") initP2 -< (wbP2, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "p3" "") initP3 -< (wbP3, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "t0" "") initT0 -< (wbT0, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "i20" "") initI20 -< (wbI20, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "mi12" "") initMI12 -< (wbMI12, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "maybe_b96" "") initMaybeB96
+    -< (wbMaybeB96, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "maybe_u96" "") initMaybeU96
+    -< (wbMaybeU96, Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "maybe_s96" "") initMaybeS96
+    -< (wbMaybeS96, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "eitherAbc" "") initEitherAbc
+    -< (wbEitherAbc, Fwd noWrite)
+
+  registerWb_ hasClock hasReset (registerConfig "onlyReferencedInVec" "") initOnlyInVec
+    -< (wbOnlyInVec, Fwd noWrite)
+
+  idC
+ where
+  initWbS0 :: Signed 8
+  initWbS0 = -8
+
+  initWbS1 :: Signed 8
+  initWbS1 = 8
+
+  initWbS2 :: Signed 16
+  initWbS2 = 16
+
+  initWbS3 :: Signed 64
+  initWbS3 = 3721049880298531338
+
+  initWbS4 :: Signed 7
+  initWbS4 = -12
+
+  initWbU0 :: Unsigned 8
+  initWbU0 = 8
+
+  initWbU1 :: Unsigned 16
+  initWbU1 = 16
+
+  initWbU2 :: Unsigned 64
+  initWbU2 = 3721049880298531338
+
+  initWbU3 :: Unsigned 32
+  initWbU3 = 0xBADC_0FEE
+
+  initWbBv0 :: BitVector 8
+  initWbBv0 = 8
+
+  initWbBv1 :: BitVector 16
+  initWbBv1 = 16
+
+  initWbBv2 :: BitVector 64
+  initWbBv2 = 3721049880298531338
+
+  initWbF0 :: Float
+  initWbF0 = -8
+
+  initWbF1 :: Float
+  initWbF1 = 8
+
+  initWbD0 :: Double
+  initWbD0 = -8
+
+  initWbD1 :: Double
+  initWbD1 = 8
+
+  initWbB0 :: Bool
+  initWbB0 = True
+
+  initWbV0 :: Vec 8 (BitVector 8)
+  initWbV0 = 0x8 :> 0x16 :> 0x24 :> 0x32 :> 0x40 :> 0x4E :> 0x5C :> 0x6A :> Nil
+
+  initWbV1 :: Vec 3 (BitVector 64)
+  initWbV1 = 0x8 :> 0x16 :> 3721049880298531338 :> Nil
+
+  initWbV2 :: Vec 2 (Vec 2 (BitVector 8))
+  initWbV2 = (0x8 :> 0x16 :> Nil) :> (0x24 :> 0x32 :> Nil) :> Nil
+
+  initUnit :: ()
+  initUnit = ()
+
+  initUnitW :: Bool
+  initUnitW = False
+
+  initZS :: MyZeroSizedType
+  initZS = MyZeroSizedType
+
+  noWrite :: forall a. Signal dom (Maybe a)
+  noWrite = pure Nothing
+
+  initSum0 :: Abc
+  initSum0 = C
+
+  initSum1 :: Xyz
+  initSum1 = S
+
+  initSop0 :: F
+  initSop0 = F 3.14 6.28
+
+  initSop1 :: SoP
+  initSop1 = SoP1 0xBADC_0FEE
+
+  initWbE0 :: Either (BitVector 8) (BitVector 16)
+  initWbE0 = Left 8
+
+  -- We purposely do not have a register for the `Inner` type, see issue
+  -- https://github.com/bittide/bittide-hardware/issues/815.
+  initOI0 :: Maybe Inner
+  initOI0 = Just (Inner 0x16 0x24)
+
+  initWbX2 :: X2
+  initWbX2 = X2 8 (X3 16 32 64)
+
+  initWbMe0 :: Maybe (Either (BitVector 8) (BitVector 16))
+  initWbMe0 = Just (Left 8)
+
+  initWbMe1 :: Maybe (Either (BitVector 16) (BitVector 8))
+  initWbMe1 = Just (Left 8)
+
+  initP0 :: P0
+  initP0 = P0 0xBADC 0x0F 0xEE
+
+  initP1 :: P1
+  initP1 = P1 0xBADC 0x0F 0xBEAD
+
+  initP2 :: P2
+  initP2 = P2 0xBADC 0x0F 6
+
+  initP3 :: P3
+  initP3 = P3 (P2 0xBADC 0x0F 6) 0xEE
+
+  initT0 :: (BitVector 8, Signed 16)
+  initT0 = (12, 584)
+
+  initI20 :: Index 20
+  initI20 = 17
+
+  initMI12 :: Maybe (Index 12)
+  initMI12 = Just 5
+
+  initMaybeB96 :: Maybe B96
+  initMaybeB96 = Just 0x4ababab55555555deadbeef1
+
+  initMaybeU96 :: Maybe U96
+  initMaybeU96 = Just 0x4ababab55555555deadbeef1
+
+  initMaybeS96 :: Maybe S96
+  initMaybeS96 = Just 0x4ababab55555555deadbeef1
+
+  initEitherAbc :: Either (BitVector 2) Abc
+  initEitherAbc = Left 0
+
+  initOnlyInVec :: Vec 2 OnlyReferencedInVec
+  initOnlyInVec = OnlyReferencedInVec 2 3 :> OnlyReferencedInVec 4 5 :> Nil
+{-# OPAQUE manyTypesWb #-}
+
+sim :: IO ()
+sim = do
+  dumpVcd <- getDumpVcd
+  peConfig <- peConfigSim
+  putStrLn $ simResult dumpVcd peConfig
+
+simResult :: DumpVcd -> PeConfig 4 -> String
+simResult dumpVcd peConfig = withoutCircuitContext (simStream dumpVcd peConfig)
+
+-- | Like 'simResult', but under the caller's circuit context (so a live
+-- waveform capture can record the run).
+simStream :: (HasCircuitContext) => DumpVcd -> PeConfig 4 -> String
+simStream dumpVcd peConfig = chr . fromIntegral <$> catMaybes uartStream
+ where
+  uartStream =
+    sampleC def $ unMemmap $ dutWithVcdAndPeConfig dumpVcd peConfig
+
+{- | Parameterized DUT that loads a specific firmware binary.
+Allows testing with different implementations (Rust, C, etc.) while reusing
+the same hardware architecture.
+-}
+dutWithVcdAndPeConfig ::
+  (HasCircuitContext, HasCallStack) =>
+  DumpVcd ->
+  PeConfig 4 ->
+  Circuit (ToConstBwd Mm, ()) (Df Basic50 (BitVector 8))
+dutWithVcdAndPeConfig dumpVcd peConfig =
+  withLittleEndian
+    $ withClockResetEnable clockGen (resetGenN d2) enableGen
+    $ circuit
+    $ \(mm, _unit) -> do
+      (uartRx, jtag) <- idleSource
+      [uartBus, manyTypes] <- processingElement dumpVcd peConfig -< (mm, jtag)
+      (uartTx, _uartStatus) <- uartInterfaceWb d2 d2 uartBytes -< (uartBus, uartRx)
+      manyTypesWb -< manyTypes
+      idC -< uartTx
+{-# OPAQUE dutWithVcdAndPeConfig #-}
+
+memoryMap :: MemoryMap
+memoryMap =
+  getMMAny
+    $ withoutCircuitContext
+    $ dutWithVcdAndPeConfig NoDumpVcd
+    $ emptyPeConfig (SNat @IMemWords) (SNat @DMemWords) d0 d0 False vexRiscv0
+
+type IMemWords = DivRU (48 * 1024) 4
+type DMemWords = DivRU (16 * 1024) 4
+
+getDumpVcd :: IO DumpVcd
+getDumpVcd = dumpVcdFromEnvVar "REGISTERWBC_DUMP_VCD"
+
+peConfigSim :: IO (PeConfig 4)
+peConfigSim =
+  peConfigFromElf
+    (SNat @IMemWords)
+    (SNat @DMemWords)
+    (NameOnly "registerwb_test")
+    Release
+    d0
+    d0
+    False
+    vexRiscv0

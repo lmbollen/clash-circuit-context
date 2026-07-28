@@ -1,0 +1,1304 @@
+-- SPDX-FileCopyrightText: 2023 Google LLC
+--
+-- SPDX-License-Identifier: Apache-2.0
+{-# LANGUAGE MagicHash #-}
+{-# LANGUAGE PartialTypeSignatures #-}
+
+module Bittide.Axi4 (
+  -- * Scaling circuits
+  axiStreamFromByteStream,
+  axiStreamToByteStream,
+  axiPacking,
+
+  -- * Wishbone interfaces
+  wbAxisRxBufferCircuit,
+  wbToAxi4StreamTx,
+  wbToAxi4MemoryMapped,
+  axiMemoryMappedToWb,
+
+  -- * 2-domain FIFOs for each AXI4 channel
+  axi4ReadAddressFifo,
+  axi4ReadDataFifo,
+  axi4WriteAddressFifo,
+  axi4WriteDataFifo,
+  axi4WriteResponseFifo,
+
+  -- * Other circuits
+  axiStreamPacketFifo,
+  ilaAxi4Stream,
+  rxReadMasterC,
+
+  -- * Utility functions
+  combineAxi4Stream,
+  splitAxi4Stream,
+  packAxi4Stream,
+  eqAxi4Stream,
+  axiUserMap,
+  axiUserMapC,
+  isPackedTransfer,
+
+  -- * Internal
+  mkKeep,
+) where
+
+import Clash.CircuitContext (HasCircuitContext, HasProbe, mealyBProbed)
+import Clash.Prelude
+
+import Bittide.Axi4.Internal
+import Bittide.Extra.Maybe
+import Bittide.SharedTypes
+import Bittide.Wishbone
+import Clash.Class.BitPackC (ByteOrder)
+import Clash.Cores.Xilinx.DcFifo (dcFifoDf)
+import Clash.Cores.Xilinx.Ila hiding (Data)
+import Clash.Sized.Internal.BitVector (popCountBV)
+import Data.Bifunctor (bimap, first, second)
+import Data.Constraint
+import Data.Constraint.Nat.Lemmas
+import Data.Maybe
+import Data.Proxy
+import Data.Typeable (Typeable)
+import GHC.Stack (HasCallStack)
+import Protocols
+import Protocols.Axi4.Extra
+import Protocols.Experimental.Axi4.Common
+import Protocols.Experimental.Axi4.ReadAddress
+import Protocols.Experimental.Axi4.ReadData
+import Protocols.Experimental.Axi4.Stream as AS
+import Protocols.Experimental.Axi4.WriteAddress
+import Protocols.Experimental.Axi4.WriteData
+import Protocols.Experimental.Axi4.WriteResponse
+import Protocols.Experimental.ReqResp (ReqResp)
+import Protocols.Experimental.Wishbone as WB
+import Protocols.Idle (idleSink)
+import Protocols.Internal (fromKeepType, toKeepType)
+import Protocols.MemoryMap (Access (..))
+import Protocols.MemoryMap.Registers.WishboneStandard (
+  DeviceConfig (registered),
+  RegisterConfig (..),
+  addressableBytesWb,
+  deviceConfig,
+  deviceWbI,
+  registerConfig,
+  registerWbI,
+ )
+
+import qualified Protocols.DfConv as DfConv
+import qualified Protocols.Experimental.ReqResp as ReqResp
+import qualified Protocols.Experimental.ReqResp.Extra as ReqResp
+
+{- $setup
+>>> import Clash.Prelude
+>>> import Protocols.Experimental.Axi4.Stream
+-}
+
+{- | An 'Axi4Stream' without gaps in the data. This means that for each transfer
+the following holds:
+
+* For a transfer with _tlast deasserted, all _tkeep bools are set.
+* For a transfer with _tlast asserted, the first /n/ bools of _tkeep are set,
+  where n is the number of bytes in the transfer.
+-}
+type PackedAxi4Stream dom conf userType = Axi4Stream dom conf userType
+
+{-# OPAQUE axiStreamFromByteStream #-}
+
+{- | Transforms an 'Axi4Stream' of 1 byte wide into an 'Axi4Stream' of /n/ bytes
+wide. If it encounters '_tlast' or has captured /n/ bytes, it will present
+the transfer at the output. Note that if less than /n/ bytes have been
+captured, but '_tlast' is set, the component will output the captured bytes
+with appropriately set '_tkeep' bits. The '_tuser', _tdest' and '_tid' signals
+are blindly routed to the output. This effectively means that all but the
+last '_tuser', '_tdest', '_tid' are linked to a valid transfer.
+
+TODO: Add test that verifies throughput requirements.
+TODO: Make user specify the number of bytes to capture, instead of number of
+      bytes minus one (@addedWidth@).
+-}
+axiStreamFromByteStream ::
+  forall dom addedWidth idWidth destWidth userType.
+  ( HiddenClockResetEnable dom
+  , KnownNat addedWidth
+  , KnownNat idWidth
+  , KnownNat destWidth
+  , Eq userType
+  , NFDataX userType
+  , Show userType
+  ) =>
+  Circuit
+    (Axi4Stream dom ('Axi4StreamConfig 1 idWidth destWidth) userType)
+    ( PackedAxi4Stream
+        dom
+        ('Axi4StreamConfig (addedWidth + 1) idWidth destWidth)
+        (Vec (addedWidth + 1) userType)
+    )
+axiStreamFromByteStream = AS.forceResetSanity |> Circuit (mealyB go Nothing)
+ where
+  go axiStored ~(input, Axi4StreamS2M{_tready = outputReady}) =
+    (axiNext, (Axi4StreamS2M inputReady, output))
+   where
+    undefUser = deepErrorX "axiStreamFromByteStream: _tuser undefined"
+
+    -- Try to append the incoming axi to the stored axi.
+    dropInput = maybe False (\a -> not (or (_tlast a :> _tkeep a))) input
+    combinedAxi = axiUserMap (uncurry (:<)) <$> combineAxi4Stream axiStored input
+
+    -- Shift the internal axi towards HEAD by one position.
+    -- If the head of the pre-shifted axi has its keep bit set, shifting is done.
+    extendedAxi = fmap (axiUserMap (:< undefUser) . extendAxi @_ @1) axiStored
+    axiPreShift = combinedAxi <|> extendedAxi
+    axiPostShift =
+      snd
+        $ splitAxi4Stream @1
+        $ fmap (axiUserMap (\v -> (head v, tail v))) axiPreShift
+
+    -- Output the pre-shifted axi if we can not shift anymore.
+    shiftingDone = not dropInput && maybe False isPackedTransfer axiPreShift
+    capturedLast = maybe False _tlast axiPreShift
+    output = if shiftingDone then axiPreShift else Nothing
+
+    -- Flow control
+    (axiNext, inputReady)
+      | dropInput = (axiStored, True) -- Drop the input
+      | shiftingDone && outputReady = (Nothing, isJust combinedAxi) -- valid output, accepted
+      | shiftingDone && not outputReady = (axiStored, False) -- valid output, not accepted
+      | not shiftingDone && isJust input = (axiPostShift, isJust combinedAxi) -- Shift when input
+      | not shiftingDone && capturedLast = (axiPostShift, False) -- Shift when captured _tlast
+      | otherwise = (axiStored, False) -- No input
+
+-- TODO: Add test that verifies throughput requirements.
+
+{- | Transforms an Axi4 stream of /n/ bytes wide into an Axi4 stream of 1 byte
+wide. It stores the incoming transfer and shifts it out one by one. The incoming
+transfer is acknowledged when the last byte is acknowledged by the outgoing transfer.
+The '_tuser', '_tdest' and '_tid' are blindly routed to the output.
+-}
+axiStreamToByteStream ::
+  forall dom dataWidth idWidth destWidth userType.
+  ( HiddenClockResetEnable dom
+  , KnownNat dataWidth
+  , KnownNat idWidth
+  , KnownNat destWidth
+  , Eq userType
+  , NFDataX userType
+  , Show userType
+  ) =>
+  Circuit
+    (PackedAxi4Stream dom ('Axi4StreamConfig dataWidth idWidth destWidth) userType)
+    (Axi4Stream dom ('Axi4StreamConfig 1 idWidth destWidth) userType)
+axiStreamToByteStream = AS.forceResetSanity |> Circuit (mealyB go Nothing)
+ where
+  go axiStored (input, Axi4StreamS2M{_tready = outputReady}) = (axiNext, (inputReady, output))
+   where
+    (output, axiRest) = splitAxi4Stream @1 (combineAxi4Stream axiStored Nothing)
+    axiNext
+      | isNothing output || outputReady = axiRest <|> input
+      | otherwise = axiStored
+    inputReady = Axi4StreamS2M{_tready = isNothing axiRest && (isNothing output || outputReady)}
+
+type EndOfPacket = Bool
+type BufferFull = Bool
+
+data AxiRxHandlerState fifoDepth = AxiRxHandlerState
+  { writeCounter :: Index fifoDepth
+  , abortPacket :: Bool
+  }
+  deriving (Generic, NFDataX, Show)
+
+-- TODO: Replace with PacketStream
+
+{- | A wishbone accessible buffer of configurable depth that can store a single Axi4Stream packet.
+The wishbone interface offers access to the buffer and exposes a status register that indicates:
+ * If the buffer contains a packet
+ * If the buffer is full before, but does not contain a whole packet.
+
+The memory map is as follows:
+ * 0 .. 4 * (fifoDepth - 1) = Read-only access into the buffer.
+ * 4 * fifoDepth            = Byte count register.
+ * 4 * (fifoDepth + 1)      = Status register
+
+After reading a packet, the byte count must be set to 0 and the status register must be
+cleared. The incoming Axi4Stream interface contains a side channel that can be used to abort
+the incoming packet. If a packet is aborted, the buffer will consume the remaining transfers
+until the end of the packet is reached, after which it will reset the buffer to its initial state.
+-}
+wbAxisRxBufferCircuit ::
+  forall dom addrW bufferBytes.
+  ( HasCircuitContext
+  , HasCallStack
+  , HiddenClockResetEnable dom
+  , KnownNat addrW
+  , 1 <= bufferBytes
+  , ?byteOrder :: ByteOrder
+  ) =>
+  -- | Number of bytes that can be stored in the buffer.
+  SNat bufferBytes ->
+  Circuit
+    ( BitboneMm dom addrW
+    , Axi4Stream dom ('Axi4StreamConfig 4 0 0) Bool
+    )
+    (CSignal dom (EndOfPacket, BufferFull))
+wbAxisRxBufferCircuit SNat = case strictlyPositiveDivRu @bufferBytes @4 of
+  Dict -> case leMult @4 @(DivRU bufferBytes 4) of
+    Dict -> wbAxisRxBufferCircuit# (SNat @(DivRU bufferBytes 4))
+
+{-# OPAQUE wbAxisRxBufferCircuit# #-}
+wbAxisRxBufferCircuit# ::
+  forall dom addrW fifoDepth.
+  ( HasCircuitContext
+  , HasCallStack
+  , HiddenClockResetEnable dom
+  , KnownNat addrW
+  , KnownNat fifoDepth
+  , 1 <= fifoDepth
+  , 1 <= 4 * fifoDepth
+  , ?byteOrder :: ByteOrder
+  ) =>
+  SNat fifoDepth ->
+  Circuit
+    ( BitboneMm dom addrW
+    , Axi4Stream dom ('Axi4StreamConfig 4 0 0) Bool
+    )
+    (CSignal dom (EndOfPacket, BufferFull))
+wbAxisRxBufferCircuit# SNat = circuit $ \(mmWb, axi0) -> do
+  axi1 <- AS.forceResetSanity -< axi0
+
+  [bufferSlot, pktLenSlot, statusSlot] <-
+    deviceWbI (deviceConfig "AxiRxBuffer"){registered = False} -< mmWb
+
+  -- Buffer: CPU reads via ReqResp, AXI writes via Df
+  bufferReqs <- addressableBytesWb @fifoDepth bufferRegConfig -< bufferSlot
+  (bufferReads, cpuWrites) <- ReqResp.partitionEithers -< bufferReqs
+  idleSink -< cpuWrites
+  _unit <-
+    ReqResp.fromBlockRam (blockRamU NoClearOnReset (SNat @fifoDepth))
+      -< (bufferReads, Fwd axiRamWrites)
+
+  -- Packet length register
+  (Fwd (pktLen, _pktLenBus)) <-
+    registerWbI @(Unsigned 32) @_ @4 pktLenConfig 0 -< (pktLenSlot, Fwd pktLenWrite)
+
+  -- Status register (bit 1 = packetComplete, bit 0 = bufferFull)
+  (Fwd (statusBV, _statusBus)) <-
+    registerWbI @(BitVector 2) @_ @4 statusConfig 0 -< (statusSlot, Fwd statusWrite)
+
+  -- AXI handler: processes AXI stream, produces RAM writes and register updates
+  (Fwd axiRamWrites, Fwd pktLenWrite, Fwd statusWrite, statusOut) <-
+    axiRxHandler (SNat @fifoDepth) -< (axi1, Fwd pktLen, Fwd statusBV)
+
+  idC -< statusOut
+ where
+  bufferRegConfig =
+    (registerConfig "data" "Buffer for incoming AXI4 stream packets")
+      { access = ReadOnly
+      }
+  pktLenConfig =
+    (registerConfig "packet_length" "Number of bytes in the buffer")
+      { access = ReadWrite
+      }
+  statusConfig =
+    (registerConfig "status" "Status register: bit 1 = packet_complete, bit 0 = buffer_full")
+      { access = ReadWrite
+      }
+
+{-# OPAQUE axiRxHandler #-}
+axiRxHandler ::
+  forall dom fifoDepth.
+  ( HasCircuitContext
+  , HiddenClockResetEnable dom
+  , KnownNat fifoDepth
+  , 1 <= fifoDepth
+  ) =>
+  SNat fifoDepth ->
+  Circuit
+    ( Axi4Stream dom ('Axi4StreamConfig 4 0 0) Bool
+    , CSignal dom (Unsigned 32)
+    , CSignal dom (BitVector 2)
+    )
+    ( CSignal dom (Maybe (Index fifoDepth, Bytes 4))
+    , CSignal dom (Maybe (Unsigned 32))
+    , CSignal dom (Maybe (BitVector 2))
+    , CSignal dom (EndOfPacket, BufferFull)
+    )
+axiRxHandler SNat = Circuit go
+ where
+  go ((axiM2S, pktLenSig, statusSig), _) =
+    ((axiS2M, (), ()), (ramWriteSig, pktLenWriteSig, statusWriteSig, statusOutSig))
+   where
+    (axiS2M, ramWriteSig, pktLenWriteSig, statusWriteSig, statusOutSig) =
+      mealyBProbed hasClock hasReset hasEnable goMealy initState (axiM2S, pktLenSig, statusSig)
+    initState = AxiRxHandlerState{writeCounter = 0, abortPacket = False}
+
+    goMealy ::
+      (HasProbe) =>
+      AxiRxHandlerState fifoDepth ->
+      ( Maybe (Axi4StreamM2S ('Axi4StreamConfig 4 0 0) Bool)
+      , Unsigned 32
+      , BitVector 2
+      ) ->
+      ( AxiRxHandlerState fifoDepth
+      , ( Axi4StreamS2M
+        , Maybe (Index fifoDepth, Bytes 4)
+        , Maybe (Unsigned 32)
+        , Maybe (BitVector 2)
+        , (EndOfPacket, BufferFull)
+        )
+      )
+    goMealy
+      AxiRxHandlerState{writeCounter, abortPacket}
+      ~(maybeAxisM2S, pktLen, statusBV) =
+        (newState, output)
+       where
+        (packetComplete, bufferFull) = unpack statusBV
+
+        -- AXI stream handling
+        axisReady = abortPacket || not (packetComplete || bufferFull)
+        axisHandshake = axisReady && isJust maybeAxisM2S
+        ramWrite =
+          maybeAxisM2S >>= toMaybe axisHandshake . (writeCounter,) . pack . reverse . _tdata
+
+        -- Write counter
+        nextWriteCounter
+          | axisHandshake = satSucc SatBound writeCounter
+          | packetComplete || bufferFull = 0
+          | otherwise = writeCounter
+
+        -- Packet length update
+        popCountKeep = leToPlus @1 @4 popCountBV . pack . _tkeep
+        bytesInStream = maybe (0 :: Index 5) popCountKeep maybeAxisM2S
+        nextPktLen
+          | axisHandshake = pktLen + fromIntegral bytesInStream
+          | otherwise = pktLen
+        pktLenWrite
+          | abortAndLast = Just 0
+          | axisHandshake = Just nextPktLen
+          | otherwise = Nothing
+
+        -- Status update
+        nextPacketComplete
+          | axisHandshake = packetComplete || maybe False _tlast maybeAxisM2S
+          | otherwise = packetComplete
+        nextBufferFull
+          | axisHandshake = bufferFull || writeCounter == maxBound
+          | otherwise = bufferFull
+        statusWrite
+          | abortAndLast = Just 0
+          | axisHandshake = Just $ pack (nextPacketComplete, nextBufferFull)
+          | otherwise = Nothing
+
+        -- Abort handling
+        nextAbortPacket = abortPacket || maybe False _tuser maybeAxisM2S
+        abortAndLast = nextAbortPacket && maybe False _tlast maybeAxisM2S
+
+        -- State transition
+        newState
+          | abortAndLast = initState
+          | otherwise =
+              AxiRxHandlerState
+                { writeCounter = nextWriteCounter
+                , abortPacket = nextAbortPacket
+                }
+
+        output =
+          ( Axi4StreamS2M axisReady
+          , ramWrite
+          , pktLenWrite
+          , statusWrite
+          , (packetComplete, bufferFull)
+          )
+
+data BufferState fifoDepth wbBytes
+  = AwaitingData
+  | BufferFull
+  | PacketComplete (Index (wbBytes * fifoDepth + 1))
+  deriving (Generic, NFDataX, Show)
+
+data ReadStateMachine fifoDepth
+  = Idle
+  | ReadingPacketSize
+  | ReadingPacket (Index (fifoDepth + 1))
+  | ClearingPacketLength
+  | ClearingStatus
+  deriving (Generic, NFDataX, Show)
+
+{- | Circuit capable of reading the wishbone interface of @wbAxisRxBuffer@ and
+extracting Axi packets. Mostly useful for verification, but can be synthesized.
+The internal statemachine continuously reads the satus register of the buffer,
+if the buffer is full or a packet is complete, it will:
+
+1. Read the packet length from the buffer.
+2. Read the packet from the buffer.
+3. Clear the packet length.
+4. Clear the status register.
+-}
+rxReadMasterC ::
+  forall dom nBytes addrWidth bufferBytes.
+  ( HiddenClockResetEnable dom
+  , 1 <= bufferBytes
+  , 1 <= nBytes
+  , KnownNat addrWidth
+  , KnownNat nBytes
+  ) =>
+  SNat bufferBytes ->
+  Circuit
+    ()
+    ( Wishbone dom 'Standard addrWidth nBytes
+    , Axi4Stream dom ('Axi4StreamConfig nBytes 0 0) ()
+    )
+rxReadMasterC s = fromSignals $ \(_, bwd) -> ((), rxReadMaster s bwd)
+
+{- | Circuit capable of reading the wishbone interface of @wbAxisRxBuffer@ and
+extracting Axi packets. Mostly useful for verification, but can be synthesized.
+The internal statemachine continuously reads the satus register of the buffer,
+if the buffer is full or a packet is complete, it will:
+
+1. Read the packet length from the buffer.
+2. Read the packet from the buffer.
+3. Clear the packet length.
+4. Clear the status register.
+-}
+rxReadMaster ::
+  forall dom wbBytes addrWidth bufferBytes.
+  ( HiddenClockResetEnable dom
+  , 1 <= bufferBytes
+  , 1 <= wbBytes
+  , KnownNat addrWidth
+  , KnownNat wbBytes
+  ) =>
+  SNat bufferBytes ->
+  ( Signal dom (WishboneS2M wbBytes)
+  , Signal dom Axi4StreamS2M
+  ) ->
+  ( Signal dom (WishboneM2S addrWidth wbBytes)
+  , Signal dom (Maybe (Axi4StreamM2S ('Axi4StreamConfig wbBytes 0 0) ()))
+  )
+rxReadMaster SNat = case strictlyPositiveDivRu @bufferBytes @wbBytes of
+  Dict -> case leMult @wbBytes @(DivRU bufferBytes wbBytes) of
+    Dict -> rxReadMaster# (SNat @(DivRU bufferBytes wbBytes))
+
+{- | Circuit capable of reading the wishbone interface of @wbAxisRxBuffer@ and
+extracting Axi packets. Mostly useful for verification, but can be synthesized.
+The internal statemachine continuously reads the satus register of the buffer,
+if the buffer is full or a packet is complete, it will:
+
+1. Read the packet length from the buffer.
+2. Read the packet from the buffer.
+3. Clear the packet length.
+4. Clear the status register.
+-}
+rxReadMaster# ::
+  forall dom wbBytes addrWidth fifoDepth.
+  ( HiddenClockResetEnable dom
+  , 1 <= fifoDepth
+  , 1 <= wbBytes
+  , KnownNat addrWidth
+  , KnownNat wbBytes
+  ) =>
+  SNat fifoDepth ->
+  ( Signal dom (WishboneS2M wbBytes)
+  , Signal dom Axi4StreamS2M
+  ) ->
+  ( Signal dom (WishboneM2S addrWidth wbBytes)
+  , Signal dom (Maybe (Axi4StreamM2S ('Axi4StreamConfig wbBytes 0 0) ()))
+  )
+rxReadMaster# SNat = mealyB go (AwaitingData @fifoDepth @wbBytes, Idle)
+ where
+  go
+    (bufState, readState :: ReadStateMachine fifoDepth)
+    ~(WishboneS2M{acknowledge, readData}, Axi4StreamS2M{_tready}) = (nextState, (wbM2S, axiM2S))
+     where
+      -- Driving wishbone signals
+      (writeEnable, addr) = case readState of
+        Idle -> (False, natToNum @(1 + fifoDepth))
+        ClearingStatus -> (True, natToNum @(1 + fifoDepth))
+        ReadingPacketSize -> (False, natToNum @fifoDepth)
+        ClearingPacketLength -> (True, natToNum @fifoDepth)
+        ReadingPacket i -> (False, checkedResize (pack i))
+
+      wbM2S =
+        WishboneM2S
+          { addr
+          , burstTypeExtension
+          , busCycle
+          , busSelect
+          , cycleTypeIdentifier
+          , lock
+          , strobe
+          , writeData
+          , writeEnable
+          }
+      busCycle = True
+      strobe = True
+      writeData = 0
+      busSelect = maxBound
+      lock = False
+      cycleTypeIdentifier = Classic
+      burstTypeExtension = LinearBurst
+
+      -- Driving Axi signals
+      (_tdata, _tstrb, _tid, _tdest, _tuser) = (reverse $ bitCoerce readData, repeat True, 0, 0, ())
+      (_tkeep, _tlast) = case (bufState, readState) of
+        (PacketComplete s, ReadingPacket i) -> (mkKeep remaining, remaining <= natToNum @wbBytes)
+         where
+          remaining = satSub SatBound s (checkedResize i `shiftL` 2)
+        _ -> (repeat True, False)
+
+      axiM2S = case (readState, acknowledge) of
+        (ReadingPacket _, True) -> Just Axi4StreamM2S{_tdata, _tdest, _tid, _tkeep, _tlast, _tstrb, _tuser}
+        _ -> Nothing
+
+      -- Statemachine control
+      nextState =
+        if not acknowledge
+          then (bufState, readState)
+          else case (readState, bufState) of
+            (Idle, _) -> case (packetComplete, bufferFull) of
+              (True, _) -> (AwaitingData, ReadingPacketSize)
+              (_, True) -> (BufferFull, ReadingPacket minBound)
+              _ -> (AwaitingData, Idle)
+             where
+              (packetComplete, bufferFull) = unpack $ resize readData
+            (ReadingPacketSize, _) -> (PacketComplete packetSize, ReadingPacket 0)
+             where
+              packetSize = unpack $ checkedResize readData
+            (ReadingPacket i, _)
+              | _tready && lastBytes bufState nextReadState -> (bufState, ClearingPacketLength)
+              | _tready -> (bufState, nextReadState)
+              | otherwise -> (bufState, readState)
+             where
+              nextReadState = ReadingPacket (satSucc SatBound i)
+            (ClearingPacketLength, _) -> (bufState, ClearingStatus)
+            (ClearingStatus, _) -> (AwaitingData, Idle)
+
+      lastBytes (PacketComplete s) (ReadingPacket i) = s <= (4 * checkedResize i)
+      lastBytes BufferFull (ReadingPacket i) = i == maxBound
+      lastBytes _ _ = False
+
+{- | Convert a @n@ number of bytes to an @m@ byte enable Vector to be used with Axi4Stream.
+
+>>> mkKeep @8 @4 3
+True :> True :> True :> False :> Nil
+>>> mkKeep @8 @4 7
+True :> True :> True :> True :> Nil
+-}
+mkKeep ::
+  forall maxIndex byteEnables.
+  ( KnownNat maxIndex
+  , KnownNat byteEnables
+  ) =>
+  Index maxIndex ->
+  Vec byteEnables Bool
+mkKeep nBytes
+  -- This can be written more neatly if we fix
+  -- https://github.com/clash-lang/clash-compiler/issues/2779
+  | nBytes < natToNum @byteEnables = fmap (< checkedResize nBytes) indicesI
+  | otherwise = repeat True
+
+type AxiStreamBytesOnly nBytes = 'Axi4StreamConfig nBytes 0 0
+
+-- TODO: Replace with PacketStream
+
+{- | Wishbone to Axi4Stream interface, write operations to address 0 write to the Axi4Stream.
+The _tkeep bits are set based on the busSelect bits, when writing to address 1, a transfer
+is created that contains no data, but has the _tlast bit set.
+-}
+wbToAxi4StreamTx ::
+  forall dom addrW.
+  ( HasCallStack
+  , HasCircuitContext
+  , HiddenClockResetEnable dom
+  , KnownNat addrW
+  , ?byteOrder :: ByteOrder
+  ) =>
+  Circuit
+    (BitboneMm dom addrW)
+    (Axi4Stream dom (AxiStreamBytesOnly 4) ())
+wbToAxi4StreamTx = circuit $ \mmWb -> do
+  [dataSlot, sendSlot] <-
+    deviceWbI (deviceConfig "AxiStreamTx"){registered = False} -< mmWb
+  dataReqs <- addressableBytesWb @1 dataRegConfig -< dataSlot
+  (_sendBusWb, sendBusActivity) <-
+    registerWbI @_ @_ @4 sendRegConfig () -< (sendSlot, Fwd (pure Nothing))
+  sendReq <- applyC (fmap isJust) id -< sendBusActivity
+  wbToAxiStreamTxBridge -< (dataReqs, sendReq)
+ where
+  dataRegConfig =
+    (registerConfig "data" "Write data to the AXI4 stream")
+      { access = WriteOnly
+      }
+  sendRegConfig =
+    (registerConfig "send" "Write to send a transfer with _tlast set")
+      { access = WriteOnly
+      , tags = ["zero-width"]
+      }
+
+wbToAxiStreamTxBridge ::
+  Circuit
+    ( ReqResp dom (Either (Index 1) (Index 1, BitVector 4, Bytes 4)) (Bytes 4)
+    , CSignal dom Bool
+    )
+    (Axi4Stream dom (AxiStreamBytesOnly 4) ())
+wbToAxiStreamTxBridge = Circuit $ \((dataFwd, sendFwd), axiS2M) ->
+  let (dataResp, axiM2S) =
+        unbundle $ go <$> dataFwd <*> sendFwd <*> axiS2M
+   in ((dataResp, ()), axiM2S)
+ where
+  go dataReq isSendWrite (Axi4StreamS2M _tready) = (dataResp, axiM2S)
+   where
+    dataWrite = case dataReq of
+      Just (Right (_, mask, dat)) -> Just (mask, dat)
+      _ -> Nothing
+    axiM2S = case dataWrite of
+      Just (mask, dat) ->
+        Just
+          Axi4StreamM2S
+            { _tdata = reverse $ unpack dat
+            , _tkeep = reverse $ unpack mask
+            , _tlast = False
+            , _tstrb = repeat False
+            , _tid = 0
+            , _tdest = 0
+            , _tuser = ()
+            }
+      Nothing
+        | isSendWrite ->
+            Just
+              Axi4StreamM2S
+                { _tdata = repeat 0
+                , _tkeep = repeat False
+                , _tlast = True
+                , _tstrb = repeat False
+                , _tid = 0
+                , _tdest = 0
+                , _tuser = ()
+                }
+        | otherwise -> Nothing
+    resp = if _tready && isJust axiM2S then Just 0 else Nothing
+    dataResp = if isJust dataWrite then resp else Nothing
+
+data AxiPacketFifoState maxPackets = AxiPacketFifoState
+  { packetCount :: Index (maxPackets + 1)
+  , newPacketSr :: Vec 2 Bool
+  , dumpPacket :: Bool
+  }
+  deriving (Generic, NFDataX, Show)
+
+-- TODO: Replace with PacketStream
+
+{- | A Fifo circuit for Axi4Stream that stores an entire packet before
+producing the packet at the output. If the fifo is full, it will start transmitting
+the packet at the output.
+-}
+axiStreamPacketFifo ::
+  forall dom nBytes fifoDepth maxPackets userType.
+  ( HiddenClockResetEnable dom
+  , 2 <= fifoDepth
+  , KnownNat nBytes
+  , 1 <= maxPackets
+  , NFDataX userType
+  ) =>
+  SNat maxPackets ->
+  SNat fifoDepth ->
+  Circuit
+    (Axi4Stream dom (AxiStreamBytesOnly nBytes) userType)
+    (Axi4Stream dom (AxiStreamBytesOnly nBytes) userType)
+axiStreamPacketFifo SNat fifoDepth@SNat = AS.forceResetSanity |> Circuit goCircuit
+ where
+  goCircuit ~(lhsM2S, fmap _tready -> outputReady) = (Axi4StreamS2M <$> inputReady, output)
+   where
+    -- I/O Combinatorials
+    inputReady = consumeAxi .&&. fifoReady
+    output = mux produceFifo fifoOut0 (pure Nothing)
+    fifoIn = mux consumeAxi lhsM2S (pure Nothing)
+
+    -- Fifo
+    axiProxy = Proxy @(Axi4Stream dom (AxiStreamBytesOnly nBytes) userType)
+    fifo = DfConv.fifo axiProxy axiProxy fifoDepth
+    (fmap _tready -> fifoReady, fifoOut0) =
+      toSignals
+        fifo
+        (fifoIn, Axi4StreamS2M <$> (produceFifo .&&. outputReady))
+
+    -- I/O Control
+    initState = AxiPacketFifoState 0 (repeat False) False :: AxiPacketFifoState maxPackets
+    (consumeAxi, produceFifo) = mealyB go initState (lhsM2S, fifoOut0, fifoReady, outputReady)
+
+    go s@AxiPacketFifoState{dumpPacket, newPacketSr, packetCount} (inpM2S, fifoOut1, fifoReady1, outReady) =
+      (nextState, (consumeInp, produceOut))
+     where
+      addPacket = maybe False _tlast inpM2S && consumeInp && fifoReady1
+      subPacket = maybe False _tlast fifoOut1 && produceOut && outReady
+      packetCount1 = (if subPacket then satPred SatBound else id) packetCount
+      packetCount2 = (if head newPacketSr then satSucc SatBound else id) packetCount1
+
+      stallInp = packetCount == maxBound && or newPacketSr
+      consumeInp = not stallInp
+      dumpPacket1 =
+        (not dumpPacket && isJust inpM2S && not fifoReady1)
+          || (dumpPacket && maybe False _tlast inpM2S)
+      produceOut = dumpPacket || packetCount /= minBound
+      newPacketSr1 = newPacketSr <<+ addPacket
+
+      nextState
+        | stallInp = s{packetCount = packetCount1}
+        | otherwise = AxiPacketFifoState packetCount2 newPacketSr1 dumpPacket1
+
+-- TODO: Add test that verifies throughput requirements.
+
+{- | Circuit to convert a sparse stream into a contiguous stream while remaining the throughput of
+the input stream.
+-}
+axiPacking ::
+  forall dom dataWidth idWidth destWidth.
+  ( HiddenClockResetEnable dom
+  , 1 <= dataWidth
+  , KnownNat dataWidth
+  , KnownNat idWidth
+  , KnownNat destWidth
+  ) =>
+  Circuit
+    (Axi4Stream dom ('Axi4StreamConfig dataWidth idWidth destWidth) ())
+    (PackedAxi4Stream dom ('Axi4StreamConfig dataWidth idWidth destWidth) ())
+axiPacking = AS.forceResetSanity |> Circuit (mealyB go Nothing)
+ where
+  go axiStored ~(input, Axi4StreamS2M{_tready = outputReady}) =
+    (axiNext, (Axi4StreamS2M inputReady, output))
+   where
+    -- undefUser = deepErrorX "axiStreamFromByteStream: _tuser undefined"
+
+    -- Try to append the incoming axi to the stored axi.
+    dropInput = maybe False (\a -> not (or (_tlast a :> _tkeep a))) input
+    combinedAxi = axiUserMap (const ()) <$> combineAxi4Stream axiStored input
+
+    -- Shift the internal axi towards HEAD by one position.
+    -- If the head of the pre-shifted axi has its keep bit set, shifting is done.
+    extendedAxi = fmap extendAxi axiStored
+    packedAxi = fmap packAxi4Stream $ combinedAxi <|> extendedAxi
+
+    (outputBuffer, excessBuffer) = splitAxi4Stream $ fmap (axiUserMap (const ((), ()))) packedAxi
+
+    -- Output the pre-shifted axi if we can not shift anymore.
+    shiftingDone = not dropInput && maybe False isPackedTransfer outputBuffer
+    capturedLast = maybe False _tlast outputBuffer
+    output = if shiftingDone then outputBuffer else Nothing
+
+    -- Flow control
+    (axiNext, inputReady)
+      | dropInput = (axiStored, True) -- Drop the input
+      | shiftingDone && outputReady = (excessBuffer, isJust combinedAxi) -- valid output, accepted
+      | shiftingDone && not outputReady = (axiStored, False) -- valid output, not accepted
+      | not shiftingDone && isJust input = (outputBuffer, isJust combinedAxi) -- Shift when input
+      | not shiftingDone && capturedLast = (outputBuffer, False) -- Shift when captured _tlast
+      | otherwise = (axiStored, False) -- No input
+
+-- | Integrated logic analyzer for an Axi4Stream bus, it captures the data, keep, ready and last signals.
+ilaAxi4Stream ::
+  forall dom conf userType.
+  (HiddenClock dom, KnownAxi4StreamConfig conf) =>
+  {- | Number of registers to insert at each probe. Supported values: 0-6.
+  Corresponds to @C_INPUT_PIPE_STAGES@. Default is @0@.
+  -}
+  Index 7 ->
+  {- | Number of samples to store. Corresponds to @C_DATA_DEPTH@. Default set
+  by 'ilaConfig' equals 'D4096'.
+  -}
+  Depth ->
+  Circuit
+    (Axi4Stream dom conf userType)
+    (Axi4Stream dom conf userType)
+ilaAxi4Stream stages0 depth0 = Circuit $ \(m2s, s2m) ->
+  let
+    ilaInst :: Signal dom ()
+    ilaInst =
+      ila
+        ( ilaConfig
+            $ "m2s_tdata"
+            :> "m2s_tkeep"
+            :> "m2s_tlast"
+            :> "s2m_tready"
+            :> Nil
+        )
+          { advancedTriggers = True
+          , stages = stages0
+          , depth = depth0
+          }
+        hasClock
+        (_tdata . fromJust <$> m2s)
+        (_tkeep . fromJust <$> m2s)
+        (_tlast . fromJust <$> m2s)
+        (_tready <$> s2m)
+   in
+    ilaInst `hwSeqX` (s2m, m2s)
+
+{- | A packed transfer is a transfer where either:
+* _tlast is not set and all _tkeep bits are set.
+* _tlast is set and only the first n _tkeep bits are set.
+>>> let mkAxi keep last = Axi4StreamM2S @('Axi4StreamConfig 2 0 0) (repeat 0) keep (repeat True) last 0 0 ()
+>>> isPackedTransfer $ mkAxi (False :> False :> Nil) False
+False
+>>> isPackedTransfer $ mkAxi (True :> False :> Nil) False
+False
+>>> isPackedTransfer $ mkAxi (True :> True :> Nil) False
+True
+>>> isPackedTransfer $ mkAxi (False :> False :> Nil) True
+True
+>>> isPackedTransfer $ mkAxi (False :> True :> Nil) True
+False
+-}
+isPackedTransfer :: (KnownNat (DataWidth conf)) => Axi4StreamM2S conf a -> Bool
+isPackedTransfer Axi4StreamM2S{_tkeep, _tlast}
+  | _tlast = not $ hasGaps _tkeep
+  | otherwise = and _tkeep
+ where
+  rising = snd . mapAccumL (\prevKeep keep -> (keep, not prevKeep && keep)) True
+  hasGaps = or . rising
+
+-- | A 2-domain Xilinx FIFO for the AXI4 WriteAddress channel
+axi4WriteAddressFifo ::
+  forall domA domB conf userType.
+  ( KnownDomain domA
+  , KnownDomain domB
+  , KnownAxi4WriteAddressConfig conf
+  , NFDataX userType
+  ) =>
+  Clock domA ->
+  Reset domA ->
+  Clock domB ->
+  Reset domB ->
+  Circuit
+    (Axi4WriteAddress domA conf userType)
+    (Axi4WriteAddress domB conf userType)
+axi4WriteAddressFifo clkA rstA clkB rstB =
+  axi4ToDf |> dcFifoDf d5 clkA rstA clkB rstB |> dfToAxi4
+ where
+  axi4ToDf ::
+    Circuit
+      (Axi4WriteAddress dom conf userType)
+      (Df dom (M2S_WriteAddress conf userType))
+  axi4ToDf = Circuit toDf
+   where
+    toDf (waM2S, dfAck) = (waS2M, dfData)
+     where
+      waS2M = S2M_WriteAddress . fromAck <$> dfAck
+      dfData = toMaybe <$> fmap isWriteAddress waM2S <*> waM2S
+      fromAck (Ack b) = b
+
+  dfToAxi4 ::
+    Circuit
+      (Df dom (M2S_WriteAddress conf userType))
+      (Axi4WriteAddress dom conf userType)
+  dfToAxi4 = Circuit toAxi4
+   where
+    toAxi4 (dfData, waS2M) = (dfAck, waM2S)
+     where
+      dfAck = Ack . (._awready) <$> waS2M
+      waM2S = fromMaybe M2S_NoWriteAddress <$> dfData
+
+-- | A 2-domain Xilinx FIFO for the AXI4 WriteData channel
+axi4WriteDataFifo ::
+  forall domA domB conf userType.
+  ( KnownDomain domA
+  , KnownDomain domB
+  , KnownAxi4WriteDataConfig conf
+  , NFDataX userType
+  ) =>
+  Clock domA ->
+  Reset domA ->
+  Clock domB ->
+  Reset domB ->
+  Circuit
+    (Axi4WriteData domA conf userType)
+    (Axi4WriteData domB conf userType)
+axi4WriteDataFifo clkA rstA clkB rstB =
+  axi4ToDf |> dcFifoDf d5 clkA rstA clkB rstB |> dfToAxi4
+ where
+  axi4ToDf ::
+    Circuit
+      (Axi4WriteData dom conf userType)
+      (Df dom (M2S_WriteData conf userType))
+  axi4ToDf = Circuit toDf
+   where
+    toDf (wdM2S, dfAck) = (wdS2M, dfData)
+     where
+      wdS2M = S2M_WriteData . fromAck <$> dfAck
+      dfData = toMaybe <$> fmap isWriteData wdM2S <*> wdM2S
+      fromAck (Ack b) = b
+
+  dfToAxi4 ::
+    Circuit
+      (Df dom (M2S_WriteData conf userType))
+      (Axi4WriteData dom conf userType)
+  dfToAxi4 = Circuit toAxi4
+   where
+    toAxi4 (dfData, wdS2M) = (dfAck, wdM2S)
+     where
+      dfAck = Ack . (._wready) <$> wdS2M
+      wdM2S = fromMaybe M2S_NoWriteData <$> dfData
+
+-- | A 2-domain Xilinx FIFO for the AXI4 WriteResponse channel
+axi4WriteResponseFifo ::
+  forall domA domB conf userType.
+  ( KnownDomain domA
+  , KnownDomain domB
+  , KnownAxi4WriteResponseConfig conf
+  , NFDataX userType
+  ) =>
+  Clock domA ->
+  Reset domA ->
+  Clock domB ->
+  Reset domB ->
+  Circuit
+    (Axi4WriteResponse domA conf userType)
+    (Axi4WriteResponse domB conf userType)
+axi4WriteResponseFifo clkA rstA clkB rstB =
+  axi4ToDf |> dcFifoDf d5 clkA rstA clkB rstB |> dfToAxi4
+ where
+  axi4ToDf ::
+    Circuit
+      (Axi4WriteResponse dom conf userType)
+      (Df dom (S2M_WriteResponse conf userType))
+  axi4ToDf = Circuit toDf
+   where
+    toDf (wrS2M, dfAck) = (wrM2S, dfData)
+     where
+      wrM2S = M2S_WriteResponse . fromAck <$> dfAck
+      dfData = toMaybe <$> fmap isWriteResponse wrS2M <*> wrS2M
+      fromAck (Ack b) = b
+
+  dfToAxi4 ::
+    Circuit
+      (Df dom (S2M_WriteResponse conf userType))
+      (Axi4WriteResponse dom conf userType)
+  dfToAxi4 = Circuit toAxi4
+   where
+    toAxi4 (dfData, wrM2S) = (dfAck, wrS2M)
+     where
+      dfAck = Ack . (._bready) <$> wrM2S
+      wrS2M = fromMaybe S2M_NoWriteResponse <$> dfData
+
+-- | A 2-domain Xilinx FIFO for the AXI4 ReadAddress channel
+axi4ReadAddressFifo ::
+  forall domA domB conf userType.
+  ( KnownDomain domA
+  , KnownDomain domB
+  , KnownAxi4ReadAddressConfig conf
+  , NFDataX userType
+  ) =>
+  Clock domA ->
+  Reset domA ->
+  Clock domB ->
+  Reset domB ->
+  Circuit
+    (Axi4ReadAddress domA conf userType)
+    (Axi4ReadAddress domB conf userType)
+axi4ReadAddressFifo clkA rstA clkB rstB =
+  axi4ToDf |> dcFifoDf d5 clkA rstA clkB rstB |> dfToAxi4
+ where
+  axi4ToDf ::
+    Circuit
+      (Axi4ReadAddress dom conf userType)
+      (Df dom (M2S_ReadAddress conf userType))
+  axi4ToDf = Circuit toDf
+   where
+    toDf (raM2S, dfAck) = (raS2M, dfData)
+     where
+      raS2M = S2M_ReadAddress . fromAck <$> dfAck
+      dfData = toMaybe <$> fmap isReadAddress raM2S <*> raM2S
+      fromAck (Ack b) = b
+
+  dfToAxi4 ::
+    Circuit
+      (Df dom (M2S_ReadAddress conf userType))
+      (Axi4ReadAddress dom conf userType)
+  dfToAxi4 = Circuit toAxi4
+   where
+    toAxi4 (dfData, raS2M) = (dfAck, raM2S)
+     where
+      dfAck = Ack . (._arready) <$> raS2M
+      raM2S = fromMaybe M2S_NoReadAddress <$> dfData
+
+-- | A 2-domain Xilinx FIFO for the AXI4 ReadData channel
+axi4ReadDataFifo ::
+  forall domA domB conf userType dataType.
+  ( KnownDomain domA
+  , KnownDomain domB
+  , KnownAxi4ReadDataConfig conf
+  , NFDataX userType
+  , NFDataX dataType
+  ) =>
+  Clock domA ->
+  Reset domA ->
+  Clock domB ->
+  Reset domB ->
+  Circuit
+    (Axi4ReadData domA conf userType dataType)
+    (Axi4ReadData domB conf userType dataType)
+axi4ReadDataFifo clkA rstA clkB rstB =
+  axi4ToDf |> dcFifoDf d5 clkA rstA clkB rstB |> dfToAxi4
+ where
+  axi4ToDf ::
+    Circuit
+      (Axi4ReadData dom conf userType dataType)
+      (Df dom (S2M_ReadData conf userType dataType))
+  axi4ToDf = Circuit toDf
+   where
+    toDf (rdS2M, dfAck) = (rdM2S, dfData)
+     where
+      rdM2S = M2S_ReadData . fromAck <$> dfAck
+      dfData = toMaybe <$> fmap isReadData rdS2M <*> rdS2M
+      fromAck (Ack b) = b
+
+  dfToAxi4 ::
+    Circuit
+      (Df dom (S2M_ReadData conf userType dataType))
+      (Axi4ReadData dom conf userType dataType)
+  dfToAxi4 = Circuit toAxi4
+   where
+    toAxi4 (dfData, rdM2S) = (dfAck, rdS2M)
+     where
+      dfAck = Ack . (._rready) <$> rdM2S
+      rdS2M = fromMaybe S2M_NoReadData <$> dfData
+
+{- | State for the Wishbone to AXI4 conversion statemachine, contains booleans to indicate
+when a channel is done with its part of the transaction.
+-}
+data WishboneToAxiState = WishboneToAxiState
+  { raDone :: Bool
+  , waDone :: Bool
+  , wdDone :: Bool
+  }
+  deriving (Generic, NFDataX, BitPack, Typeable, Show)
+
+type Axi4ReadDataFromWishbone = 'Axi4ReadDataConfig 'True 0
+type Axi4ReadAddressFromWishbone addrW =
+  'Axi4ReadAddressConfig 'False 'False 0 addrW 'False 'False False 'False 'False 'False
+type Axi4WriteAddressFromWishbone addrW =
+  'Axi4WriteAddressConfig 'False 'False 0 addrW 'False 'False False 'False 'False 'False
+type Axi4WriteDataFromWishbone n = 'Axi4WriteDataConfig 'True n
+type Axi4WriteResponseFromWishbone = 'Axi4WriteResponseConfig 'True 0
+
+{- | Convert a Wishbone bus to an Axi4 bus. The circuit is a mealy machine that deconstructs
+an incoming wishbone transaction into Axi4 channels. The wishbone response is constructed from the
+incoming Axi4 response channels.
+-}
+wbToAxi4MemoryMapped ::
+  forall dom addrW nBytes.
+  ( HiddenClockResetEnable dom
+  , KnownNat addrW
+  , KnownNat nBytes
+  ) =>
+  Circuit
+    ( Wishbone dom 'Standard addrW nBytes
+    , Axi4ReadData dom Axi4ReadDataFromWishbone () (Bytes nBytes)
+    , Axi4WriteResponse dom Axi4WriteResponseFromWishbone ()
+    )
+    ( Axi4ReadAddress dom (Axi4ReadAddressFromWishbone addrW) ()
+    , Axi4WriteAddress dom (Axi4WriteAddressFromWishbone addrW) ()
+    , Axi4WriteData dom (Axi4WriteDataFromWishbone nBytes) ()
+    )
+wbToAxi4MemoryMapped =
+  Circuit
+    $ bimap unbundle unbundle
+    . unbundle
+    . mealy go initState
+    . bundle
+    . bimap bundle bundle
+ where
+  initState = WishboneToAxiState False False False
+  go state (~(wbM2S, rdFwd, wrFwd), ~(raBwd, waBwd, wdBwd)) =
+    (nextState, ((wbS2M, rdBwd, wrBwd), (raFwd, waFwd, wdFwd)))
+   where
+    receivedResponse = rdFwd /= S2M_NoReadData || wrFwd /= S2M_NoWriteResponse
+    nextState
+      | receivedResponse = initState
+      | otherwise =
+          WishboneToAxiState
+            { raDone = state.raDone || (raFwd /= M2S_NoReadAddress && raBwd._arready)
+            , waDone = state.waDone || (waFwd /= M2S_NoWriteAddress && waBwd._awready)
+            , wdDone = state.wdDone || (wdFwd /= M2S_NoWriteData && wdBwd._wready)
+            }
+
+    wbS2M = mkWishboneS2M rdFwd wrFwd
+
+    -- Driving the outgoing axi channels
+    raFwd = mkReadAddress state.raDone wbM2S
+    waFwd = mkWriteAddress state.waDone wbM2S
+    wdFwd = mkWriteData state.wdDone wbM2S
+
+    -- Driving outgoing axi responses
+    rdBwd = M2S_ReadData True
+    wrBwd = M2S_WriteResponse True
+
+mkWishboneS2M ::
+  (KnownNat nBytes) =>
+  S2M_ReadData Axi4ReadDataFromWishbone () (Bytes nBytes) ->
+  S2M_WriteResponse Axi4WriteResponseFromWishbone () ->
+  WishboneS2M nBytes
+mkWishboneS2M rdFwd wrFwd = case (rdFwd, wrFwd) of
+  (rd@S2M_ReadData{}, _) ->
+    let okay = maybe True (== ROkay) (fromKeepType rd._rresp)
+     in (emptyWishboneS2M @0)
+          { readData = rd._rdata
+          , err = not okay
+          , acknowledge = okay
+          }
+  (_, wr@S2M_WriteResponse{}) ->
+    let okay = wr._bresp == toKeepType ROkay
+     in (emptyWishboneS2M @0)
+          { err = not okay
+          , acknowledge = okay
+          , readData = deepErrorX "wbToAxi4MemoryMapped: write readData"
+          }
+  _ -> emptyWishboneS2M
+
+mkReadAddress ::
+  forall addrW nBytes.
+  Bool ->
+  WishboneM2S addrW nBytes ->
+  M2S_ReadAddress (Axi4ReadAddressFromWishbone addrW) ()
+mkReadAddress done wbM2S
+  | not done && wbM2S.busCycle && wbM2S.strobe && not wbM2S.writeEnable =
+      M2S_ReadAddress
+        { _arid = 0
+        , _araddr = wbM2S.addr
+        , _arregion = Proxy
+        , _arlen = Proxy
+        , _arsize = Proxy
+        , _arburst = Proxy
+        , _arlock = Proxy
+        , _arcache = Proxy
+        , _arprot = Proxy
+        , _arqos = Proxy
+        , _aruser = ()
+        }
+  | otherwise = M2S_NoReadAddress
+
+mkWriteAddress ::
+  forall addrW nBytes.
+  Bool ->
+  WishboneM2S addrW nBytes ->
+  M2S_WriteAddress (Axi4WriteAddressFromWishbone addrW) ()
+mkWriteAddress done wbM2S
+  | not done && wbM2S.busCycle && wbM2S.strobe && wbM2S.writeEnable =
+      M2S_WriteAddress
+        { _awid = 0
+        , _awaddr = wbM2S.addr
+        , _awregion = Proxy
+        , _awlen = Proxy
+        , _awsize = Proxy
+        , _awburst = Proxy
+        , _awlock = Proxy
+        , _awcache = Proxy
+        , _awprot = Proxy
+        , _awqos = Proxy
+        , _awuser = ()
+        }
+  | otherwise = M2S_NoWriteAddress
+
+mkWriteData ::
+  forall conf addrW nBytes.
+  ( KnownAxi4WriteDataConfig conf
+  , WNBytes conf ~ nBytes
+  ) =>
+  Bool ->
+  WishboneM2S addrW nBytes ->
+  M2S_WriteData conf ()
+mkWriteData done wbM2S
+  | not done && wbM2S.busCycle && wbM2S.strobe && wbM2S.writeEnable =
+      M2S_WriteData
+        { _wdata = toStrobeDataType <$> (unpack wbM2S.busSelect) <*> (bitCoerce wbM2S.writeData)
+        , _wlast = True
+        , _wuser = ()
+        }
+  | otherwise = M2S_NoWriteData
+
+-- | Receives AXI4 channels and produces wishbone requests in the form of a `Df` stream.
+axi4ToWishboneRequests ::
+  (KnownNat nBytes, KnownNat addrW) =>
+  Circuit
+    ( Axi4ReadAddress dom (Axi4ReadAddressFromWishbone addrW) ()
+    , Axi4WriteAddress dom (Axi4WriteAddressFromWishbone addrW) ()
+    , Axi4WriteData dom (Axi4WriteDataFromWishbone nBytes) ()
+    )
+    (Df dom (WishboneRequest addrW nBytes))
+axi4ToWishboneRequests = Circuit $ first unbundle . unbundle . fmap go . bundle . first bundle
+ where
+  go (~(raFwd, waFwd, wdFwd), Ack reqBwd) =
+    ((S2M_ReadAddress raBwd, S2M_WriteAddress waBwd, S2M_WriteData wdBwd), reqFwd)
+   where
+    (raBwd, waBwd, wdBwd, reqFwd) = case (raFwd, waFwd, wdFwd) of
+      (M2S_ReadAddress{}, _, _) ->
+        (reqBwd, False, False, Just $ ReadRequest raFwd._araddr maxBound)
+      (M2S_NoReadAddress, M2S_WriteAddress{}, M2S_WriteData{}) ->
+        (False, reqBwd, reqBwd, Just $ WriteRequest waFwd._awaddr writeSel writeData)
+      _ -> (False, False, False, Nothing)
+    maybeWrites = fromStrobeDataType <$> wdFwd._wdata
+    writeSel = pack $ isJust <$> maybeWrites
+    writeData = pack $ fromMaybe 0 <$> maybeWrites
+
+-- | Receives a `Df` stream of `WishboneResponse` and converts it into respective AXI4 channels
+axi4FromWishboneResponse ::
+  (KnownNat nBytes) =>
+  Circuit
+    (Df dom (WishboneResponse nBytes))
+    ( Axi4ReadData dom Axi4ReadDataFromWishbone () (Bytes nBytes)
+    , Axi4WriteResponse dom Axi4WriteResponseFromWishbone ()
+    )
+axi4FromWishboneResponse = Circuit $ second unbundle . unbundle . fmap go . bundle . second bundle
+ where
+  go (Nothing, _) = (Ack False, (S2M_NoReadData, S2M_NoWriteResponse))
+  go (Just resp, ~(rdBwd, wrBwd)) = (Ack respBwd, (rdFwd, wrFwd))
+   where
+    rdFwd = case resp of
+      ReadSuccess dat ->
+        S2M_ReadData
+          { _rid = 0
+          , _rdata = pack $ fromMaybe 0 <$> dat
+          , _rresp = toKeepType ROkay
+          , _ruser = ()
+          , _rlast = True
+          }
+      ReadError ->
+        S2M_ReadData
+          { _rid = 0
+          , _rdata = 0
+          , _rresp = toKeepType RSlaveError
+          , _ruser = ()
+          , _rlast = True
+          }
+      _ -> S2M_NoReadData
+
+    wrFwd = case resp of
+      WriteSuccess -> S2M_WriteResponse{_bid = 0, _bresp = toKeepType ROkay, _buser = ()}
+      WriteError -> S2M_WriteResponse{_bid = 0, _bresp = toKeepType RSlaveError, _buser = ()}
+      _ -> S2M_NoWriteResponse
+
+    respBwd = case resp of
+      ReadSuccess{} -> rdBwd._rready
+      ReadError -> rdBwd._rready
+      WriteSuccess -> wrBwd._bready
+      WriteError -> wrBwd._bready
+
+-- | An AXI4 to wishbone component which supports an overlapping subset of both protocols
+{-# OPAQUE axiMemoryMappedToWb #-}
+axiMemoryMappedToWb ::
+  forall dom addrW nBytes.
+  ( HasCircuitContext
+  , HiddenClockResetEnable dom
+  , KnownNat nBytes
+  , KnownNat addrW
+  ) =>
+  Circuit
+    ( Axi4ReadAddress dom (Axi4ReadAddressFromWishbone addrW) ()
+    , Axi4WriteAddress dom (Axi4WriteAddressFromWishbone addrW) ()
+    , Axi4WriteData dom (Axi4WriteDataFromWishbone nBytes) ()
+    )
+    ( Wishbone dom 'Standard addrW nBytes
+    , Axi4ReadData dom Axi4ReadDataFromWishbone () (Bytes nBytes)
+    , Axi4WriteResponse dom Axi4WriteResponseFromWishbone ()
+    )
+axiMemoryMappedToWb = circuit $ \(ra, wa, wd) -> do
+  (wb, wbResps) <- dfWishboneMaster -< wbReqs
+  wbReqs <- axi4ToWishboneRequests -< (ra, wa, wd)
+  (rd, wr) <- axi4FromWishboneResponse -< wbResps
+  idC -< (wb, rd, wr)

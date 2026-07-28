@@ -1,0 +1,239 @@
+// SPDX-FileCopyrightText: 2024 Google LLC
+//
+// SPDX-License-Identifier: Apache-2.0
+
+#![no_std]
+#![no_main]
+#![feature(sync_unsafe_cell)]
+
+use bittide_hal::{
+    hals::ethernet as hal,
+    manual_additions::timer::{Duration, Instant},
+};
+use bittide_sys::{
+    mac::MacStatus,
+    smoltcp::{axi::AxiEthernet, set_local, set_unicast},
+    uart::log::LOGGER,
+};
+use log::{debug, info, LevelFilter};
+use riscv::register::{mcause, mepc, mtval};
+use smoltcp::{
+    iface::{Config, Interface, SocketSet, SocketStorage},
+    phy::Medium,
+    socket::{
+        dhcpv4,
+        tcp::{Socket, SocketBuffer},
+    },
+    wire::{EthernetAddress, IpAddress, IpCidr},
+};
+use ufmt::uwriteln;
+
+#[cfg(not(test))]
+use riscv_rt::entry;
+
+const INSTANCES: hal::DeviceInstances = unsafe { hal::DeviceInstances::new() };
+const MAC_ADDR: *const MacStatus = (INSTANCES.mac_status.0) as *const MacStatus;
+
+const RX_BUFFER_SIZE: usize = 2048;
+const ETH_MTU: usize = RX_BUFFER_SIZE;
+const SOFT_BUFFER_SIZE: usize = 1024 * 8;
+const CHUNK_SIZE: usize = 4096;
+
+const SERVER_IP: IpAddress = IpAddress::v4(10, 0, 0, 1);
+const SERVER_PORT: u16 = 1234;
+
+gdb_trace::gdb_panic! {
+    INSTANCES.uart
+}
+
+#[allow(dead_code)]
+fn to_smoltcp_duration(duration: Duration) -> smoltcp::time::Duration {
+    smoltcp::time::Duration::from_micros(duration.micros())
+}
+
+fn from_smoltcp_duration(smoltcp_duration: smoltcp::time::Duration) -> Duration {
+    Duration::from_micros(smoltcp_duration.micros())
+}
+
+fn to_smoltcp_instant(instant: Instant) -> smoltcp::time::Instant {
+    smoltcp::time::Instant::from_micros(instant.micros() as i64)
+}
+
+#[allow(dead_code)]
+fn from_smoltcp_instant(smoltcp_instant: smoltcp::time::Instant) -> Instant {
+    Instant::from_micros(smoltcp_instant.micros() as u64)
+}
+
+// See https://github.com/bittide/bittide-hardware/issues/681
+#[allow(static_mut_refs)]
+#[cfg_attr(not(test), entry)]
+fn main() -> ! {
+    let mut uart = INSTANCES.uart;
+    uwriteln!(INSTANCES.uart, "Initializing peripherals").unwrap();
+
+    // Initialize peripherals
+    let timer = INSTANCES.timer;
+    // TODO: Use EthMacStatus instead of MacStatus
+    let _mac = INSTANCES.mac_status;
+
+    let axi_tx = INSTANCES.axi_stream_tx;
+    let axi_rx = INSTANCES.axi_rx_buffer;
+
+    let dna: [u8; 12] = INSTANCES.dna.dna();
+
+    uwriteln!(uart, "Starting TCP Client").unwrap();
+    unsafe {
+        let logger = &mut (*LOGGER.get());
+        logger.set_logger(uart.clone());
+        logger.set_timer(INSTANCES.timer);
+        logger.display_source = LevelFilter::Warn;
+        log::set_logger_racy(logger).ok();
+        log::set_max_level_racy(LevelFilter::Trace);
+    }
+
+    // Configure interface
+    let mut eth_addr = EthernetAddress::from_bytes(&dna[0..6]);
+    set_unicast(&mut eth_addr);
+    set_local(&mut eth_addr);
+    let config = Config::new(eth_addr.into());
+    let mut eth: AxiEthernet<_, _, ETH_MTU> =
+        AxiEthernet::new(Medium::Ethernet, axi_rx, axi_tx, None);
+    let now = to_smoltcp_instant(timer.now());
+    let mut iface = Interface::new(config, &mut eth, now);
+
+    // Create sockets
+    let dhcp_socket = dhcpv4::Socket::new();
+    let client_socket = {
+        // It is not strictly necessary to use a `static mut` and unsafe code here, but
+        // on embedded systems that smoltcp targets it is far better to allocate the data
+        // statically to verify that it fits into RAM rather than get undefined behavior
+        // when stack overflows.
+        static mut TCP_SERVER_RX_DATA: [u8; SOFT_BUFFER_SIZE] = [0; SOFT_BUFFER_SIZE];
+        static mut TCP_SERVER_TX_DATA: [u8; SOFT_BUFFER_SIZE] = [0; SOFT_BUFFER_SIZE];
+        let tcp_rx_buffer = SocketBuffer::new(unsafe { &mut TCP_SERVER_RX_DATA[..] });
+        let tcp_tx_buffer = SocketBuffer::new(unsafe { &mut TCP_SERVER_TX_DATA[..] });
+        Socket::new(tcp_rx_buffer, tcp_tx_buffer)
+    };
+
+    let mut sockets: [SocketStorage; 2] = Default::default();
+    let mut sockets = SocketSet::new(&mut sockets[..]);
+    let client_handle = sockets.add(client_socket);
+    let dhcp_handle = sockets.add(dhcp_socket);
+
+    let mut mac_status = unsafe { MAC_ADDR.read_volatile() };
+    let mut my_ip = None;
+
+    let stress_test_duration = Duration::from_secs(30);
+    let mut stress_test_end = Instant::end_of_time();
+    info!(
+        "{}, TCP Server send chunks of {} bytes for {}",
+        timer.now(),
+        CHUNK_SIZE,
+        stress_test_duration
+    );
+    loop {
+        let elapsed = to_smoltcp_instant(timer.now());
+        iface.poll(elapsed, &mut eth, &mut sockets);
+        let dhcp_socket = sockets.get_mut::<dhcpv4::Socket>(dhcp_handle);
+        update_dhcp(&mut iface, dhcp_socket);
+        if iface.ip_addrs().is_empty() {
+            continue;
+        }
+
+        if my_ip.is_none() {
+            my_ip = iface.ipv4_addr();
+            info!("{}, IP address: {}", timer.now(), my_ip.unwrap());
+            let now = timer.now();
+            stress_test_end = now + stress_test_duration;
+            info!("{now}, Stress test will end at {stress_test_end}");
+        }
+
+        let socket = sockets.get_mut::<Socket>(client_handle);
+        let cx = iface.context();
+        if !socket.is_open() {
+            debug!("{}, Opening socket", timer.now());
+            if !socket.is_active() {
+                mac_status = unsafe { MAC_ADDR.read_volatile() };
+                debug!(
+                    "Connecting from {:?}:1234 to {SERVER_IP}:{SERVER_PORT}",
+                    my_ip.unwrap().octets(),
+                );
+                match socket.connect(cx, (SERVER_IP, SERVER_PORT), 1234) {
+                    Ok(_) => debug!("Connected to {SERVER_IP}:{SERVER_PORT}"),
+                    Err(e) => debug!("Error connecting: {e:?}"),
+                }
+            }
+        }
+        if socket.can_send() {
+            debug!("Sending data");
+            match socket.send_slice(&[0; CHUNK_SIZE]) {
+                Ok(n) => debug!("Sent {n} bytes"),
+                Err(e) => debug!("Error sending data: {e:?}"),
+            }
+            let now = timer.now();
+            if now > stress_test_end {
+                info!("{now}, Stress test complete");
+                socket.close();
+                let new_mac_status = unsafe { MAC_ADDR.read_volatile() };
+                uwriteln!(uart, "{:?}", new_mac_status - mac_status).unwrap();
+            }
+        }
+        match iface.poll_delay(to_smoltcp_instant(timer.now()), &sockets) {
+            Some(smoltcp::time::Duration::ZERO) => {}
+            Some(smoltcp_delay) => {
+                let delay = from_smoltcp_duration(smoltcp_delay);
+                debug!("sleeping for {delay} ms");
+                timer.wait(delay);
+                debug!("done sleeping");
+            }
+            None => {}
+        }
+    }
+}
+
+#[export_name = "ExceptionHandler"]
+fn exception_handler(_trap_frame: &riscv_rt::TrapFrame) -> ! {
+    let mut uart = INSTANCES.uart;
+    riscv::interrupt::free(|| {
+        uwriteln!(uart, "... caught an exception. Looping forever now.\n").unwrap();
+        info!("mcause: {:?}\n", mcause::read());
+        info!("mepc: {:?}\n", mepc::read());
+        info!("mtval: {:?}\n", mtval::read());
+    });
+    loop {
+        continue;
+    }
+}
+
+fn update_dhcp(iface: &mut Interface, socket: &mut dhcpv4::Socket) {
+    let event = socket.poll();
+    match event {
+        None => {}
+        Some(dhcpv4::Event::Configured(config)) => {
+            debug!("DHCP config acquired!");
+
+            debug!("IP address:      {}", config.address);
+            iface.update_ip_addrs(|addrs| {
+                addrs.clear();
+                addrs.push(IpCidr::Ipv4(config.address)).unwrap();
+            });
+
+            if let Some(router) = config.router {
+                debug!("Default gateway: {router}");
+                iface.routes_mut().add_default_ipv4_route(router).unwrap();
+            } else {
+                debug!("Default gateway: None");
+                iface.routes_mut().remove_default_ipv4_route();
+            }
+
+            for (i, s) in config.dns_servers.iter().enumerate() {
+                debug!("DNS server {i}:    {s}");
+            }
+        }
+        Some(dhcpv4::Event::Deconfigured) => {
+            debug!("DHCP lost config!");
+            iface.update_ip_addrs(|addrs| addrs.clear());
+            iface.routes_mut().remove_default_ipv4_route();
+        }
+    }
+}

@@ -1,0 +1,148 @@
+-- SPDX-FileCopyrightText: 2025 Google LLC
+--
+-- SPDX-License-Identifier: Apache-2.0
+
+{- | Regression test to make sure that nested interconnects work properly
+with memory map generation.
+-}
+module Bittide.Instances.Tests.NestedInterconnect where
+
+import Clash.Prelude
+
+import Bittide.Cpus.Riscv32imc (vexRiscv0)
+import Bittide.Instances.Domains (Basic50)
+import Bittide.ProcessingElement (
+  PeConfig (..),
+  processingElement,
+ )
+import Bittide.SharedTypes (withLittleEndian)
+import Bittide.Wishbone (singleMasterInterconnectC, uartBytes, uartInterfaceWb)
+import Project.FilePath (CargoBuildType (Release))
+
+import Clash.Class.BitPackC (ByteOrder)
+import Clash.Sized.Vector.Extra
+import Data.Char (chr)
+import Data.Maybe (catMaybes)
+import Clash.CircuitContext (HasCircuitContext, withoutCircuitContext)
+import Protocols
+import Protocols.Experimental.Simulate (SimulationConfig (..), sampleC)
+import Protocols.Experimental.Wishbone (Wishbone, WishboneMode (Standard))
+import Protocols.Idle (idleSink, idleSource)
+import Protocols.MemoryMap (MemoryMap, Mm, ignoreMM, withName)
+import Protocols.MemoryMap.Registers.WishboneStandard (
+  deviceConfig,
+  deviceWbI,
+  registerConfig,
+  registerWb_,
+ )
+import Test.Tasty.HUnit (HasCallStack)
+import VexRiscv (DumpVcd (NoDumpVcd))
+
+import Bittide.Instances.Common (PeConfigElfSource (NameOnly), emptyPeConfig, peConfigFromElf)
+import qualified Protocols.ToConst as ToConst
+import qualified Protocols.Vec as Vec
+
+-- | Simple peripheral device with two registers (status and control)
+simplePeripheral ::
+  forall dom aw.
+  ( HasCallStack
+  , HasCircuitContext
+  , HiddenClock dom
+  , HiddenReset dom
+  , KnownNat aw
+  , ?byteOrder :: ByteOrder
+  ) =>
+  String ->
+  Circuit
+    (ToConstBwd Mm, Wishbone dom 'Standard aw 4)
+    ()
+simplePeripheral name = withName name $ circuit $ \(mm, wb) -> do
+  [(offset0, config0, meta0, wb0), (offset1, config1, meta1, wb1)] <-
+    deviceWbI (deviceConfig "somePeripheral") -< (mm, wb)
+  registerWb_ hasClock hasReset (registerConfig "status" "") (0 :: Unsigned 32)
+    -< ((offset0, config0, meta0, wb0), Fwd noWrite)
+  registerWb_ hasClock hasReset (registerConfig "control" "") (0 :: Unsigned 32)
+    -< ((offset1, config1, meta1, wb1), Fwd noWrite)
+ where
+  noWrite = pure Nothing
+
+-- | DUT with nested singleMasterInterconnect (for memory map generation)
+dut ::
+  (HasCircuitContext, HiddenClockResetEnable dom, 1 <= DomainPeriod dom) =>
+  PeConfig 7 ->
+  Circuit (ToConstBwd Mm) (Df dom (BitVector 8))
+dut peConfig = withLittleEndian $ circuit $ \mm -> do
+  (uartRx, jtag) <- idleSource
+  ([uartBus, preInterconnectBus0], unNestedBusses) <-
+    Vec.split
+      <| processingElement NoDumpVcd peConfig
+      -< (mm, jtag)
+  (uartTx, _uartStatus) <- uartInterfaceWb d2 d2 uartBytes -< (uartBus, uartRx)
+
+  -- Nested device with multiple peripherals
+  idleSink
+    <| (Vec.vecCircuits (repeat (simplePeripheral "unnestedPeripherals")))
+    -< unNestedBusses
+
+  (pfxs0, nestedBusses0) <- Vec.unzip <| singleMasterInterconnectC -< preInterconnectBus0
+  ([preInterconnectBus1], nestedBusses1) <- Vec.split -< nestedBusses0
+  idleSink <| (Vec.vecCircuits $ fmap ToConst.toBwd prefixes0) -< pfxs0
+  idleSink
+    <| (Vec.vecCircuits (replicate d3 (simplePeripheral "L1NestedPeripherals")))
+    -< nestedBusses1
+
+  (pfxs1, nestedBusses2) <- Vec.unzip <| singleMasterInterconnectC -< preInterconnectBus1
+  idleSink <| (Vec.vecCircuits $ fmap ToConst.toBwd prefixes1) -< pfxs1
+  idleSink
+    <| (Vec.vecCircuits (replicate d3 (simplePeripheral "L2NestedPeripherals")))
+    -< nestedBusses2
+  idC -< uartTx
+ where
+  prefixes0 = incrementWithBlacklist @_ @_ @4 Nil
+  prefixes1 = incrementWithBlacklist @_ @_ @4 Nil
+
+-- | DUT for simulation (uses ignoreMM)
+top :: (HasCircuitContext) => PeConfig 7 -> Circuit () (Df Basic50 (BitVector 8))
+top peConfig = withLittleEndian
+  $ withClockResetEnable clockGen (resetGenN d2) enableGen
+  $ circuit
+  $ \_unit -> do
+    mm <- ignoreMM
+    dut peConfig -< mm
+
+type IMemWords = DivRU (8 * 1024) 4
+type DMemWords = DivRU (16 * 1024) 4
+
+-- | Processing element configuration
+peConfigSim :: IO (PeConfig 7)
+peConfigSim =
+  peConfigFromElf
+    (SNat @IMemWords)
+    (SNat @DMemWords)
+    (NameOnly "nested_interconnect_test")
+    Release
+    d0
+    d0
+    False
+    vexRiscv0
+
+-- | Memory map for the nested interconnect test
+nestedInterconnectMm :: MemoryMap
+nestedInterconnectMm = mm
+ where
+  Circuit circFn =
+    withClockResetEnable clockGen resetGen enableGen
+      $ withoutCircuitContext (dut @System)
+      $ emptyPeConfig (SNat @IMemWords) (SNat @DMemWords) d0 d0 False vexRiscv0
+  (SimOnly mm, _) = circFn ((), pure (Ack False))
+
+-- | Simulation result
+simResult :: PeConfig 7 -> String
+simResult peConfig = withoutCircuitContext (simStream peConfig)
+
+-- | Like 'simResult', but under the caller's circuit context (so a live
+-- waveform capture can record the run).
+simStream :: (HasCircuitContext) => PeConfig 7 -> String
+simStream peConfig = chr . fromIntegral <$> catMaybes uartStream
+ where
+  uartStream = sampleC def{timeoutAfter = 500_000} (top peConfig)

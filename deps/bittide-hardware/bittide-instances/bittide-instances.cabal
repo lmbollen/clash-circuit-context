@@ -1,0 +1,421 @@
+cabal-version: 3.8
+name: bittide-instances
+synopsis:
+  Top-entities for synthesis fixing target specific
+  parameters and connecting independent components to
+  architectures
+
+version: 0.1
+license: Apache-2.0
+license-file: LICENSE
+author: QBayLogic B.V.
+maintainer: devops@qbaylogic.com
+copyright: Copyright © 2022-2024 Google LLC
+data-files:
+  -- Cabal is very picky about wildcards in `data-files`:
+  -- https://cabal.readthedocs.io/en/3.6/cabal-package.html#pkg-field-data-files
+  data/**/*.gdb
+  data/**/*.sh
+  data/**/*.xdc
+  data/**/*.yml
+
+flag sim-baud-rate
+  description: Use the maximum domain allowed baud rate for simulating uart circuits.
+  default: False
+  manual: True
+
+-- One day we'll be able to replace this by 'default-language: GHC2024' and
+-- disabling a few extensions :)
+common ghc2024
+  default-extensions:
+    -- GHC2024, excluding:
+    -- ImplicitPrelude:          We want Clash.Prelude
+    -- ImplicitStagePersistence: Not a thing yet in the GHC we use
+    -- ImportQualifiedPost:      Okay on its own, but trips up fourmolu
+    -- StarIsType:               We want '*' to mean multiplication on type level
+    BangPatterns
+    BinaryLiterals
+    ConstrainedClassMethods
+    ConstraintKinds
+    DataKinds
+    DeriveDataTypeable
+    DeriveFoldable
+    DeriveFunctor
+    DeriveGeneric
+    DeriveLift
+    DeriveTraversable
+    DerivingStrategies
+    DisambiguateRecordFields
+    DoAndIfThenElse
+    EmptyCase
+    EmptyDataDecls
+    EmptyDataDeriving
+    ExistentialQuantification
+    ExplicitForAll
+    ExplicitNamespaces
+    FieldSelectors
+    FlexibleContexts
+    FlexibleInstances
+    ForeignFunctionInterface
+    GADTSyntax
+    GADTs
+    GeneralisedNewtypeDeriving
+    HexFloatLiterals
+    InstanceSigs
+    KindSignatures
+    LambdaCase
+    MonoLocalBinds
+    MonomorphismRestriction
+    MultiParamTypeClasses
+    NamedFieldPuns
+    NamedWildCards
+    NumericUnderscores
+    PatternGuards
+    PolyKinds
+    PostfixOperators
+    RankNTypes
+    RelaxedPolyRec
+    RoleAnnotations
+    ScopedTypeVariables
+    StandaloneDeriving
+    StandaloneKindSignatures
+    TraditionalRecordSyntax
+    TupleSections
+    TypeApplications
+    TypeOperators
+    TypeSynonymInstances
+
+common clash
+  -- TemplateHaskell is used to support convenience functions such as
+  -- 'listToVecTH' and 'bLit'.
+  --
+  -- `NoImplicitPrelude` is used because Clash offers Clash.Prelude
+  default-extensions:
+    NoImplicitPrelude
+    NoStarIsType
+    QuasiQuotes
+    TemplateHaskell
+
+  ghc-options:
+    -- Plugins to support type-level constraint solving on naturals:
+    --   - GHC.TypeLits.Extra.Solver
+    --   - GHC.TypeLits.Normalise
+    --   - GHC.TypeLits.KnownNat.Solver
+    --
+    -- Clash needs access to the source code in compiled modules:
+    --   -fexpose-all-unfoldings
+    --
+    -- Worker wrappers introduce unstable names for functions that might have
+    -- blackboxes attached for them. You can disable this, but be sure to add
+    -- a no-specialize pragma to every function with a blackbox.
+    --   -fno-worker-wrapper
+    --
+    -- Strict annotations - while sometimes preventing space leaks - trigger
+    -- optimizations Clash can't deal with. See:
+    --
+    --    https://github.com/clash-lang/clash-compiler/issues/2361
+    --
+    -- These flags disables the optimization:
+    --   -fno-unbox-small-strict-fields
+    --   -fno-unbox-strict-fields
+    -Wall
+    -Wcompat
+    -fplugin=GHC.TypeLits.Extra.Solver
+    -fplugin=GHC.TypeLits.Normalise
+    -fplugin=GHC.TypeLits.KnownNat.Solver
+    -fplugin=Protocols.Plugin
+    -- Auto-instrumentation for simulation waveforms: no-op for modules
+    -- without HasCircuitContext/HasProbe signatures (opt-in is by
+    -- signature, not by module).
+    -fplugin=Clash.CircuitContext.Plugin
+    -fconstraint-solver-iterations=20
+    -fexpose-all-unfoldings
+    -fno-worker-wrapper
+    -fno-unbox-small-strict-fields
+    -fno-unbox-strict-fields
+
+  build-depends:
+    clash-protocols,
+    ghc-typelits-extra >=0.4.4,
+    ghc-typelits-knownnat >=0.7.7,
+    ghc-typelits-natnormalise >=0.7.7,
+
+common extra
+  default-extensions:
+    DefaultSignatures
+    DeriveAnyClass
+    ImplicitParams
+    OverloadedRecordDot
+    TypeFamilies
+    ViewPatterns
+
+  ghc-options:
+    -Wall
+    -Wcompat
+
+common sane-records
+  default-extensions:
+    DisambiguateRecordFields
+    DuplicateRecordFields
+    NamedFieldPuns
+    NoFieldSelectors
+    OverloadedRecordDot
+
+library
+  import: ghc2024, clash, extra, sane-records
+  hs-source-dirs: src
+  exposed-modules:
+    Bittide.Instances.Common
+    Bittide.Instances.Domains
+    Bittide.Instances.Hacks
+    Bittide.Instances.Hitl.BoardTest
+    Bittide.Instances.Hitl.Ddr4
+    Bittide.Instances.Hitl.DnaOverSerial
+    Bittide.Instances.Hitl.Driver.ClockControl.Config
+    Bittide.Instances.Hitl.Driver.ClockControl.Plot.Common
+    Bittide.Instances.Hitl.Driver.ClockControl.Plot.DataCount
+    Bittide.Instances.Hitl.Driver.ClockControl.Plot.Ppm
+    Bittide.Instances.Hitl.Driver.ClockControl.Plot.Report
+    Bittide.Instances.Hitl.Driver.ClockControl.Samples
+    Bittide.Instances.Hitl.Driver.DnaOverSerial
+    Bittide.Instances.Hitl.Driver.FincFdec
+    Bittide.Instances.Hitl.Driver.Si539xConfiguration
+    Bittide.Instances.Hitl.Driver.VexRiscv
+    Bittide.Instances.Hitl.Driver.VexRiscvTcp
+    Bittide.Instances.Hitl.Ethernet
+    Bittide.Instances.Hitl.FincFdec
+    Bittide.Instances.Hitl.GenericDemo.BringUp
+    Bittide.Instances.Hitl.GenericDemo.Core
+    Bittide.Instances.Hitl.GenericDemo.MemoryMaps
+    Bittide.Instances.Hitl.GenericDemo.TopEntity
+    Bittide.Instances.Hitl.LinkConfiguration
+    Bittide.Instances.Hitl.Post.BoardTestExtended
+    Bittide.Instances.Hitl.Post.PostProcess
+    Bittide.Instances.Hitl.Setup
+    Bittide.Instances.Hitl.Si539xConfiguration
+    Bittide.Instances.Hitl.SoftUgnDemo.Driver
+    Bittide.Instances.Hitl.SoftUgnDemo.MemoryMaps
+    Bittide.Instances.Hitl.SoftUgnDemo.TopEntity
+    Bittide.Instances.Hitl.SoftUgnDemo.UserCore
+    Bittide.Instances.Hitl.SyncInSyncOut
+    Bittide.Instances.Hitl.TemperatureMonitor
+    Bittide.Instances.Hitl.Tests
+    Bittide.Instances.Hitl.Transceivers
+    Bittide.Instances.Hitl.Utils.Driver
+    Bittide.Instances.Hitl.Utils.Gdb
+    Bittide.Instances.Hitl.Utils.MemoryMap
+    Bittide.Instances.Hitl.Utils.OpenOcd
+    Bittide.Instances.Hitl.Utils.Program
+    Bittide.Instances.Hitl.Utils.Serial
+    Bittide.Instances.Hitl.Utils.Ugn
+    Bittide.Instances.Hitl.Utils.Usb
+    Bittide.Instances.Hitl.Utils.Utils
+    Bittide.Instances.Hitl.Utils.Vivado
+    Bittide.Instances.Hitl.VexRiscv
+    Bittide.Instances.Hitl.WireDemo.Driver
+    Bittide.Instances.Hitl.WireDemo.MemoryMaps
+    Bittide.Instances.Hitl.WireDemo.TopEntity
+    Bittide.Instances.Hitl.WireDemo.UserCore
+    Bittide.Instances.MemoryMaps
+    Bittide.Instances.Pnr.AsciiDebugMux
+    Bittide.Instances.Pnr.CaptureUgn
+    Bittide.Instances.Pnr.DomainDiffCounter
+    Bittide.Instances.Pnr.ElasticBuffer
+    Bittide.Instances.Pnr.Ethernet
+    Bittide.Instances.Pnr.Freeze
+    Bittide.Instances.Pnr.Handshake
+    Bittide.Instances.Pnr.ProcessingElement
+    Bittide.Instances.Pnr.ProgrammableMux
+    Bittide.Instances.Pnr.RingBuffer
+    Bittide.Instances.Pnr.Si539xSpi
+    Bittide.Instances.Pnr.Synchronizer
+    Bittide.Instances.Pnr.Time
+    Bittide.Instances.Pnr.Uart
+    Bittide.Instances.Pnr.WbStorage
+    Bittide.Instances.Pnr.WireDemoProcessingElement
+    Bittide.Instances.Pnr.Wishbone
+    Bittide.Instances.Tests.AddressableBytesWb
+    Bittide.Instances.Tests.Axi
+    Bittide.Instances.Tests.CaptureUgn
+    Bittide.Instances.Tests.ClockControlWb
+    Bittide.Instances.Tests.DnaPortE2
+    Bittide.Instances.Tests.ElasticBufferWb
+    Bittide.Instances.Tests.NestedInterconnect
+    Bittide.Instances.Tests.RegisterWb
+    Bittide.Instances.Tests.RingBuffer
+    Bittide.Instances.Tests.TimeWb
+    Bittide.Instances.Tests.Watchdog
+    Bittide.Instances.Tests.WbToDf
+    Paths.Bittide.Instances
+
+  other-modules:
+    Paths_bittide_instances
+
+  autogen-modules:
+    Paths_bittide_instances
+
+  build-depends:
+    Glob,
+    aeson,
+    async,
+    base,
+    binary,
+    bittide,
+    bittide-cpus,
+    bittide-experiments,
+    bittide-extra,
+    bytestring,
+    cassava,
+    clash-bitpackc,
+    clash-circuit-context,
+    clash-cores,
+    clash-prelude,
+    clash-protocols-memmap,
+    clash-vexriscv,
+    clock,
+    constraints,
+    containers,
+    data-default,
+    deepseq,
+    directory,
+    exceptions,
+    extra,
+    filepath,
+    gdb-hs,
+    ghc-typelits-extra-lemmas,
+    lift-type,
+    lifted-base,
+    matplotlib,
+    monad-control,
+    network-simple,
+    parsec,
+    pretty-show,
+    process,
+    sport,
+    streaming-bytestring,
+    string-interpolate,
+    tasty-hunit,
+    template-haskell,
+    temporary,
+    time,
+    unix,
+    vector,
+    vivado-hs,
+    word8,
+
+  if flag(sim-baud-rate)
+    cpp-options: -DSIM_BAUD_RATE
+
+test-suite doctests
+  type: exitcode-stdio-1.0
+  hs-source-dirs: tests
+  main-is: doctests.hs
+  ghc-options:
+    -Wall
+    -Wcompat
+    -threaded
+
+  build-depends:
+    base,
+    bittide-instances,
+    doctest-parallel >=0.3.0.1,
+
+test-suite unittests
+  import: ghc2024, clash, extra, sane-records
+  hs-source-dirs: tests
+  type: exitcode-stdio-1.0
+  main-is: unittests.hs
+  ghc-options: -threaded
+  other-modules:
+    Df.ElasticBufferWb
+    Df.WbToDf
+    Tests.Bittide.Instances.Hitl.Utils.MemoryMap
+    Tests.Bittide.Instances.Hitl.Utils.OpenOcd
+    Tests.Bittide.Instances.Hitl.Utils.Serial
+    Tests.ClockControlWb
+    Tests.Waveform
+    Wishbone.AddressableBytesWb
+    Wishbone.Axi
+    Wishbone.CaptureUgn
+    Wishbone.DnaPortE2
+    Wishbone.NestedInterconnect
+    Wishbone.RegisterWb
+    Wishbone.RingBuffer
+    Wishbone.Time
+    Wishbone.Watchdog
+
+  build-depends:
+    HUnit,
+    base,
+    bittide,
+    bittide-cpus,
+    bittide-extra,
+    bittide-instances,
+    clash-bitpackc,
+    clash-circuit-context,
+    clash-cores,
+    clash-prelude,
+    clash-prelude-hedgehog,
+    clash-protocols-memmap,
+    clash-vexriscv,
+    containers,
+    directory,
+    extra,
+    filepath,
+    ghc-typelits-extra-lemmas,
+    hedgehog >=1.0 && <1.5,
+    parsec,
+    pretty-simple,
+    process,
+    string-interpolate,
+    tasty,
+    tasty-golden,
+    tasty-hedgehog >=1.2 && <1.5,
+    tasty-hunit,
+    tasty-th,
+    text,
+
+executable clash
+  ghc-options:
+    -threaded
+    "-with-rtsopts -qn4 -K512M -H -I5 -T"
+
+  main-is: exe/clash/Main.hs
+  build-depends:
+    base,
+    bittide-instances,
+    clash-ghc,
+    vivado-hs,
+
+executable vexriscv-sim
+  import: ghc2024, extra, sane-records
+  main-is: vexriscv_sim.hs
+  hs-source-dirs: bin
+  build-depends:
+    base,
+    bittide-instances,
+
+  ghc-options:
+    -Wall
+    -threaded
+
+executable samples-to
+  import: ghc2024, extra, sane-records
+  main-is: samples_to.hs
+  hs-source-dirs: bin
+  build-depends:
+    async,
+    base,
+    bittide,
+    bittide-instances,
+    bytestring,
+    cassava,
+    directory,
+    filepath,
+    matplotlib,
+    process,
+    string-interpolate,
+
+  ghc-options:
+    -Wall
+    -threaded

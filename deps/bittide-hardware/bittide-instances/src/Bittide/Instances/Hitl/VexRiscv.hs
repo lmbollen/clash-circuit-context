@@ -1,0 +1,228 @@
+-- SPDX-FileCopyrightText: 2022 Google LLC
+--
+-- SPDX-License-Identifier: Apache-2.0
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE OverloadedStrings #-}
+
+-- {-# OPTIONS -fplugin-opt=Protocols.Plugin:debug #-}
+
+module Bittide.Instances.Hitl.VexRiscv where
+
+import Clash.Annotations.TH (makeTopEntity)
+
+import Clash.Explicit.Prelude (noReset, orReset)
+import Clash.Prelude
+
+import Bittide.SharedTypes (BitboneMm)
+import Clash.Class.BitPackC
+import Clash.Cores.Uart (ValidBaud)
+import Clash.Xilinx.ClockGen (clockWizardDifferential)
+import Project.FilePath (CargoBuildType (Release))
+import Clash.CircuitContext (HasCircuitContext, withoutCircuitContext)
+import Protocols
+import Protocols.MemoryMap (Access (WriteOnly), Mm, getMMAny)
+import Protocols.MemoryMap.Registers.WishboneStandard (
+  RegisterConfig (access),
+  deviceConfig,
+  deviceWbI,
+  registerConfig,
+  registerWb,
+ )
+import Protocols.MemoryMap.TypeDescription.TH
+import VexRiscv
+
+import Bittide.Cpus.Riscv32imc (vexRiscv0)
+import Bittide.Hitl
+import Bittide.Instances.Common (
+  PeConfigElfSource (TryEnv, backup, envVar),
+  emptyPeConfig,
+  peConfigFromElf,
+ )
+import Bittide.Instances.Domains (Basic125, Ext125)
+import Bittide.Instances.Hitl.Driver.VexRiscv
+import Bittide.ProcessingElement (PeConfig (..), processingElement)
+import Bittide.SharedTypes (withLittleEndian)
+import Bittide.Wishbone
+import Clash.Cores.UART.Extra
+
+import GHC.Stack (HasCallStack)
+import System.FilePath ((</>))
+
+import qualified Protocols.MemoryMap as Mm
+
+data TestStatus = Running | Success | Fail
+  deriving (Enum, Eq, Generic, NFDataX, BitPack, BitPackC, Show)
+deriveTypeDescription ''TestStatus
+
+type TestDone = Bool
+type TestSuccess = Bool
+type UartRx = Bit
+type UartTx = Bit
+
+#ifdef SIM_BAUD_RATE
+type Baud = MaxBaudRate Basic125
+#else
+type Baud = 921_600
+#endif
+
+baud :: SNat Baud
+baud = SNat
+
+peConfigRtl :: PeConfig 5
+peConfigRtl = emptyPeConfig (SNat @IMemWords) (SNat @DMemWords) d0 d0 False vexRiscv0
+
+peConfigSim :: IO (PeConfig 5)
+peConfigSim =
+  peConfigFromElf
+    (SNat @IMemWords)
+    (SNat @DMemWords)
+    TryEnv{envVar = "TEST_BINARY_NAME", backup = "vexriscv-hello"}
+    Release
+    d0
+    d0
+    False
+    vexRiscv0
+
+-- | To use this function, change the initial contents of the iMem and dMem
+sim :: IO ()
+sim = do
+  peConfig <- peConfigSim
+  let
+    go (uartRx, _) = ((), uartTx)
+     where
+      (_, (_, uartTx)) =
+        withClockResetEnable clockGen (resetGenN d2) enableGen
+          $ toSignals (vexRiscvTestC @Basic125 peConfig) (((), (pure $ unpack 0, uartRx)), ((), ()))
+  uartIO stdin stdout baud (Circuit go)
+
+{- | Wishbone accessible status register. Used to communicate the test status
+from the CPU to the outside world through VIOs.
+-}
+statusRegister ::
+  forall aw dom.
+  ( HasCallStack
+  , HasCircuitContext
+  , HiddenClock dom
+  , HiddenReset dom
+  , KnownNat aw
+  , 1 <= aw
+  , ?byteOrder :: ByteOrder
+  ) =>
+  Circuit
+    (BitboneMm dom aw)
+    (CSignal dom TestStatus)
+statusRegister = circuit $ \(mm, wb) -> do
+  [statusWb] <- deviceWbI (deviceConfig "StatusRegister") -< (mm, wb)
+  (statusOut, _a) <-
+    registerWb hasClock hasReset statusConf Running -< (statusWb, Fwd (pure Nothing))
+  idC -< statusOut
+ where
+  statusConf =
+    (registerConfig "status" "Set test status")
+      { access = WriteOnly
+      }
+
+vexRiscvTestMM :: Mm.MemoryMap
+vexRiscvTestMM =
+  getMMAny
+    $ withClockResetEnable clockGen resetGen enableGen
+    $ vexRiscvTestC @Basic125 peConfigRtl
+
+vexRiscvTestC ::
+  forall dom.
+  ( HiddenClockResetEnable dom
+  , HasCallStack
+  , 1 <= DomainPeriod dom
+  , ValidBaud dom Baud
+  ) =>
+  PeConfig 5 ->
+  Circuit
+    (ToConstBwd Mm, (Jtag dom, CSignal dom UartRx))
+    (CSignal dom TestStatus, CSignal dom UartTx)
+vexRiscvTestC peConfig =
+  -- HITL synthesis design: 'withoutCircuitContext' once over the whole circuit
+  -- discharges every component's 'HasCircuitContext'.
+  withLittleEndian
+    $ withoutCircuitContext
+    $ circuit
+    $ \(mm, (jtag, uartRx)) -> do
+      [ timeBus
+        , uartBus
+        , statusRegisterBus
+        ] <-
+        processingElement NoDumpVcd peConfig -< (mm, jtag)
+
+      (uartTx, _uartStatus) <-
+        uartInterfaceWb @dom d16 d16 (uartDf baud) -< (uartBus, uartRx)
+      _localCounter <- timeWb Nothing -< timeBus
+
+      testResult <- statusRegister -< statusRegisterBus
+      idC -< (testResult, uartTx)
+
+type IMemWords = DivRU (2 * 1024) 4
+type DMemWords = DivRU (4 * 1024) 4
+
+vexRiscvTest ::
+  "CLK_125MHZ" ::: DiffClock Ext125 ->
+  "JTAG" ::: Signal Basic125 JtagIn ->
+  "USB_UART_TXD" ::: Signal Basic125 UartRx ->
+  ""
+    ::: ( "done" ::: Signal Basic125 TestDone
+        , "success" ::: Signal Basic125 TestSuccess
+        , "JTAG" ::: Signal Basic125 JtagOut
+        , "USB_UART_RXD" ::: Signal Basic125 UartTx
+        )
+vexRiscvTest diffClk jtagIn uartRx = (testStatusDone, testStatusSuccess, jtagOut, uartTx)
+ where
+  (unbundle -> (testStatusDone, testStatusSuccess)) = stateToDoneSuccess <$> testStatus
+
+  stateToDoneSuccess Running = (False, False)
+  stateToDoneSuccess Success = (True, True)
+  stateToDoneSuccess Fail = (True, False)
+
+  (clk, clkStableRst) = clockWizardDifferential diffClk noReset
+
+  ((_mm, (jtagOut, _)), (testStatus, uartTx)) =
+    withClockResetEnable clk reset enableGen
+      $ toSignals
+        (vexRiscvTestC @Basic125 peConfigRtl)
+        (((), (jtagIn, uartRx)), ((), ()))
+
+  reset = orReset clkStableRst (unsafeFromActiveLow testStarted)
+
+  testStarted :: Signal Basic125 Bool
+  testStarted = hitlVioBool clk testDone testSuccess
+
+  -- TODO: We used to perform a HITL test where the CPU would write to a success
+  --       register (or a failure register when it would get trapped). We
+  --       currently load programs over JTAG instead of preloading them in the
+  --       bitstream, making this impossible to do. We should add a _pre_
+  --       processing step to the HITL infrastructure, restoring the ability to
+  --       do this once more.
+  testDone = testStarted
+  testSuccess = testStarted
+{-# OPAQUE vexRiscvTest #-}
+makeTopEntity 'vexRiscvTest
+
+tests :: HitlTestGroup
+tests =
+  HitlTestGroup
+    { topEntity = 'vexRiscvTest
+    , targetXdcs =
+        [ "vexRiscvTest.xdc"
+        , "jtag" </> "config.xdc"
+        , "jtag" </> "pmod1.xdc"
+        , "uart" </> "pmod1.xdc"
+        ]
+    , externalHdl = []
+    , testCases =
+        [ HitlTestCase
+            { name = "VexRiscV"
+            , parameters =
+                paramForHwTargets [HwTargetByIndex 1, HwTargetByIndex 2] ()
+            , postProcData = ()
+            }
+        ]
+    , mDriverProc = Just driverFunc
+    , mPostProc = Nothing
+    }

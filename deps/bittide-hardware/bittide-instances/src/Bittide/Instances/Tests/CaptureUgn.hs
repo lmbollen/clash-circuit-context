@@ -1,0 +1,88 @@
+-- SPDX-FileCopyrightText: 2026 Google LLC
+--
+-- SPDX-License-Identifier: Apache-2.0
+-- Auto-instrument the DUT for scoped simulation tracing (opt-in; transparent to
+-- HDL). The plugin scopes 'dutWithMm' and nests the instrumented 'captureUgns'.
+
+module Bittide.Instances.Tests.CaptureUgn where
+
+import Clash.Prelude
+import Protocols
+
+import Protocols.Idle (idleSource)
+import Protocols.MemoryMap (MemoryMap, Mm, getMMAny, unMemmap)
+import VexRiscv (DumpVcd (NoDumpVcd))
+
+import Bittide.CaptureUgn (captureUgns)
+import Clash.CircuitContext (HasCircuitContext, withoutCircuitContext)
+import Bittide.Cpus.Riscv32imc (vexRiscv0)
+import Bittide.Instances.Common (PeConfigElfSource (NameOnly), emptyPeConfig, peConfigFromElf)
+import Bittide.ProcessingElement (PeConfig, processingElement)
+import Bittide.SharedTypes (withLittleEndian)
+import Bittide.Wishbone (uartBytes, uartInterfaceWb)
+import Project.FilePath (CargoBuildType (Release))
+
+import qualified Bittide.Cpus.Riscv32imc as Riscv32imc
+
+{- | A simulation-only instance containing just VexRisc with UART and the captureUgn
+peripheral which runs the `capture_ugn_test` binary from `firmware-binaries`.
+-}
+dutWithMm ::
+  forall dom.
+  ( HasCircuitContext
+  , HiddenClockResetEnable dom
+  , 1 <= DomainPeriod dom
+  ) =>
+  -- | Processing element configuration
+  PeConfig 4 ->
+  -- | From handshake
+  Signal dom (Maybe (BitVector 64)) ->
+  -- | Local sequence counter
+  Signal dom (Unsigned 64) ->
+  Circuit (ToConstBwd Mm, ()) (Df dom (BitVector 8))
+dutWithMm peConfig eb localCounter = withLittleEndian $ circuit $ \(mm, _unit) -> do
+  (uartRx, jtagIdle) <- idleSource
+  [uartBus, ugnBus] <- processingElement @dom NoDumpVcd peConfig -< (mm, jtagIdle)
+  (uartTx, _uartStatus) <- uartInterfaceWb d2 d2 uartBytes -< (uartBus, uartRx)
+  _bittideData <- captureUgns localCounter (fmap (:> Nil) eb) -< ugnBus
+  idC -< uartTx
+{-# OPAQUE dutWithMm #-}
+
+type IMemWords = DivRU (4 * 1024) 4
+type DMemWords = DivRU (4 * 1024) 4
+
+peConfigSim :: IO (PeConfig 4)
+peConfigSim =
+  peConfigFromElf
+    (SNat @IMemWords)
+    (SNat @DMemWords)
+    (NameOnly "capture_ugn_test")
+    Release
+    d0
+    d0
+    False
+    Riscv32imc.vexRiscv0
+
+memoryMap :: MemoryMap
+memoryMap =
+  getMMAny
+    $ withClockResetEnable @System clockGen (resetGenN d2) enableGen
+    $ withoutCircuitContext
+    $ dutWithMm emptyPeCfg (pure Nothing) (pure 0)
+ where
+  emptyPeCfg = emptyPeConfig (SNat @IMemWords) (SNat @DMemWords) d0 d0 False vexRiscv0
+
+dut ::
+  forall dom.
+  ( HasCircuitContext
+  , HiddenClockResetEnable dom
+  , 1 <= DomainPeriod dom
+  ) =>
+  -- | Procesing element configuration
+  PeConfig 4 ->
+  -- | From handshake
+  Signal dom (Maybe (BitVector 64)) ->
+  -- | Local sequence counter
+  Signal dom (Unsigned 64) ->
+  Circuit () (Df dom (BitVector 8))
+dut peConfig handshake localCounter = unMemmap $ dutWithMm peConfig handshake localCounter

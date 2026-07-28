@@ -1,0 +1,109 @@
+-- SPDX-FileCopyrightText: 2025 Google LLC
+--
+-- SPDX-License-Identifier: Apache-2.0
+
+module Bittide.Instances.MemoryMaps where
+
+import Prelude
+
+import Bittide.Instances.Hitl.VexRiscv (vexRiscvTestMM)
+import Bittide.Instances.Pnr.Ethernet (vexRiscvEthernetMM)
+import Bittide.Instances.Pnr.Freeze (freezeMM)
+import Bittide.Instances.Pnr.ProcessingElement (vexRiscvUartHelloMM)
+
+import Protocols.MemoryMap
+import Protocols.MemoryMap.Check
+
+import Project.FilePath (buildDir, findParentContaining)
+
+import Control.Monad
+import Language.Haskell.TH (reportError, runIO)
+import System.Directory (createDirectoryIfMissing, removePathForcibly)
+import System.FilePath
+
+import qualified Bittide.Instances.Hitl.FincFdec as FincFdec
+import qualified Bittide.Instances.Hitl.Si539xConfiguration as Si539xConfiguration
+import qualified Bittide.Instances.Hitl.SoftUgnDemo.MemoryMaps as SoftUgnDemo
+import qualified Bittide.Instances.Hitl.WireDemo.MemoryMaps as WireDemo
+import qualified Bittide.Instances.Tests.AddressableBytesWb as AddressableBytesWb
+import qualified Bittide.Instances.Tests.Axi as Axi
+import qualified Bittide.Instances.Tests.CaptureUgn as CaptureUgn
+import qualified Bittide.Instances.Tests.ClockControlWb as ClockControlWb
+import qualified Bittide.Instances.Tests.DnaPortE2 as DnaPortE2
+import qualified Bittide.Instances.Tests.ElasticBufferWb as ElasticBufferWb
+import qualified Bittide.Instances.Tests.NestedInterconnect as NestedInterconnect
+import qualified Bittide.Instances.Tests.RegisterWb as RegisterWb
+import qualified Bittide.Instances.Tests.RingBuffer as RingBuffer
+import qualified Bittide.Instances.Tests.TimeWb as TimeWb
+import qualified Bittide.Instances.Tests.Watchdog as Watchdog
+import qualified Bittide.Instances.Tests.WbToDf as WbToDf
+import qualified Data.ByteString.Lazy as BS
+import qualified Protocols.MemoryMap.Json as Json
+
+$( do
+     -------------------------------
+     -- MEMORY MAPS               --
+     --                           --
+     -- Add new memory maps here  --
+     -------------------------------
+     let memoryMaps =
+           [ ("AddressableBytesWb", AddressableBytesWb.memoryMap)
+           , ("AxiStreamSelfTest", Axi.memoryMap)
+           , ("ClockControlWb", ClockControlWb.dutMm)
+           , ("CaptureUgnTest", CaptureUgn.memoryMap)
+           , ("DnaPortE2Test", DnaPortE2.dutMm)
+           , ("Ethernet", vexRiscvEthernetMM)
+           , ("ElasticBufferWbTest", ElasticBufferWb.dutMM)
+           , ("FincFdecTests", FincFdec.memoryMap)
+           , ("Freeze", freezeMM)
+           , ("NestedInterconnect", NestedInterconnect.nestedInterconnectMm)
+           , ("ProcessingElement", vexRiscvUartHelloMM)
+           , ("RegisterWb", RegisterWb.memoryMap)
+           , ("RingBufferTest", RingBuffer.dutMM)
+           , ("Si539xConfiguration", Si539xConfiguration.memoryMap)
+           , ("SoftUgnDemoBoot", SoftUgnDemo.boot)
+           , ("SoftUgnDemoManagementUnit", SoftUgnDemo.managementUnit)
+           , ("SoftUgnDemoClockControl", SoftUgnDemo.clockControl)
+           , ("TimeWb", TimeWb.timeWbMm)
+           , ("TimeWbC", TimeWb.timeWbMmC)
+           , ("WatchdogTest", Watchdog.dutMm)
+           , ("WbToDfTest", WbToDf.dutMM)
+           , ("WireDemoBoot", WireDemo.boot)
+           , ("WireDemoManagementUnit", WireDemo.managementUnit)
+           , ("WireDemoClockControl", WireDemo.clockControl)
+           , ("VexRiscv", vexRiscvTestMM)
+           ]
+
+     memMapDir <- runIO $ do
+       root <- findParentContaining "cabal.project"
+       let dir = root </> buildDir </> "memory_maps"
+       -- clean existing memory maps
+       removePathForcibly dir
+
+       createDirectoryIfMissing True dir
+       pure dir
+
+     let convertedTrees = map (\m -> convert m.tree) (snd <$> memoryMaps)
+     let normalizedTrees = map normalizeRelTree convertedTrees
+
+     let absResults =
+           flip map (memoryMaps `zip` normalizedTrees) $
+             \((_name, mm), normalised) ->
+               runMakeAbsolute mm.deviceDefs (0x0000_0000, 0xFFFF_FFFF) normalised
+
+     forM_ (memoryMaps `zip` absResults) $ \((mmName, mm), (absTree, errors)) -> do
+       if not $ null errors
+         then do
+           -- report errors
+           forM_ errors $ \err -> do
+             reportError (getErrorMessage err)
+           pure ()
+         else do
+           -- output JSON
+
+           let json = Json.memoryMapJson Json.LocationSeparate mm.deviceDefs absTree
+           let jsonPath = memMapDir </> mmName <.> "json"
+           runIO $ BS.writeFile jsonPath $ Json.encode json
+
+     pure []
+ )

@@ -1,0 +1,138 @@
+-- SPDX-FileCopyrightText: 2025 Google LLC
+--
+-- SPDX-License-Identifier: Apache-2.0
+
+module Bittide.ClockControl.Freeze where
+
+import Clash.CircuitContext (HasCircuitContext)
+import Clash.Explicit.Prelude
+import Protocols
+
+import Bittide.SharedTypes (BitboneMm)
+import Bittide.Shutter (shutter)
+import Clash.Class.BitPackC (ByteOrder)
+import GHC.Stack (HasCallStack)
+import Protocols.MemoryMap (Access (ReadOnly, WriteOnly))
+import Protocols.MemoryMap.Registers.WishboneStandard (
+  BusActivity (BusWrite),
+  RegisterConfig (access),
+  deviceConfig,
+  deviceWb,
+  registerConfig,
+  registerWb,
+  registerWb_,
+ )
+
+{- | Component that can freeze a bunch of incoming signals related to clock
+control measurements. This makes sure the clock control algorithm works on
+measurements that are taken at the same clock cycle.
+-}
+{-# OPAQUE freeze #-}
+freeze ::
+  forall aw nLinks dom.
+  ( HasCircuitContext
+  , KnownDomain dom
+  , KnownNat aw
+  , KnownNat nLinks
+  , HasCallStack
+  , 4 <= aw
+  , ?byteOrder :: ByteOrder
+  ) =>
+  Clock dom ->
+  Reset dom ->
+  Circuit
+    ( BitboneMm dom aw
+    , "domain_diff_counters" ::: CSignal dom (Vec nLinks (Signed 32))
+    , "local_clock_counter" ::: CSignal dom (Unsigned 64)
+    , "sync_in_counter" ::: CSignal dom (Unsigned 32)
+    , "cycles_since_sync_in" ::: CSignal dom (Unsigned 32)
+    )
+    ()
+freeze clk rst =
+  circuit $ \((mm, wb), ebCounters, localCounter, syncPulseCounter, lastPulseCounter) -> do
+    -- Create a bunch of register wishbone interfaces. We don't really care about
+    -- ordering, so we just append a number to the end of a generic name.
+    [wb0, wb1, wb2, wb3, wb4, wb5] <-
+      deviceWb clk rst (deviceConfig "Freeze") -< (mm, wb)
+
+    -- Only writable register in this device: can be used by the wishbone manager
+    -- to freeze all the incoming signals.
+    --
+    -- TODO: Delay acknowledgment until 'freeze_counter' is updated. We currently
+    --       don't expect this to cause any problems as we don't critically rely
+    --       on the counter being exact (i.e., reading one less just means we
+    --       drop one measurement at the end of a clock control experiment). Still,
+    --       it would be nice for 'registerWb' to support this.
+    (_a0, Fwd freezeActivity) <- registerWb clk rst freezeConfig () -< (wb0, Fwd noWrite)
+    let shut = freezeActivity .== Just (BusWrite ())
+
+    -- Read-only register that counts how many times the user requested a freeze
+    let freezeCounterWrite = Just <$> counter @(Unsigned 32) clk rst (toEnable shut) 0
+    registerWb_ clk rst freezeCounterConfig 0 -< (wb1, Fwd freezeCounterWrite)
+
+    -- Counters that are frozen when the user requests a freeze.
+    localClockWrite <- shutter shut -< localCounter
+    registerWb_ clk rst localClockConfig 0 -< (wb2, localClockWrite)
+
+    syncPulseCounterWrite <- shutter shut -< syncPulseCounter
+    registerWb_ clk rst syncCounterConfig 0 -< (wb3, syncPulseCounterWrite)
+
+    lastPulseWrite <- shutter shut -< lastPulseCounter
+    registerWb_ clk rst lastSyncPulseConfig 0 -< (wb4, lastPulseWrite)
+
+    ebcWrite <- shutter shut -< ebCounters
+    registerWb_ clk rst ebCountersConfig (repeat 0) -< (wb5, ebcWrite)
+
+    idC
+ where
+  freezeConfig =
+    (registerConfig "freeze" "Freeze all counters")
+      { access = WriteOnly
+      }
+
+  ebCountersConfig =
+    ( registerConfig
+        "eb_counters"
+        "Elastic buffer counters (at last freeze). Note that this is coming from domain difference counters, not actual elastic buffers."
+    )
+      { access = ReadOnly
+      }
+
+  lastSyncPulseConfig =
+    ( registerConfig
+        "cycles_since_sync_pulse"
+        "Number of clock cycles since last synchronization pulse (at last freeze)"
+    )
+      { access = ReadOnly
+      }
+
+  syncCounterConfig =
+    (registerConfig "number_of_sync_pulses_seen" "Number of synchronization pulses seen (at last freeze)")
+      { access = ReadOnly
+      }
+
+  localClockConfig =
+    (registerConfig "local_clock_counter" "Clock counter of local clock domain (at last freeze)")
+      { access = ReadOnly
+      }
+
+  freezeCounterConfig =
+    ( registerConfig
+        "freeze_counter"
+        "Number of times a freeze has been requested. This takes a couple of cycles to update after a freeze has been issued."
+    )
+      { access = ReadOnly
+      }
+
+  noWrite = pure Nothing
+
+-- | Simple counter
+counter ::
+  forall a dom.
+  (KnownDomain dom, Num a, NFDataX a) =>
+  Clock dom ->
+  Reset dom ->
+  Enable dom ->
+  a ->
+  Signal dom a
+counter clk rst ena ini = let c = register clk rst ena ini (c + 1) in c
