@@ -105,9 +105,9 @@ also the *useful* run: on success hedgehog grows the size parameter, so the last
 case is the largest; on failure it shrinks, so the last case is the minimal
 counterexample.
 
-### The 30 waveforms
+### The 27 waveforms
 
-**`bittide:unittests` — 16**, from `bittide/tests/`. Plain Clash designs sampled
+**`bittide:unittests` — 13**, from `bittide/tests/`. Plain Clash designs sampled
 with `sampleN`/`simulateN` (`withWaveform`) or small `clash-protocols` circuits
 (`withWaveformC`):
 
@@ -116,11 +116,16 @@ with `sampleN`/`simulateN` (`withWaveform`) or small `clash-protocols` circuits
 | `prop_happy`, `case_trackerWaveform` | `Tests/Transceiver/Prbs.hs` |
 | `prop_handshake`, `prop_noHandshake` | `Tests/Handshake.hs` |
 | `case_xilinxElasticBufferEq`, `…MaxBound`, `…MinBound` | `Tests/ElasticBuffer.hs` |
-| `case_zeroSameDomain`, `case_zeroSrcRst`, `case_zeroDstRst` | `Tests/Counter.hs` |
 | `byteAddressableBlockRamAsBlockRam`, `readWriteByteAddressableBlockram` | `Tests/DoubleBufferedRam.hs` |
 | `case_asciiDebugMuxWaveform` | `Tests/Df.hs` |
 | `case_axi4StreamPacketFifoWaveform` | `Tests/Axi4.hs` |
 | `bench_correctness`, `bench_recording` | `Tests/Bench.hs` — tracing-overhead benchmark |
+
+`Tests/Counter.hs` holds three more call sites (`case_zeroSameDomain`,
+`case_zeroSrcRst`, `case_zeroDstRst`), but they do **not** run: `Tests.Counter` is
+listed in `bittide.cabal`'s `other-modules`, so it compiles, yet `UnitTests.hs`
+never imports it into the tasty tree. That is pre-existing upstream, not something
+the instrumentation introduced. Reach them via the REPL recipe below.
 
 **`bittide-instances:unittests` — 14**, from `bittide-instances/tests/`. Each is
 a RISC-V firmware self-test `sampleC`-ing a `Circuit () (Df dom (BitVector 8))`
