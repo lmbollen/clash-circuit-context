@@ -36,6 +36,31 @@ Enabling the plugin repo-wide is safe: it is a no-op for any module without a
 `HasCircuitContext`/`HasProbe` signature. Opt-in is **by signature, not by
 module**.
 
+### Turning it off again
+
+All three opt-out mechanisms appear in this tree:
+
+| Granularity | How | Where you can see it here |
+| --- | --- | --- |
+| One binding | Prefix the binder with `_` | Scratch bindings and `circuit` ports a designer doesn't want in the waveform |
+| One function | Omit `HasCircuitContext` (and/or `OPAQUE`) | Every peripheral that was left un-instrumented |
+| A call and everything under it | `withoutCircuitContext` | The `Pnr/` and `Hitl/` synthesis entry points — edit kind 2 above |
+
+```haskell
+-- what bittide's synthesis instances do, in effect:
+topEntity = withoutCircuitContext (myInstrumentedCircuit clk rst)
+```
+
+It is HDL-transparent: the wrapped call generates identical hardware to calling
+an uninstrumented function, so discharging the constraint at a synthesis boundary
+costs nothing.
+
+The asymmetry is the real cost. Opting *out* is a one-line edit; opting *in* is
+viral, because `HasCircuitContext` propagates to callers — `timeWb` needed 9
+edits (7 synthesis call sites plus 2 library intermediaries), and peripherals
+instantiated inside `processingElement` are worse still. See finding F1 in
+[`docs/dogfooding-bittide.md`](../docs/dogfooding-bittide.md).
+
 Wiring `clash-circuit-context` in is the whole of the build-level change — see
 the top of [`bittide-hardware/cabal.project`](bittide-hardware/cabal.project):
 
