@@ -57,34 +57,6 @@ Instrumenting the memmap register/device layer accounts for **+54 wires** in the
 firmware DUTs overall (25 → 168 in the watchdog trace), which is the single
 largest win from dependency instrumentation.
 
-### Turning it off again
-
-Instrumenting a dependency does not commit its users to recording anything.
-Tracing is opt-in **by signature, not by module**, and there are three ways back
-out — all three are used in this tree:
-
-| Granularity | How | Where you can see it here |
-| --- | --- | --- |
-| A whole function | Omit `HasCircuitContext` from its signature | Every un-instrumented peripheral; `clash-protocols` gained the plugin but almost no constraints |
-| One binding | Prefix its name with `_` | Ports and scratch bindings a designer doesn't want in the waveform |
-| A call and everything under it | `withoutCircuitContext` | The `Pnr/` and `Hitl/` synthesis entry points, which must not carry the constraint into generated HDL |
-
-```haskell
--- bittide's synthesis instances, in effect:
-topEntity = withoutCircuitContext (myInstrumentedCircuit clk rst)
-```
-
-It is HDL-transparent: the wrapped call generates identical hardware to calling
-an uninstrumented function. So a dependency can ship instrumented combinators
-without imposing anything on users who never supply a context — which is what
-makes instrumenting `clash-protocols-memmap` viable at all.
-
-What is *not* cheap is the reverse direction. `HasCircuitContext` is viral, so
-opting a widely-shared component *in* costs 9 edits for one peripheral
-(`timeWb`: 7 synthesis call sites plus 2 library intermediaries), and peripherals
-inside `processingElement` are worse. Opting out is easy; opting in spreads. See
-finding F1 in [`docs/dogfooding-bittide.md`](../docs/dogfooding-bittide.md).
-
 Getting that tap right is the interesting part, and it is a lesson about the
 runtime rather than about memmap:
 
@@ -122,6 +94,34 @@ Per-dependency measurements are in
 [`docs/dep-instrumentation-assessment.md`](../docs/dep-instrumentation-assessment.md);
 the full findings list, with the F-numbers referenced in code comments, is in
 [`docs/dogfooding-bittide.md`](../docs/dogfooding-bittide.md).
+
+### Turning it off again
+
+Instrumenting a dependency does not commit its users to recording anything.
+Tracing is opt-in **by signature, not by module**, and there are three ways back
+out — all three are used in this tree:
+
+| Granularity | How | Where you can see it here |
+| --- | --- | --- |
+| A whole function | Omit `HasCircuitContext` from its signature | Every un-instrumented peripheral; `clash-protocols` gained the plugin but almost no constraints |
+| One binding | Prefix its name with `_` | Ports and scratch bindings a designer doesn't want in the waveform |
+| A call and everything under it | `withoutCircuitContext` | The `Pnr/` and `Hitl/` synthesis entry points, which must not carry the constraint into generated HDL |
+
+```haskell
+-- bittide's synthesis instances, in effect:
+topEntity = withoutCircuitContext (myInstrumentedCircuit clk rst)
+```
+
+It is HDL-transparent: the wrapped call generates identical hardware to calling
+an uninstrumented function. So a dependency can ship instrumented combinators
+without imposing anything on users who never supply a context — which is what
+makes instrumenting `clash-protocols-memmap` viable at all.
+
+What is *not* cheap is the reverse direction. `HasCircuitContext` is viral, so
+opting a widely-shared component *in* costs 9 edits for one peripheral
+(`timeWb`: 7 synthesis call sites plus 2 library intermediaries), and peripherals
+inside `processingElement` are worse. Opting out is easy; opting in spreads. See
+finding F1 in [`docs/dogfooding-bittide.md`](../docs/dogfooding-bittide.md).
 
 ### `trace-ports`: component boundary buses
 
