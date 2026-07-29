@@ -423,11 +423,44 @@ The fix is alignment, not conversion: the plugin's `egui` must track the tag
 (`0.34` for Surfer 0.7.0). `Color32::from_hex`, the only egui API the plugin
 uses, is unchanged across the bump.
 
+And one link is an actual bug rather than a version pin. The plugin declared
+
+```rust
+pub fn translators_config_dir(_user_data: ()) -> Json<Option<String>>;
+```
+
+against libsurfer's `host_fn!(translators_config_dir() -> …)`, which takes **no**
+parameters — so it imported a 1-parameter function. extism 1.13 tolerated that;
+extism **1.21** (Surfer 0.7.0) validates import types and refuses to load:
+
+```
+Failed to load plugin … incompatible import type for
+  `extism:host/user::translators_config_dir`
+```
+
+The other two host functions (`read_file`, `file_exists`) take one real argument
+on both sides, which is why the error names only this one. Dropping the spurious
+`()` fixes it. Worth upstreaming.
+
+That one is worth knowing about because bumping `extism-pdk` cannot fix it —
+1.4.1 is the newest published version, and it is already what the plugin uses.
+
 So the chain is: **vendored Haskell commit → plugin built from that same commit →
 `surfer-translation-types` tag matching your Surfer → the plugin's `egui`
-matching that tag's `ecolor`**. Break any link and the symptom is a parse error,
-a load error, or a compile error — never a silently wrong waveform, which is the
-reassuring part.
+matching that tag's `ecolor`**, plus a correct host-function arity. Break any
+link and the symptom is a parse error, a load error, or a compile error — never a
+silently wrong waveform, which is the reassuring part.
+
+Reading the installed binary is the quickest way to pin the targets down:
+
+```bash
+strings -a "$(which surfer)" | grep -oE 'extism-1\.[0-9]+\.[0-9]+|e(gui|color)-[0-9.]+' | sort -u
+```
+
+Here that reported `extism-1.21.0` and `egui/ecolor-0.35.0` — the latter showing
+the installed Surfer is *newer* than tag `v0.7.0` (which pins 0.34.1). That
+mismatch is harmless: values cross the wasm boundary as JSON, so the plugin's
+`egui` only has to be self-consistent, not equal to the host's.
 
 ### Toolchain note
 

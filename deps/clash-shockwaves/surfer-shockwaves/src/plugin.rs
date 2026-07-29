@@ -47,7 +47,7 @@ lazy_static! {
 pub fn new() -> FnResult<()> {
     info!("SHOCKWAVES: Created plugin");
 
-    let dir = unsafe { translators_config_dir(()) };
+    let dir = unsafe { translators_config_dir() };
     if let Ok(Json(Some(dir))) = dir {
         let dir = Utf8PathBuf::from(&dir);
         info!("SHOCKWAVES: Config dir: {dir:?}");
@@ -229,5 +229,9 @@ pub fn read_style_file(file: String) -> Option<Table> {
 extern "ExtismHost" {
     pub fn read_file(filename: String) -> Vec<u8>;
     pub fn file_exists(filename: String) -> bool;
-    pub fn translators_config_dir(_user_data: ()) -> Json<Option<String>>;
+    // Zero params, matching libsurfer's `host_fn!(translators_config_dir() -> ...)`.
+    // The spurious `_user_data: ()` here imported a 1-param function; extism 1.13
+    // tolerated that, 1.21 validates import types and refuses to load the plugin
+    // ("incompatible import type for extism:host/user::translators_config_dir").
+    pub fn translators_config_dir() -> Json<Option<String>>;
 }
