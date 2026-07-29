@@ -102,10 +102,16 @@ EMPTY instance —
 A field @fld@ of a value traced as @nm@ is traced as @nm.fld@ — a
 sub-scope in the VCD hierarchy. Positional (non-record) fields are named
 @_0@, @_1@, … by position; for a sum type the constructor the value
-actually takes is traversed. Every field type must itself be 'Traceable'
-(a plain wanted, discharged by ordinary instance resolution — an
-untraceable field is a compile error at the instance, never a silent
-skip).
+actually takes is traversed.
+
+Fields are tolerated **individually**: the generic path asks only for
+@'AutoTrace' ('CanTrace' c) c@ per field, which every type satisfies, so an
+untraceable field degrades to identity on its own while its traceable
+siblings still record. A composite is therefore never all-or-nothing — which
+matters for protocol ports, whose halves routinely mix signals with
+non-signal payloads (a @clash-protocols-memmap@ device port has
+@Bwd (mm, wb) = (MemoryMap, Signal dom WishboneS2M)@; requiring 'Traceable'
+of both once dropped that bus response entirely).
 
 One thing to keep in mind for the plugin's auto-tracing of bindings of
 such a type: the oracle recognizes the instance by recursing on its
@@ -167,90 +173,90 @@ Demand-equivalent to identity: forcing the traced tuple to WHNF forces
 exactly the one constructor match a @let@-pattern selector would force
 anyway, and the components stay unforced 'traceNamed' thunks.
 -}
-instance (Traceable a, Traceable b) => Traceable (a, b)
-instance (Traceable a, Traceable b, Traceable c) => Traceable (a, b, c)
+instance (AutoTrace (CanTrace a) a, AutoTrace (CanTrace b) b) => Traceable (a, b)
+instance (AutoTrace (CanTrace a) a, AutoTrace (CanTrace b) b, AutoTrace (CanTrace c) c) => Traceable (a, b, c)
 instance
-  (Traceable a, Traceable b, Traceable c, Traceable d) =>
+  (AutoTrace (CanTrace a) a, AutoTrace (CanTrace b) b, AutoTrace (CanTrace c) c, AutoTrace (CanTrace d) d) =>
   Traceable (a, b, c, d)
 instance
-  (Traceable a, Traceable b, Traceable c, Traceable d, Traceable e) =>
+  (AutoTrace (CanTrace a) a, AutoTrace (CanTrace b) b, AutoTrace (CanTrace c) c, AutoTrace (CanTrace d) d, AutoTrace (CanTrace e) e) =>
   Traceable (a, b, c, d, e)
 instance
-  (Traceable a, Traceable b, Traceable c, Traceable d, Traceable e, Traceable f) =>
+  (AutoTrace (CanTrace a) a, AutoTrace (CanTrace b) b, AutoTrace (CanTrace c) c, AutoTrace (CanTrace d) d, AutoTrace (CanTrace e) e, AutoTrace (CanTrace f) f) =>
   Traceable (a, b, c, d, e, f)
 instance
-  ( Traceable a
-  , Traceable b
-  , Traceable c
-  , Traceable d
-  , Traceable e
-  , Traceable f
-  , Traceable g
+  ( AutoTrace (CanTrace a) a
+  , AutoTrace (CanTrace b) b
+  , AutoTrace (CanTrace c) c
+  , AutoTrace (CanTrace d) d
+  , AutoTrace (CanTrace e) e
+  , AutoTrace (CanTrace f) f
+  , AutoTrace (CanTrace g) g
   ) =>
   Traceable (a, b, c, d, e, f, g)
 instance
-  ( Traceable a
-  , Traceable b
-  , Traceable c
-  , Traceable d
-  , Traceable e
-  , Traceable f
-  , Traceable g
-  , Traceable h
+  ( AutoTrace (CanTrace a) a
+  , AutoTrace (CanTrace b) b
+  , AutoTrace (CanTrace c) c
+  , AutoTrace (CanTrace d) d
+  , AutoTrace (CanTrace e) e
+  , AutoTrace (CanTrace f) f
+  , AutoTrace (CanTrace g) g
+  , AutoTrace (CanTrace h) h
   ) =>
   Traceable (a, b, c, d, e, f, g, h)
 instance
-  ( Traceable a
-  , Traceable b
-  , Traceable c
-  , Traceable d
-  , Traceable e
-  , Traceable f
-  , Traceable g
-  , Traceable h
-  , Traceable i
+  ( AutoTrace (CanTrace a) a
+  , AutoTrace (CanTrace b) b
+  , AutoTrace (CanTrace c) c
+  , AutoTrace (CanTrace d) d
+  , AutoTrace (CanTrace e) e
+  , AutoTrace (CanTrace f) f
+  , AutoTrace (CanTrace g) g
+  , AutoTrace (CanTrace h) h
+  , AutoTrace (CanTrace i) i
   ) =>
   Traceable (a, b, c, d, e, f, g, h, i)
 instance
-  ( Traceable a
-  , Traceable b
-  , Traceable c
-  , Traceable d
-  , Traceable e
-  , Traceable f
-  , Traceable g
-  , Traceable h
-  , Traceable i
-  , Traceable j
+  ( AutoTrace (CanTrace a) a
+  , AutoTrace (CanTrace b) b
+  , AutoTrace (CanTrace c) c
+  , AutoTrace (CanTrace d) d
+  , AutoTrace (CanTrace e) e
+  , AutoTrace (CanTrace f) f
+  , AutoTrace (CanTrace g) g
+  , AutoTrace (CanTrace h) h
+  , AutoTrace (CanTrace i) i
+  , AutoTrace (CanTrace j) j
   ) =>
   Traceable (a, b, c, d, e, f, g, h, i, j)
 instance
-  ( Traceable a
-  , Traceable b
-  , Traceable c
-  , Traceable d
-  , Traceable e
-  , Traceable f
-  , Traceable g
-  , Traceable h
-  , Traceable i
-  , Traceable j
-  , Traceable k
+  ( AutoTrace (CanTrace a) a
+  , AutoTrace (CanTrace b) b
+  , AutoTrace (CanTrace c) c
+  , AutoTrace (CanTrace d) d
+  , AutoTrace (CanTrace e) e
+  , AutoTrace (CanTrace f) f
+  , AutoTrace (CanTrace g) g
+  , AutoTrace (CanTrace h) h
+  , AutoTrace (CanTrace i) i
+  , AutoTrace (CanTrace j) j
+  , AutoTrace (CanTrace k) k
   ) =>
   Traceable (a, b, c, d, e, f, g, h, i, j, k)
 instance
-  ( Traceable a
-  , Traceable b
-  , Traceable c
-  , Traceable d
-  , Traceable e
-  , Traceable f
-  , Traceable g
-  , Traceable h
-  , Traceable i
-  , Traceable j
-  , Traceable k
-  , Traceable l
+  ( AutoTrace (CanTrace a) a
+  , AutoTrace (CanTrace b) b
+  , AutoTrace (CanTrace c) c
+  , AutoTrace (CanTrace d) d
+  , AutoTrace (CanTrace e) e
+  , AutoTrace (CanTrace f) f
+  , AutoTrace (CanTrace g) g
+  , AutoTrace (CanTrace h) h
+  , AutoTrace (CanTrace i) i
+  , AutoTrace (CanTrace j) j
+  , AutoTrace (CanTrace k) k
+  , AutoTrace (CanTrace l) l
   ) =>
   Traceable (a, b, c, d, e, f, g, h, i, j, k, l)
 
@@ -288,9 +294,24 @@ instance GTraceable V1 where
 
 {- | A leaf field: qualify the name with the record selector (or the field
 position) and trace it.
+
+Dispatched through 'autoTraceAt' rather than 'traceNamed', so the requirement
+is @AutoTrace (CanTrace c) c@ — satisfiable for /every/ @c@ — instead of
+@Traceable c@. That makes composites tolerant **per leaf**: an untraceable
+field degrades to identity on its own, and its traceable siblings still
+record.
+
+The all-or-nothing alternative silently costs real signals. A
+@clash-protocols-memmap@ device port is @(mm, wb)@, so its @Bwd@ is
+@(MemoryMap, Signal dom WishboneS2M)@ — one non-signal component beside a
+perfectly traceable bus response. Requiring @Traceable@ of every field made
+@CanTrace@ of the pair 'False, dropping the whole backward half: 11 Wishbone
+response buses missing from one bittide waveform, with no error to point at
+the cause.
 -}
-instance (Selector s, Traceable c) => GTraceable (M1 S s (K1 r c)) where
-  gtraceNamed nm i m@(M1 (K1 c)) = (i + 1, M1 (K1 (traceNamed fieldName c)))
+instance (Selector s, AutoTrace (CanTrace c) c) => GTraceable (M1 S s (K1 r c)) where
+  gtraceNamed nm i m@(M1 (K1 c)) =
+    (i + 1, M1 (K1 (autoTraceAt @(CanTrace c) fieldName c)))
    where
     fieldName = case selName m of
       "" -> nm <> "._" <> show i

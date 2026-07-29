@@ -128,9 +128,10 @@ rewriteGround ::
   [API.Ct] ->
   [API.Type] ->
   API.TcPluginM 'API.Rewrite API.TcPluginRewriteResult
-rewriteGround _env fam cls _givens [t]
+rewriteGround env fam cls _givens [t]
   | GHC.noFreeVarsOfType t = do
-      decision <- solvablePred API.getInstEnvs [] fuel0 (GHC.mkClassPred cls [t])
+      decision <-
+        solvablePred API.getInstEnvs (totalClassesOf env) [] fuel0 (GHC.mkClassPred cls [t])
       case decision of
         Just b ->
           pure $
@@ -170,7 +171,12 @@ solveStuck env givens wanteds = do
         , t' `GHC.eqType` t
         , Just target <- dispatch cls famTc -> do
             decision <-
-              solvablePred API.getInstEnvs givenPreds fuel0 (GHC.mkClassPred target [t])
+              solvablePred
+                API.getInstEnvs
+                (totalClassesOf env)
+                givenPreds
+                fuel0
+                (GHC.mkClassPred target [t])
             pure ((,,,) ct cls t <$> decision)
       _ -> pure Nothing
 
@@ -186,6 +192,12 @@ solveStuck env givens wanteds = do
 --------------------------------------------------------------------------------
 -- Solvability approximation
 --------------------------------------------------------------------------------
+
+{- | The flag-dispatch classes, whose constraints are total (see the guard in
+'solvablePred').
+-}
+totalClassesOf :: OracleEnv -> [API.Class]
+totalClassesOf env = [autoTraceClass env, autoProbeClass env]
 
 fuel0 :: Int
 fuel0 = 20
@@ -208,11 +220,14 @@ first oracle query.
 solvablePred ::
   (Monad m) =>
   m GHC.InstEnvs ->
+  -- | The flag-dispatch classes (@AutoTrace@\/@AutoProbe@), which are TOTAL:
+  -- see the note at the guard that uses this.
+  [API.Class] ->
   [API.PredType] ->
   Int ->
   API.PredType ->
   m (Maybe Bool)
-solvablePred getEnvs givenPreds = go
+solvablePred getEnvs totalClasses givenPreds = go
  where
   go fuel pred0
     | fuel <= 0 = pure (Just False)
@@ -220,6 +235,20 @@ solvablePred getEnvs givenPreds = go
     | any (GHC.eqType pred0) givenPreds = pure (Just True)
     | otherwise = case GHC.classifyPredType pred0 of
         GHC.ClassPred cls args
+          -- @AutoTrace (CanTrace c) c@ is solvable for EVERY c: the
+          -- 'AutoTrace' ''False' instance matches any type with no context,
+          -- and the ''True' one applies exactly when this oracle answers
+          -- yes. So answer yes directly.
+          --
+          -- Recursing instead would answer a conservative NO, because the
+          -- flag is a stuck family application and both 'AutoTrace'
+          -- instances then look like candidates — not the unique match
+          -- 'byInstance' requires. That matters because composite
+          -- 'Traceable' instances carry their fields' requirements in this
+          -- form, precisely so an untraceable field degrades on its own:
+          -- a conservative NO here would make every tuple and record
+          -- untraceable.
+          | cls `elem` totalClasses -> pure (Just True)
           | GHC.getName cls == GHC.knownNatClassName
           , [n] <- args ->
               knownNat fuel cls n

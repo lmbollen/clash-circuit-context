@@ -134,10 +134,15 @@ or project-wide (`ghc-options: -fplugin=Clash.CircuitContext.Plugin`).
 
   A binding of this type auto-traces field-wise, the record becoming a
   sub-scope in the VCD (`bus.busAddr`, `bus.busStrobe`); nested records
-  nest. Every field must itself be `Traceable` (a compile error at the
-  instance otherwise, never a silent skip). Keep such instance contexts to
-  ordinary class constraints, as above — the oracle recognizes an instance
-  by recursing on its written context.
+  nest. Fields are tolerated **individually**: an untraceable field falls
+  back to identity on its own and its traceable siblings still record, so a
+  composite is never all-or-nothing. That matters most for protocol ports,
+  whose `Fwd`/`Bwd` halves routinely mix signals with non-signal payloads —
+  a memory-map-carrying bus port has
+  `Bwd (mm, wb) = (MemoryMap, Signal dom WishboneS2M)`, and demanding
+  `Traceable` of both would drop the bus response too. Keep such instance
+  contexts to ordinary class constraints, as above — the oracle recognizes
+  an instance by recursing on its written context.
 * Multiple instances of the same component under one parent are
   disambiguated **design-deterministically**: siblings are ordered by
   instantiation call site (never by evaluation order) and named

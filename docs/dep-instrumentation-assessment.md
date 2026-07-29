@@ -136,8 +136,13 @@ appear where ccc has something to wrap:
   alone.** `Df.fifo` = `Circuit $ hideReset circuitFunction`, `registerBwd` =
   `forceResetSanity |> Circuit go`. There is no `-<` binder to wrap, and the
   internal signals live in a non-`OPAQUE`, inlined local `where` that is not a
-  recording-scope root — so instrumenting them yields **0 wires** on the Axi path
-  despite context flowing correctly (cycle 2).
+  recording-scope root — so instrumenting them yields **2 wires** on the Axi path
+  despite context flowing correctly (cycle 2): of the four binders in
+  `(brReadAddr, brWrite, otpA, otpB) = unbundle $ mealy …`, the two of traceable
+  type land as `dut.brReadAddr` and `dut.otpA` — flat under the *caller's* scope,
+  since `fifo` has no `OPAQUE`. None of the interesting internals appear, so the
+  conclusion stands: 2 wires is a bad trade for a repo-wide viral constraint.
+  (Corrected 2026-07-29: earlier revisions of this doc said 0.)
 
 Consequence: to actually surface a low-level combinator's internals you must
 either rewrite it in circuit-notation, or make it `OPAQUE` and expose its state as
