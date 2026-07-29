@@ -176,7 +176,16 @@ main = do
   check
     "Tagged non-BitPack payload fell back to identity"
     (P.not (has "tagblocked"))
+  -- Per-leaf tolerance. Composites carry their fields' requirements as
+  -- @AutoTrace (CanTrace c) c@, so an untraceable component degrades to
+  -- identity ON ITS OWN and its traceable siblings still record. Before, the
+  -- whole tuple fell back; the real cost was a clash-protocols-memmap device
+  -- port whose Bwd is @(MemoryMap, Signal dom WishboneS2M)@ silently losing the
+  -- bus response along with the untraceable memory map.
   check
-    "tuple with one untraceable component fell back whole"
-    (P.not (has "tagmixed"))
+    "tuple with one untraceable component traces the traceable one"
+    (has "tagmixed._1@")
+  check
+    "...and the untraceable component alone falls back"
+    (P.not (has "tagmixed._0"))
   putStrLn "fallback passed"
