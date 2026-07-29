@@ -74,6 +74,7 @@ import GHC.Generics (
 import GHC.Stack (HasCallStack, withFrozenCallStack)
 
 import Clash.CircuitContext.Core (HasCircuitContext, HasProbe, probe, traceSignalC)
+import Clash.Shockwaves.Internal.Waveform (Waveform)
 
 --------------------------------------------------------------------------------
 -- Tracing
@@ -131,8 +132,14 @@ class Traceable t where
   -- disambiguation design-ordered.
   traceNamed nm t = withFrozenCallStack (to (snd (gtraceNamed nm 0 (from t))))
 
+{- | @Waveform a@ is required so every traced signal carries its payload
+type's ADT description (constructors, fields, bit ranges) and not just bits.
+It also makes the requirement decidable by the oracle, so a payload WITHOUT a
+'Waveform' instance falls back to identity rather than failing to compile —
+the usual silent-skip contract, now covering typed-waveform support too.
+-}
 instance
-  (KnownDomain dom, BitPack a, NFDataX a) =>
+  (KnownDomain dom, BitPack a, NFDataX a, Waveform a) =>
   Traceable (Signal dom a)
   where
   traceNamed = traceSignalC

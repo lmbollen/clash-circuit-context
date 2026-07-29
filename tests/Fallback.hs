@@ -39,6 +39,7 @@ import Clash.Explicit.Prelude
 
 import Clash.CircuitContext.Auto (Traceable, autoTrace)
 import Clash.CircuitContext.Core (HasCircuitContext, withCircuitContext)
+import Clash.Shockwaves.Internal.Waveform (Waveform)
 
 -- | Payload without BitPack: @CanTrace (Signal System NoPack)@ is 'False.
 data NoPack = MkNoPack
@@ -69,14 +70,28 @@ data PortA
 
 data PortB
 
-{- | Note: no 'Typeable' — @(KnownDomain, BitPack, NFDataX)@ is the full
-tracing requirement.
+{- | Note: no 'Typeable'. The tracing requirement is
+@(KnownDomain, BitPack, NFDataX, Waveform)@ — 'Waveform' because every traced
+signal also carries its payload type's ADT description (see
+"Clash.CircuitContext.Shockwaves"). A polymorphic component that traces its
+payload must therefore carry 'Waveform' too; that is the visible cost of
+getting typed waveforms automatically.
 -}
 polyTraced ::
-  (HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) =>
+  (HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a, Waveform a) =>
   Signal dom a ->
   Signal dom a
 polyTraced s = autoTrace "polyyes" s
+
+{- | The same, but WITHOUT the 'Waveform' given: bit-level evidence alone no
+longer suffices, so this falls back to identity — silently, like every other
+undecidable case, rather than failing to compile.
+-}
+polyNoWaveform ::
+  (HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) =>
+  Signal dom a ->
+  Signal dom a
+polyNoWaveform s = autoTrace "polynowave" s
 
 polyNoEvidence ::
   (HasCircuitContext, KnownDomain dom, NFDataX a) =>
@@ -101,6 +116,7 @@ main = do
           (fromList [MkNoPack, MkNoPack, MkNoPack] :: Signal System NoPack)
       polyY = polyTraced (fromList [7, 7, 7] :: Signal System (Unsigned 4))
       polyN = polyNoEvidence (fromList [9, 9, 9] :: Signal System (Unsigned 8))
+      polyNW = polyNoWaveform (fromList [3, 3, 3] :: Signal System (Unsigned 8))
       vec =
         autoTrace
           "vec"
@@ -147,6 +163,7 @@ main = do
     _ <- evaluate (P.head (sampleN 2 blocked))
     _ <- evaluate (P.head (sampleN 2 polyY))
     _ <- evaluate (P.head (sampleN 2 polyN))
+    _ <- evaluate (P.head (sampleN 2 polyNW))
     _ <- P.traverse (evaluate . P.head . sampleN 2) (toList vec)
     _ <- evaluate (P.head (sampleN 2 (roA recY)))
     _ <- evaluate (P.head (sampleN 2 (roB recY)))
@@ -167,7 +184,10 @@ main = do
     "record with derived instance traced field-wise"
     (has "recy.roA@" P.&& has "recy.roB@")
   check "non-BitPack payload fell back to identity" (P.not (has "blocked"))
-  check "poly-without-evidence fell back to identity" (P.not (has "polyno"))
+  check "poly-without-evidence fell back to identity" (P.not (has "polyno@"))
+  check
+    "poly with bit evidence but no Waveform fell back to identity"
+    (P.not (has "polynowave"))
   check "record without instance fell back to identity" (P.not (has "recn"))
   check "Tagged signal traced (newtype delegation)" (has "tagsig@")
   check

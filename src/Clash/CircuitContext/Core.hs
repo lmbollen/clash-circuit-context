@@ -66,6 +66,7 @@ module Clash.CircuitContext.Core (
   component,
   imapComponents,
   qualifyName,
+  disambiguate,
 
   -- * Scoped signal tracing
   traceSignalC,
@@ -124,6 +125,9 @@ import Clash.Signal.Trace (
  )
 import Clash.Sized.Internal.BitVector (BitVector (BV))
 import Clash.XException (NFDataX)
+
+import Clash.Shockwaves.Internal.Types (Translator, TypeName)
+import Clash.Shockwaves.Internal.Waveform (Waveform (typeName), tRef)
 
 import Control.Exception (SomeException, evaluate, try)
 import Data.Bits (testBit, xor, (.&.))
@@ -230,7 +234,8 @@ data TraceTap
     TraceTap !Int !WRuns [Value]
 
 -- | Live trace registry: name → (period ps, bit width, accumulator).
-type LiveTraces = Map.Map String (Int, Int, IORef TraceTap)
+type LiveTraces =
+  Map.Map String (Int, Int, Maybe (TypeName, Translator), IORef TraceTap)
 
 -- | Frozen snapshot of one trace, as returned by 'withCircuitContext'.
 data TraceEntry = TraceEntry
@@ -241,6 +246,17 @@ data TraceEntry = TraceEntry
   , teRest :: [Value]
   {- ^ Packed continuation for cycles the simulation never forced; 'dumpVCDC'
   drains it on demand when the dump window extends past 'teRuns'.
+  -}
+  , teAdt :: Maybe (TypeName, Translator)
+  {- ^ The payload type's @clash-shockwaves@ descriptor: its name, and the
+  translator describing its ADT structure (constructors, fields, bit ranges,
+  styles). Recorded at registration, where the payload type is still known;
+  'Clash.CircuitContext.Shockwaves.adtSidecar' turns these into the JSON
+  sidecar a typed-waveform viewer reads.
+
+  Carried per entry rather than in a side map so that 'withCircuitContext'
+  keeps its signature: whoever already has the 'TraceData' has the ADT
+  information too.
   -}
   }
 
@@ -260,7 +276,7 @@ wasted compute whenever the simulation was cut short deliberately.
 recordedCycles :: TraceData -> ProbeMap -> Int
 recordedCycles td pm = maximum (0 : traceEnds ++ probeEnds)
  where
-  traceEnds = [e + 1 | TraceEntry _ _ ((_, e, _) : _) _ <- Map.elems td]
+  traceEnds = [e + 1 | TraceEntry _ _ ((_, e, _) : _) _ _ <- Map.elems td]
   probeEnds = [e + 1 | (_, _, (_, e, _) : _) <- Map.elems pm]
 
 {- | One hierarchy level: user name plus the encoded source location of the
@@ -429,9 +445,9 @@ withCircuitContextWindow window k = do
   probes <- readIORef pRef >>= traverse freezeProbe
   pure (r, traces, probes)
  where
-  freezeTrace (per, w, tapRef) = do
+  freezeTrace (per, w, adt, tapRef) = do
     TraceTap _ runs rest <- readIORef tapRef
-    pure (TraceEntry per w (wrunsToRuns runs) rest)
+    pure (TraceEntry per w (wrunsToRuns runs) rest adt)
   freezeProbe (per, w, accRef) = (,,) per w . wrunsToRuns <$> readIORef accRef
 
 {- | @component "fifo" circuit@: everything traced or probed inside
@@ -508,7 +524,13 @@ say) from tracing inside polymorphic components.
 -}
 traceSignalC ::
   forall dom a.
-  (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) =>
+  ( HasCallStack
+  , HasCircuitContext
+  , KnownDomain dom
+  , BitPack a
+  , NFDataX a
+  , Waveform a
+  ) =>
   String ->
   Signal dom a ->
   Signal dom a
@@ -523,7 +545,13 @@ stock 'Clash.Signal.Trace.traceSignal1'); identity when tracing is off.
 -}
 simTraceSignalC ::
   forall dom a.
-  (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) =>
+  ( HasCallStack
+  , HasCircuitContext
+  , KnownDomain dom
+  , BitPack a
+  , NFDataX a
+  , Waveform a
+  ) =>
   String ->
   Signal dom a ->
   Signal dom a
@@ -535,11 +563,17 @@ simTraceSignalC nm sig = case (ccTracer ctx, ccOrdinals ctx) of
       segs <- resolveHier ordRef (ccHier ctx)
       leafI <- freshOrdinal ordRef
       let key = intercalate "." (reverse (taggedLoc nm loc leafI : segs))
-      registerTrace (ccWindow ctx) ref period key sig
+      -- The payload type is still known here, so capture its typed-waveform
+      -- descriptor alongside the values; nothing downstream can recover it.
+      registerTrace (ccWindow ctx) ref period adt key sig
   _ -> sig
  where
   ctx = ?circuitContext
   loc = callLoc callStack
+  -- 'tRef', not 'translator': the reference form is what registers the type
+  -- itself under its name (a bare translator only pulls in the types it
+  -- REFERENCES), and it is what shockwaves' own recorder stores per signal.
+  adt = Just (typeName @a, tRef @a)
   period :: Int
   period = case knownDomain @dom of
     SDomainConfiguration{sPeriod} -> snatToNum sPeriod
@@ -573,13 +607,14 @@ registerTrace ::
   Int ->
   IORef LiveTraces ->
   Int ->
+  Maybe (TypeName, Translator) ->
   String ->
   Signal dom a ->
   IO (Signal dom a)
-registerTrace window ref period key sig = do
+registerTrace window ref period adt key sig = do
   tapRef <- newIORef (TraceTap 0 emptyWRuns packed)
   atomicModifyIORef' ref $ \m ->
-    (Map.insert key (period, width, tapRef) m, ())
+    (Map.insert key (period, width, adt, tapRef) m, ())
   pure (tap window tapRef 0 packed sig)
  where
   width = snatToNum (SNat @(BitSize a))
@@ -703,7 +738,7 @@ dumpVCDC slice@(offset, nSamples) td pm = do
   -- stored continuation — exactly the dump-time forcing the pre-runs
   -- implementation did. Cycles dropped by a trailing capture window (and
   -- any probe-style gaps) densify to @x@.
-  traceVals (TraceEntry per w runs rest) =
+  traceVals (TraceEntry per w runs rest _) =
     ( ByteStringLazy.empty
     , per
     , w

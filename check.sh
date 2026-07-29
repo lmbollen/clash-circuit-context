@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 # clash-circuit-context acceptance: build + run all suites + golden VCD diffs.
+# NOTE: needs GHC >= 9.8 on this branch (clash-shockwaves uses
+# TypeAbstractions): run in deps/bittide-hardware's devshell, or pass -w ghc-9.10.3.
 # Usage: ./check.sh [extra cabal args, e.g. -w ghc-9.10.3]
 set -uo pipefail
 cd "$(dirname "$0")"
@@ -15,6 +17,7 @@ run cabal test auto-smoke -j1 "$@" 2>&1 | tee -a "$log"
 # timeout: a strict port trace would deadlock on circuit-notation's lazy let
 # knot (silent hang under the threaded RTS) — fail loudly instead.
 run timeout 600 cabal test notation-smoke -j1 "$@"
+run cabal test shockwaves-smoke -j1 "$@"
 
 for g in manual-smoke auto-smoke notation-smoke; do
   if diff <(grep -v '^\$date' "$g.vcd") "goldens/$g.vcd" >/dev/null; then

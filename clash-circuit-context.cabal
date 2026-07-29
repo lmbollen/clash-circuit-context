@@ -22,7 +22,7 @@ extra-doc-files:
   CHANGELOG.md
   README.md
 
-tested-with: ghc ==9.6.7 || ==9.10.3
+tested-with: ghc ==9.10.3
 
 source-repository head
   type: git
@@ -46,15 +46,24 @@ library
     Clash.CircuitContext.Plugin.Names
     Clash.CircuitContext.Plugin.Oracle
     Clash.CircuitContext.Plugin.Rename
+    Clash.CircuitContext.Shockwaves
 
+  -- On `clash-shockwaves`: supplies the ADT description (constructors, fields,
+  -- bit ranges, styles) that this recorder's hierarchy does not model. Required
+  -- of every traced payload, so tracing and typed waveforms arrive together;
+  -- see Clash.CircuitContext.Shockwaves. It needs TypeAbstractions, hence the
+  -- GHC >= 9.8 floor on this branch.
+  --
   -- On `tagged`: circuit-notation desugars ports to Data.Tagged values, and
   -- the Traceable instance for Tagged lives in Auto.hs. Same range
   -- clash-prelude pins. (Kept out of the list itself: cabal-gild hoists
   -- interior comments to the top, where they read as being about `base`.)
   build-depends:
-    base >=4.18 && <4.21,
+    aeson <2.3,
+    base >=4.19 && <4.21,
     bytestring >=0.11 && <0.13,
     clash-prelude >=1.9 && <1.12,
+    clash-shockwaves,
     containers >=0.6 && <0.9,
     ghc >=9.6 && <9.11,
     ghc-tcplugin-api ^>=0.19,
@@ -86,6 +95,7 @@ test-suite fallback
     base,
     clash-circuit-context,
     clash-prelude,
+    clash-shockwaves,
     containers,
     tagged,
 
@@ -145,3 +155,28 @@ test-suite notation-smoke
     clash-prelude,
     containers,
     text,
+
+-- Both halves of the combined output from one simulation: this package's
+-- hierarchy and the clash-shockwaves ADT sidecar, with no manual tracing calls.
+test-suite shockwaves-smoke
+  import: common-options
+  type: exitcode-stdio-1.0
+  main-is: ShockwavesSmoke.hs
+  hs-source-dirs: tests
+  build-depends:
+    aeson,
+    base,
+    bytestring,
+    clash-circuit-context,
+    clash-prelude,
+    clash-shockwaves,
+    ghc-typelits-knownnat,
+    ghc-typelits-natnormalise,
+    text,
+
+  -- BitPack on a sum type needs KnownNat (CLog 2 n); the typelits solvers are
+  -- what every real Clash design uses for this.
+  ghc-options:
+    -fplugin=Clash.CircuitContext.Plugin
+    -fplugin=GHC.TypeLits.KnownNat.Solver
+    -fplugin=GHC.TypeLits.Normalise

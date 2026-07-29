@@ -1,0 +1,35 @@
+
+name: 'haskell-fmt'
+
+on:
+  push:
+    paths:
+      - 'clash-shockwaves/src/**'
+      - 'clash-shockwaves/tests/**'
+      - '.github/workflows/haskell-fmt.yml'
+  pull_request:
+    paths:
+      - 'clash-shockwaves/src/**'
+      - 'clash-shockwaves/tests/**'
+      - '.github/workflows/haskell-fmt.yml'
+  workflow_dispatch:
+
+jobs:
+  fmt:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - uses: haskell-actions/run-fourmolu@v11
+        with:
+          # Use fourmolu-0.13.0.0.  If you don't specify this, then the latest
+          # release of fourmolu will be used.
+          version: "0.19.0.1"
+      
+          # Only check the format of .hs in the src/ directory
+          pattern: |
+            src/**/*.hs
+            tests/**/*.hs
+            
+          # Change to the ./my-haskell-code/ directory before running this action.
+          working-directory: "./clash-shockwaves"

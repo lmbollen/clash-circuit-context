@@ -5,6 +5,9 @@ packages:
   -- instead of hand-mimicking its output, so it needs this checkout — which is
   -- why that suite exists only on this branch.
   deps/circuit-notation
+  -- Typed waveforms: supplies the ADT structure (constructors, fields, bit
+  -- ranges, styles) that this plugin's hierarchy does not describe.
+  deps/clash-shockwaves/clash-shockwaves
 
 -- clash-prelude 1.11.0 is not on Hackage yet; pin the upstream commit this
 -- package is developed and tested against. Everything used here is stock

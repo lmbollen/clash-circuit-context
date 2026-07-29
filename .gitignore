@@ -21,3 +21,5 @@ waveforms/
 
 # Local-only nix/devenv shim that leaks into the checkout.
 /deps/bittide-hardware/devenv.sh
+/shockwaves-smoke.vcd
+/shockwaves-smoke.json
