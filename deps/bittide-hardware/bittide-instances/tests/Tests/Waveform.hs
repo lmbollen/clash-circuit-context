@@ -71,7 +71,7 @@ import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Proxy (Proxy (..))
 import System.Directory (createDirectoryIfMissing, renameFile)
-import System.FilePath (takeFileName, (<.>), (</>))
+import System.FilePath (takeFileName, (-<.>), (<.>), (</>))
 import System.IO (hClose, openTempFile)
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -90,6 +90,13 @@ import Clash.CircuitContext (
   withCircuitContextWindow,
  )
 
+-- Every traced signal now carries its payload type's ADT description, so a
+-- helper polymorphic in that payload must say so.
+import qualified Data.Aeson as Json
+
+import Clash.CircuitContext.Shockwaves (dumpVCDSW)
+import Clash.Shockwaves.Waveform (Waveform)
+
 import Protocols (Bwd, Circuit, Fwd, toSignals)
 import Protocols.Experimental.Simulate (Backpressure (boolsToBwd))
 
@@ -106,7 +113,7 @@ name's last data-producing run. Overwritten on every run, rendered\/written
 once by 'flushWaveforms'. A process-global 'IORef' (the suite is one process);
 each fresh suite run starts empty.
 -}
-pendingWaveforms :: IORef (Map.Map FilePath Text.Text)
+pendingWaveforms :: IORef (Map.Map FilePath (Text.Text, Json.Value))
 pendingWaveforms = unsafePerformIO (newIORef Map.empty)
 {-# NOINLINE pendingWaveforms #-}
 
@@ -177,7 +184,7 @@ without simulating twice.
 -}
 withWaveformC ::
   forall b dom x m.
-  (MonadIO m, Backpressure b, KnownDomain dom, BitPack x, NFDataX x) =>
+  (MonadIO m, Backpressure b, KnownDomain dom, BitPack x, NFDataX x, Waveform x) =>
   -- | Base name for the @.vcd@ file. Must be unique across tests.
   String ->
   -- | Reset cycles: the far end is held "not ready" this many cycles before
@@ -256,13 +263,13 @@ withWaveformLive name window sim consume = liftIO $ withHeavySim $ do
   (a, traces, probes) <- withCircuitContextWindow window (consume sim)
   let end = recordedCycles traces probes
   unless (Map.null traces && Map.null probes || end == 0) $ do
-    rendered <- dumpVCDC (0, end) traces probes
+    rendered <- dumpVCDSW (0, end) traces probes
     case rendered of
       Left _ -> pure ()
-      Right txt -> do
+      Right (txt, meta) -> do
         txt' <- evaluate txt
         atomicModifyIORef' pendingWaveforms $ \m' ->
-          (Map.insert (waveformPath name) txt' m', ())
+          (Map.insert (waveformPath name) (txt', meta) m', ())
   pure a
 
 recordAndDump ::
@@ -293,13 +300,13 @@ recordAndDump name slice sim = withHeavySim $ do
   -- the render here reduces the run to a compact 'Text' and releases the maps
   -- immediately; deferring only that 'Text' still gives last-run-wins.
   unless (Map.null traces && Map.null probes) $ do
-    rendered <- dumpVCDC slice traces probes
+    rendered <- dumpVCDSW slice traces probes
     case rendered of
       Left _ -> pure () -- empty/failed render: don't clobber an earlier run
-      Right txt -> do
+      Right (txt, meta) -> do
         txt' <- evaluate txt
         atomicModifyIORef' pendingWaveforms $ \m ->
-          (Map.insert (waveformPath name) txt' m, ())
+          (Map.insert (waveformPath name) (txt', meta) m, ())
   pure forced
 
 {- | Render and write every waveform accumulated this run — one file per name,
@@ -313,8 +320,11 @@ flushWaveforms = do
   pending <- readIORef pendingWaveforms
   unless (Map.null pending) $ do
     createDirectoryIfMissing True waveformDir
-    forM_ (Map.toList pending) $ \(path, txt) -> do
+    forM_ (Map.toList pending) $ \(path, (txt, meta)) -> do
       (tmp, h) <- openTempFile waveformDir (takeFileName path <.> "tmp")
       TIO.hPutStr h txt
       hClose h
       renameFile tmp path
+      -- The ADT sidecar beside the VCD: same base name, .json. A typed-waveform
+      -- viewer reads it to decode the bits this VCD only names.
+      Json.encodeFile (path -<.> "json") meta

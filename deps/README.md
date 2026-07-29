@@ -1,17 +1,20 @@
-# `dogfood/deps` — tracing a real design, dependencies instrumented too
+# `dogfood/shockwaves` — hierarchy *and* ADT information
 
-This branch is [`dogfood/bittide`](#see-also) plus the instrumented dependencies
-that bittide builds against. It answers the follow-up question:
+This branch is `dogfood/deps` plus [`clash-shockwaves`](https://github.com/clash-lang/clash-shockwaves),
+combined so one simulation yields both halves of a good waveform:
 
-> How much *more* of a real Clash design becomes visible once you are also
-> allowed to touch its dependencies?
+> Automatic tracing and hierarchy from this plugin, **and** the ADT structure
+> (constructors, fields, bit ranges) that makes those bits readable.
+
+See [Typed waveforms](#typed-waveforms-the-shockwaves-half) for that part; the
+dependency-instrumentation story it builds on is unchanged and described below.
 
 Read the two branches as a pair. `dogfood/bittide` instruments bittide alone and
 leaves every dependency on its pristine upstream pin; this branch swaps four of
 them for local instrumented checkouts. The diff between the branches is the
 honest measure of what dependency instrumentation buys.
 
-## The five vendored checkouts
+## The six vendored checkouts
 
 | Checkout | Upstream pin | Instrumentation |
 | --- | --- | --- |
@@ -20,6 +23,7 @@ honest measure of what dependency instrumentation buys.
 | `clash-protocols-memmap/` | `20bacc70` | `.cabal` + `HasCircuitContext` on `deviceWb`/register combinators + a contents tap |
 | `clash-cores/` | `5d084eff` | `.cabal` + `HasCircuitContext` on `etherboneC` |
 | `circuit-notation/` | `8da93a3` on branch `trace-ports` | A committed patch (not working-tree state): `trace-ports` mode, [below](#trace-ports-component-boundary-buses) |
+| `clash-shockwaves/` | `2bdb720` (`origin/main`) | Unmodified — consumed as a library, [below](#typed-waveforms-the-shockwaves-half) |
 
 `bittide-hardware` differs from `dogfood/bittide` in exactly four files, and
 none of them is design code:
@@ -268,6 +272,93 @@ real values — `uartInterfaceWb.bus_Bwd._1` (36 b `WishboneS2M`) shows
 `bxxx…xxxx0000` while idle (data undefined, control bits defined), `b000…001000`
 on ack, and `bxxx…x1000` for a write ack where read data is legitimately
 undefined. Assertions still pass byte-exact.
+
+## Typed waveforms: the shockwaves half
+
+A hierarchical VCD tells you a signal is `manyTypesWb.wb_Fwd` and 72 bits wide.
+It cannot tell you those bits are a `WishboneM2S 27 4` whose `addr` occupies one
+field and whose `cycleTypeIdentifier` another. `clash-shockwaves` knows exactly
+that, from the payload type — and the two libraries turn out to be complements
+rather than competitors:
+
+| | this plugin | `clash-shockwaves` |
+| --- | --- | --- |
+| knows | *where* a signal is | *what* a signal is |
+| output | nested `$scope` per component instance | ADT structure as a JSON sidecar |
+| state | per-simulation `IORef`s | one process-global `unsafePerformIO` `IORef` |
+| hierarchy | yes | no — a single `$scope module logic` |
+
+So each side keeps what it is good at. Values, hierarchy and isolation stay with
+this recorder; the ADT description rides along and is emitted in shockwaves'
+own schema, which its
+[Surfer plugin](https://github.com/clash-lang/clash-shockwaves) reads unmodified.
+
+### How it is joined
+
+The payload type is only known at registration, so that is where the descriptor
+is captured: `traceSignalC` requires `Waveform a` and stores
+`(typeName @a, tRef @a)` in the trace entry. `Clash.CircuitContext.Shockwaves`
+then emits `{signals, types, luts}` keyed by the paths `disambiguate` produces —
+which **are** the paths the VCD declares, sibling `_0`/`_1` suffixes included. No
+name matching, and nothing to keep in sync.
+
+`tRef` rather than `translator` matters: the reference form registers the type
+*itself*, where a bare translator only pulls in the types it references. With the
+wrong one, a record's own entry is missing from `types` while its members are
+present.
+
+### The cost, measured
+
+Requiring `Waveform` of every traced payload means tracing and typed waveforms
+always arrive together — but the constraint is viral, and a payload *without* an
+instance stops tracing (silently, like every other undecidable case, not a
+compile error). The measured cost of that choice:
+
+* **In this repository: one signature.** The polymorphic helper in `Fallback.hs`
+  now needs `Waveform a`. All three golden VCDs are byte-identical, so no
+  existing traced signal was lost.
+* **In bittide: one signature.** `Tests.Waveform`'s `withWaveformC`, which is
+  polymorphic in the payload it traces. 293 modules otherwise compiled unchanged.
+
+It is that small because the ecosystem was already shockwaves-aware:
+`clash-protocols-memmap` ships `Waveform` instances for `WishboneM2S`,
+`WishboneS2M`, `CycleTypeIdentifier` and `BurstTypeExtension`, and
+`bittide-extra` already depended on the library.
+
+### What you get
+
+`registerwb_sim`, one firmware DUT, regenerated on this branch:
+
+| | |
+| --- | --- |
+| VCD wires | 567 |
+| signals described in the sidecar | **543** (96 %) |
+| distinct types described | **27** |
+
+The 27 include `WishboneM2S 27 4`, `WishboneS2M 4`, `BurstTypeExtension`,
+`Maybe (BitVector 32)`, `Vec 44 (WishboneM2S 27 4)`. The `WishboneM2S`
+translator carries every field name — `addr`, `writeData`, `busSelect`,
+`busCycle`, `strobe`, `writeEnable`, `cycleTypeIdentifier`,
+`burstTypeExtension` — so a viewer decodes the 72-bit blob into named fields
+instead of showing hex.
+
+The 24 undescribed wires are **probes**: `probe` is a different recording path
+from `traceSignalC` and carries no descriptor yet. That is the obvious next step.
+
+`luts` comes out empty, which is correct rather than broken: the generic
+`Waveform` default does not use the lookup-table approach — only
+`deriving (Waveform) via WaveformForLut` does.
+
+### Toolchain note
+
+`clash-shockwaves` uses `TypeAbstractions`, so this branch needs **GHC ≥ 9.8**;
+`tested-with` drops to `9.10.3` and `check.sh` must run inside the devshell (or
+with `-w ghc-9.10.3`). That is the one hard constraint the integration adds.
+
+The `shockwaves-smoke` suite in this repository demonstrates the combination on a
+small design with no manual tracing calls at all — a sum type inside a record,
+two component instances — asserting the hierarchy in the VCD *and* the
+constructors, field names and per-path type keys in the sidecar.
 
 ## Generating the waveforms
 

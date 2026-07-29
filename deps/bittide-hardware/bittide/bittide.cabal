@@ -322,6 +322,7 @@ test-suite unittests
     Tests.Wishbone.Utils
 
   build-depends:
+    aeson,
     HUnit,
     base,
     bittide,
@@ -332,6 +333,7 @@ test-suite unittests
     clash-cores,
     clash-lib,
     clash-prelude,
+    clash-shockwaves,
     clash-prelude-hedgehog,
     clash-protocols,
     clash-protocols-memmap,

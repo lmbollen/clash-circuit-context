@@ -349,6 +349,7 @@ test-suite unittests
     Wishbone.Watchdog
 
   build-depends:
+    aeson,
     HUnit,
     base,
     bittide,
@@ -359,6 +360,7 @@ test-suite unittests
     clash-circuit-context,
     clash-cores,
     clash-prelude,
+    clash-shockwaves,
     clash-prelude-hedgehog,
     clash-protocols-memmap,
     clash-vexriscv,
