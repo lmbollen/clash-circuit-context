@@ -219,6 +219,56 @@ constraint is a bad trade — but the number was 2, not 0.
 
 So the trace-ports change is **purely additive**: 146 wires added, 0 lost.
 
+### Does every binder get a named `Fwd` and `Bwd`?
+
+Nearly, and the exceptions are inherent rather than missing work. The binder
+forms actually used in bittide's `circuit` blocks, by frequency:
+
+| Form | Count | `Fwd` | `Bwd` |
+| --- | --- | --- | --- |
+| `x <- …` | 218 | `x_Fwd` | `x_Bwd` |
+| `(a, b) <- …` | 136 | per leaf | per leaf |
+| `[a, b] <- …` (vec) | 43 | per leaf, indexed | per leaf |
+| `_x <- …` | 31 | — (deliberate opt-out) | — |
+| `Fwd x <- …` | 27 | plain `x` | **none — none exists** |
+| lambda interface ports | — | `p_Fwd` (needs `trace-ports`) | `p_Bwd` |
+| a port used twice (`RefMulticast`) | — | `p_Fwd` | **none — fan-in** |
+
+Two forms cannot have both halves, for reasons in the notation's semantics:
+
+* **`Fwd x <- …`** means *"give me only the forward signal"*; circuit-notation
+  supplies `trivialBwd` for the backward channel, so there is no backward signal
+  to name. Its forward half *is* traced, just as plain `x` rather than `x_Fwd` —
+  and it has to be, because the binder escapes into ordinary Haskell. In
+  `Bittide.Wishbone`, `Fwd regIn <- unsafeFromDf -< …` is followed by
+  `rxEmpty = fmap isNothing regIn` in a plain `let`; renaming the binder to
+  `regIn_Fwd` would break that code. The inconsistent name is the price of the
+  escape hatch, not an oversight.
+* **A port used more than once** has a backward channel that is a fan-in of its
+  consumers, not one signal, so `bindWithSuffixNamed` binds a wildcard for it.
+  Naming it would mean naming each leg separately.
+
+What *was* genuinely missing had nothing to do with naming: a composite whose
+`Fwd`/`Bwd` was a tuple containing one untraceable component fell back **whole**,
+silently taking the traceable components with it. A memmap device port is
+`(mm, wb)`, so its `Bwd` is `(MemoryMap, Signal dom WishboneS2M)` — the memory
+map is not a signal, and the bus response disappeared along with it. Fixing that
+in the runtime (fields are now tolerated individually) is what closed the gap:
+
+| `registerwb_sim` | trace-ports only | + per-leaf tolerance |
+| --- | --- | --- |
+| wires | 281 | **586** |
+| port bases | 97 | **244** |
+| ports with *both* halves | 75 (77 %) | **233 (95.5 %)** |
+| `Fwd`-only | 15 | **4** |
+
+The four remaining `Fwd`-only ports (`jtag`, `jtagIn`, `rxFifoIn`, `uartRx`) have
+backward channels that are genuinely not traceable signals. Recovered wires carry
+real values — `uartInterfaceWb.bus_Bwd._1` (36 b `WishboneS2M`) shows
+`bxxx…xxxx0000` while idle (data undefined, control bits defined), `b000…001000`
+on ack, and `bxxx…x1000` for a write ack where read data is legitimately
+undefined. Assertions still pass byte-exact.
+
 ## Generating the waveforms
 
 ### One-time setup after cloning
