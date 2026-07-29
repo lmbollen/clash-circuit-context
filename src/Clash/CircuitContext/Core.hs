@@ -77,6 +77,7 @@ module Clash.CircuitContext.Core (
   TraceData,
   TraceEntry (..),
   recordedCycles,
+  aliasGroups,
 
   -- * Probes inside mealy machines
   ProbeMap,
@@ -684,12 +685,60 @@ dumpVCDC slice@(offset, nSamples) td pm = do
   now <- getCurrentTime
   let combined =
         disambiguate (Map.union (Map.map traceVals td) (Map.map probeVals pm))
+      -- Signals with an identical recorded history share ONE identifier code
+      -- (see 'aliasGroups'): only representatives are handed to 'dumpVCD1#', so
+      -- their changes are emitted once, and the copies are re-attached
+      -- afterwards as extra '$var' declarations pointing at the same code.
+      --
+      -- Aliases are dropped only AFTER 'disambiguate'. Removing them earlier
+      -- would change the key set it numbers siblings from, silently renaming
+      -- unrelated signals' @_0@\/@_1@ suffixes.
+      emitted = Map.withoutKeys combined (Map.keysSet aliasByRep')
   pure $
     if Map.null combined
       then Left "dumpVCDC: nothing was traced or probed in this run"
-      else renderVCDHier now <$> dumpVCD1# slice combined
+      else renderVCDHier now . withAliases <$> dumpVCD1# slice emitted
  where
   end = offset + nSamples
+
+  -- Recover the raw-key -> emitted-path mapping by running the SAME transform
+  -- over a map whose values are its own keys.
+  --
+  -- It must be keyed on the SAME set 'combined' is, traces AND probes: sibling
+  -- numbering is a function of the whole key set, so disambiguating the traces
+  -- alone yields paths that disagree with 'combined' wherever a probe shares a
+  -- name — and removing a path that names a DIFFERENT signal drops it from the
+  -- dump entirely (measured: 11 of 240 declarations silently lost).
+  cleanOf =
+    Map.fromList
+      [ (raw, clean)
+      | (clean, raw) <- Map.toList (disambiguate (Map.mapWithKey (\k _ -> k) sameKeys))
+      ]
+   where
+    sameKeys = Map.union (() <$ td) (() <$ pm)
+
+  -- alias path -> representative path
+  aliasByRep' =
+    Map.fromList
+      [ (a, r)
+      | grp <- aliasGroups td
+      , Just (r : as) <- [traverse (`Map.lookup` cleanOf) grp]
+      , a <- as
+      ]
+
+  -- representative path -> its alias paths
+  aliasesFor =
+    Map.fromListWith (++) [(r, [a]) | (a, r) <- Map.toList aliasByRep']
+
+  withAliases (VCDFile decs sims) = VCDFile (map go decs) sims
+   where
+    go (Vars vs) = Vars (concatMap expand vs)
+    go d = d
+    expand v =
+      v
+        : [ v{varReference = a}
+          | a <- Map.findWithDefault [] (varReference v) aliasesFor
+          ]
 
   -- Expand the change-compressed stores back to the dense per-cycle lists
   -- 'dumpVCD1#' expects (it transposes; ragged lists would misalign
@@ -733,6 +782,49 @@ dumpVCDC slice@(offset, nSamples) td pm = do
     go c [] = replicate (upto - c) xv
     go c ((s, e, v) : rs) =
       replicate (s - c) xv ++ replicate (e - s + 1) v ++ go (e + 1) rs
+
+{- | Group trace keys whose recorded history is IDENTICAL, so a dump can declare
+every name but emit the values only once (VCD allows several @$var@
+declarations to share one identifier code).
+
+This is worth doing because the same electrical net is auto-traced at every
+level it passes through — an interconnect's vector element, a component's
+interface port, its intermediate port, a composite half, an internal binding.
+In a bittide firmware trace that reached THIRTEEN names for one 72-bit bus, and
+67% of all value-change bytes were such copies.
+
+Grouping is observational (equal width, period and 'Runs') rather than
+structural, and that is a measured decision, not a shortcut. Identity of the
+tapped signal via 'System.Mem.StableName' was tried first and recovered 0.003%
+of the bytes: the copies are distinct THUNKS — circuit-notation's port
+indirections, tuple-half selectors, 'Vec' element selection — that each evaluate
+to the same stream, so a stable name sees thirteen objects rather than one wire.
+
+Aliasing on equal history loses nothing: within the dumped range those signals
+genuinely carried the same values, sharing an identifier is precisely VCD's
+encoding for that, and a viewer still lists each name separately. It does mean
+two unrelated nets that happen to agree over the captured window share a code —
+which changes no displayed value, only the encoding.
+
+Returned groups have more than one member, ordered so the first is the
+representative whose changes are emitted. Keys absent from the result are
+unique.
+-}
+aliasGroups :: TraceData -> [[String]]
+aliasGroups td =
+  [ map fst grp
+  | grp <- Map.elems buckets
+  , length grp > 1
+  ]
+ where
+  -- Key on the whole history. Cheap enough: the dumper walks these runs anyway,
+  -- and 'Runs' is change-compressed, so this is proportional to the output.
+  buckets =
+    Map.fromListWith
+      (flip (++))
+      [ ((teWidth e, tePeriod e, teRuns e), [(k, e)])
+      | (k, e) <- Map.toList td
+      ]
 
 --------------------------------------------------------------------------------
 -- Downstream disambiguation of instance ids
