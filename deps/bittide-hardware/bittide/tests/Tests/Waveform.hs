@@ -248,10 +248,19 @@ flushWaveforms = do
   unless (Map.null pending) $ do
     createDirectoryIfMissing True waveformDir
     forM_ (Map.toList pending) $ \(path, (txt, meta)) -> do
+      -- A waveform is now a PAIR of files: the VCD, and the ADT sidecar a typed
+      -- viewer reads to decode the bits the VCD only names. Both are written via
+      -- temp + rename, and the SIDECAR LANDS FIRST, so the invariant a reader
+      -- depends on holds: if the .vcd is there, its .json is there and complete.
+      -- (Writing the sidecar non-atomically would let an interrupted run leave a
+      -- whole VCD beside a truncated sidecar -- the two silently disagreeing.)
+      let sidecar = path -<.> "json"
+      (jTmp, jH) <- openTempFile waveformDir (takeFileName sidecar <.> "tmp")
+      hClose jH
+      Json.encodeFile jTmp meta
+      renameFile jTmp sidecar
+
       (tmp, h) <- openTempFile waveformDir (takeFileName path <.> "tmp")
       TIO.hPutStr h txt
       hClose h
       renameFile tmp path
-      -- The ADT sidecar beside the VCD: same base name, .json. A typed-waveform
-      -- viewer reads it to decode the bits this VCD only names.
-      Json.encodeFile (path -<.> "json") meta

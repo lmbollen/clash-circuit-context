@@ -349,6 +349,29 @@ from `traceSignalC` and carries no descriptor yet. That is the obvious next step
 `Waveform` default does not use the lookup-table approach — only
 `deriving (Waveform) via WaveformForLut` does.
 
+### A waveform is now a pair of files
+
+Every VCD needs its `.json` beside it, and that is `clash-shockwaves`' own
+convention — its `dumpVCD` returns `(contents, meta)` and its docs write the two
+separately. Matching it is precisely why its Surfer plugin reads our output
+unmodified; embedding the descriptor in a VCD `$comment` block (which standard
+parsers ignore) would work mechanically but would mean patching their plugin.
+
+Three things keep the coupling cheap:
+
+* **The VCD is still self-contained as a waveform.** Without the sidecar you get
+  the full hierarchy and values, just untyped bits. `dumpVCDC` remains available
+  for exactly that.
+* **The sidecar is rounding error.** 82 KB against a 190 MB VCD for
+  `registerwb_sim`, 45 KB against 29 MB for `watchdog_self_test` — about 0.04 %.
+  It is per-dump, not per-signal.
+* **One call produces both**, so they cannot drift apart in content, and
+  `flushWaveforms` writes both through temp + rename with the **sidecar landing
+  first**. That gives readers the invariant they need: if the `.vcd` exists, its
+  `.json` exists and is complete. Writing the sidecar non-atomically (the first
+  version of this) would let an interrupted run leave a whole VCD beside a
+  truncated sidecar, silently disagreeing.
+
 ### Toolchain note
 
 `clash-shockwaves` uses `TypeAbstractions`, so this branch needs **GHC ≥ 9.8**;
