@@ -191,22 +191,33 @@ produced **no** desugaring regressions (307 modules clean), which was the main
 risk: 0.3 also contains a value-ports refactor touching arity and as-pattern
 handling.
 
-#### The two lost wires — a caveat worth knowing
+#### The two lost wires — not caused by trace-ports
 
-`axi_stream_self_test` lost `dut.brReadAddr` (10 b) and `dut.otpA` (1 b). They
-did not move scope; they are simply no longer traced. Both are `where`-bindings
-inside `Protocols.Df.fifo` in `clash-protocols`.
+`axi_stream_self_test` lost `dut.brReadAddr` (10 b) and `dut.otpA` (1 b) relative
+to its baseline. **Neither `trace-ports` nor `circuit-notation` 0.3 is
+responsible**, and the reason is decidable statically: both are `where`-bindings
+inside `Protocols.Df.fifo`, and `clash-protocols` today contains **zero**
+occurrences of `HasCircuitContext`. The plugin instruments only functions whose
+signature carries it, so there is nothing in that package for any version of the
+desugarer to affect — those wires cannot be produced by the current source at
+all.
 
-That package does **not** enable `trace-ports` — so the cause is almost certainly
-the `circuit-notation` 0.2 → 0.3 upgrade that the patch rides on (or the
-`Protocols.Plugin` edit it forced), not the flag. Isolating it would need a third
-build (0.3 with the flag off), which has not been run, so treat the attribution
-as inference and the fact as measured.
+They come from an earlier experiment. `Df.fifo` was temporarily given
+`HasCircuitContext` (the "cycle 2" low-level instrumentation in
+[`docs/dep-instrumentation-assessment.md`](../docs/dep-instrumentation-assessment.md)),
+the axi baseline was captured at 09:49 while it was in place, and the experiment
+was reverted afterwards. Because `fifo` has no `OPAQUE` pragma, its bindings
+registered under the **caller's** scope rather than a `fifo` sub-scope — which is
+exactly the flat `dut.brReadAddr` shape the baseline shows.
 
-Either way the lesson generalises: **an upgrade of the notation desugarer can
-silently change which signals get traced**, in both directions. Trace key sets
-are worth golden-testing, exactly as `main`'s README recommends — a dropped wire
-produces no error, just a slightly emptier waveform.
+Worth noting against the assessment doc, which reports that instrumenting
+`Df.fifo` yielded "**0 wires**": it actually yielded these two. Of the four
+binders in `(brReadAddr, brWrite, otpA, otpB) = unbundle $ mealy …`, two are of
+traceable type and two are not. The doc's conclusion still holds in substance —
+none of the interesting internals appeared, and 2 wires for a repo-wide viral
+constraint is a bad trade — but the number was 2, not 0.
+
+So the trace-ports change is **purely additive**: 146 wires added, 0 lost.
 
 ## Generating the waveforms
 
