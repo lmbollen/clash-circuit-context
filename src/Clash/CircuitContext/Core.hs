@@ -794,11 +794,25 @@ In a bittide firmware trace that reached THIRTEEN names for one 72-bit bus, and
 67% of all value-change bytes were such copies.
 
 Grouping is observational (equal width, period and 'Runs') rather than
-structural, and that is a measured decision, not a shortcut. Identity of the
-tapped signal via 'System.Mem.StableName' was tried first and recovered 0.003%
-of the bytes: the copies are distinct THUNKS — circuit-notation's port
-indirections, tuple-half selectors, 'Vec' element selection — that each evaluate
-to the same stream, so a stable name sees thirteen objects rather than one wire.
+structural, and that is a measured decision, not a shortcut. Runtime object
+identity was tried twice, both times against a real firmware DUT:
+
+* 'System.Mem.StableName' of the signal at REGISTRATION — recovered 0.003% of
+  the bytes. The copies are distinct THUNKS (circuit-notation's port
+  indirections, tuple-half selectors, 'Vec' element selection), so a stable name
+  sees thirteen objects rather than one wire.
+* 'System.Mem.StableName' of the CONS CELL, taken inside 'tap' where the signal
+  is already in WHNF so nothing extra is forced — recovered 1%, and merged 0 of
+  424 known duplicate members.
+
+The second result is conclusive rather than disappointing, and the reason is
+worth keeping: 'tap' REBUILDS the stream (@a :- unsafePerformIO …@), so a traced
+signal derived from another traced signal observes the cell its parent's tap
+produced, never a shared one. Tracing destroys exactly the sharing that would
+identify a duplicate, so no runtime identity can see through it. Detecting these
+statically is possible in principle — @port_Fwd = \<lambda binder\>@ and
+@b = a@ are visible to the renamer before any tap exists — and that, not object
+identity, is the route to a structural criterion.
 
 Aliasing on equal history loses nothing: within the dumped range those signals
 genuinely carried the same values, sharing an identifier is precisely VCD's
