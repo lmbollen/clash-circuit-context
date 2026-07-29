@@ -372,6 +372,45 @@ Three things keep the coupling cheap:
   version of this) would let an interrupted run leave a whole VCD beside a
   truncated sidecar, silently disagreeing.
 
+### The viewer side is a three-link version chain
+
+Vendoring the Haskell library pins the JSON **wire format**, and two more things
+have to line up before a viewer can read it. Both failure modes showed up in
+practice, and neither says anything is wrong with the emitted sidecar:
+
+```
+SHOCKWAVES: Could not parse metadata file: unknown variant `X`,
+            expected one of `I`, `In`, `C`, `Concat`, `L`, `Lit`, `S`, `Slice`
+```
+
+The Haskell `BitPart` has **13** constructors; `"X"` is `BPHasUndefined` ("1 if
+there are undefined bits"). A plugin that accepts only those four predates
+`BPHasUndefined`, `BPReverse`, `BPInvert`, `BPAnd`/`Or`/`Xor`, `BPOneHot`/`NHot`
+and `BPIf` — i.e. it was built from an older `clash-shockwaves` than the one
+vendored here. The vendored
+[`surfer-shockwaves/src/data.rs`](clash-shockwaves/surfer-shockwaves/src/data.rs)
+has all 13, so **build the plugin from this checkout**, not from a separate one.
+
+```
+Failed to load plugin … incompatible import type for
+  `extism:host/user::translators_config_dir`
+```
+
+That is the next link: the plugin imports host functions from
+`surfer-translation-types`, which it pins by tag, and that tag must match the
+**installed Surfer**. The vendored plugin pinned `v0.6.0` while Surfer here is
+`0.7.0`; the pin is now `v0.7.0`. Build and install with:
+
+```bash
+cd deps/clash-shockwaves/surfer-shockwaves
+cargo build --target wasm32-unknown-unknown   # needs the wasm32 target
+./compile.sh linux                            # copies into ~/.local/share/surfer/translators/
+```
+
+So the chain is: **vendored Haskell commit → plugin built from that same commit →
+`surfer-translation-types` tag matching your Surfer**. Break any link and the
+symptom is a parse error or a load error, never a wrong waveform.
+
 ### Toolchain note
 
 `clash-shockwaves` uses `TypeAbstractions`, so this branch needs **GHC ≥ 9.8**;
