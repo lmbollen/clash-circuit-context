@@ -9,7 +9,10 @@ crate-type = ["cdylib"]
 [dependencies]
 camino = "1.2.1"
 compile-time = "0.2.0"
-egui = { version = "0.33.2", features = ["serde"] }
+# Must track the egui/ecolor that the surfer-translation-types tag below pulls
+# from surfer's workspace (0.7.0 -> 0.34.1), or Color32 comes from a SECOND
+# ecolor in the graph and ValueKind::Custom(c) fails to typecheck.
+egui = { version = "0.34", features = ["serde"] }
 either = "1.15.0"
 extism-pdk = "1.4.1"
 lazy_static = "1.5.0"

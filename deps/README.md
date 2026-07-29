@@ -407,9 +407,27 @@ cargo build --target wasm32-unknown-unknown   # needs the wasm32 target
 ./compile.sh linux                            # copies into ~/.local/share/surfer/translators/
 ```
 
+Bumping that tag drags a third constraint with it. `surfer-translation-types`
+takes `ecolor` from surfer's *workspace* — 0.33 at Surfer 0.6.0, **0.34.1** at
+0.7.0 — while the plugin pins `egui` itself. Leave them apart and two `ecolor`
+crates coexist, so the `Color32` the plugin builds is not the `Color32`
+`ValueKind::Custom` expects:
+
+```
+error[E0308]: mismatched types
+  expected `ecolor::color32::Color32`, found `Color32`
+  note: there are multiple different versions of crate `ecolor` in the dependency graph
+```
+
+The fix is alignment, not conversion: the plugin's `egui` must track the tag
+(`0.34` for Surfer 0.7.0). `Color32::from_hex`, the only egui API the plugin
+uses, is unchanged across the bump.
+
 So the chain is: **vendored Haskell commit → plugin built from that same commit →
-`surfer-translation-types` tag matching your Surfer**. Break any link and the
-symptom is a parse error or a load error, never a wrong waveform.
+`surfer-translation-types` tag matching your Surfer → the plugin's `egui`
+matching that tag's `ecolor`**. Break any link and the symptom is a parse error,
+a load error, or a compile error — never a silently wrong waveform, which is the
+reassuring part.
 
 ### Toolchain note
 
