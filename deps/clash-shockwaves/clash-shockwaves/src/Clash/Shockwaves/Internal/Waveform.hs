@@ -969,10 +969,15 @@ deriving via
   WaveformForNumber NFUns DecSpacer (Unsigned n)
   instance
     (KnownNat n) => Waveform (Unsigned n)
+-- No @1 <= n@: 'BitPack' ('Index' n) needs only 'KnownNat', and a stricter
+-- context here makes the instance unusable in any component that is
+-- polymorphic over @n@ without carrying @1 <= n@ — such components are
+-- common (register files, interconnects), and an @Index 0@ payload cannot
+-- occur at runtime anyway (the type is uninhabited).
 deriving via
   WaveformForNumber NFUns DecSpacer (Index n)
   instance
-    (1 <= n, KnownNat n) => Waveform (Index n)
+    (KnownNat n) => Waveform (Index n)
 
 instance (Waveform a) => Waveform (Complex a)
 
