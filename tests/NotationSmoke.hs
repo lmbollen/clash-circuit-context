@@ -31,6 +31,9 @@ bindings trace. What this proves:
 * a port with a non-'BitPack' payload falls back to identity (still
   compiles, simply absent);
 * a @_@-prefixed port opts out;
+* a binder the notation INVENTS (@final:stmt@, from a non-@idC@ final
+  statement) is skipped by its colon-marked name — the ports the user named
+  around it still trace;
 * the circuit's lambda-bound INTERFACE ports do not trace (yet — that is the
   upstream @trace-ports@ patch; their absence is asserted so the golden
   flips when it lands).
@@ -121,6 +124,18 @@ portsTop = circuit $ \i -> do
   idC -< out
 {-# OPAQUE portsTop #-}
 
+{- | A non-@idC@ FINAL STATEMENT: the notation desugars @addC -< (a, i)@ into
+@final:stmt <- addC -< (a, i); idC -< final:stmt@ — a binder the designer
+never wrote. Its colon-marked name is the contract that keeps it out of the
+trace (see the notation's Note [Synthesised binder names] and this package's
+'wantedBinder'): only @a@, the port the user DID name, may appear.
+-}
+finalTop :: (HasCircuitContext) => Circuit (Signal System Int) (Signal System Int)
+finalTop = circuit $ \i -> do
+  a <- delayC -< i
+  addC -< (a, i)
+{-# OPAQUE finalTop #-}
+
 --------------------------------------------------------------------------------
 -- Harness
 --------------------------------------------------------------------------------
@@ -139,18 +154,21 @@ check what ok
 
 main :: IO ()
 main = do
-  ((kOut, pOut, tOut), traces, probes) <- withCircuitContext $ do
+  ((kOut, pOut, tOut, fOut), traces, probes) <- withCircuitContext $ do
     let
       ks = sampleN 8 (runC knotTop (fromList [1, 1 ..]))
       ps = sampleN 8 (runC portsTop (fromList [1, 1 ..]))
       ts = sampleN 8 (runC tpTop (fromList [1, 1 ..]))
+      fs = sampleN 8 (runC finalTop (fromList [1, 1 ..]))
     _ <- evaluate (deepseqX ks ks)
     _ <- evaluate (deepseqX ps ps)
     _ <- evaluate (deepseqX ts ts)
-    pure (ks, ps, ts)
+    _ <- evaluate (deepseqX fs fs)
+    pure (ks, ps, ts, fs)
   putStrLn ("knot samples:  " <> show kOut)
   putStrLn ("ports samples: " <> show pOut)
   putStrLn ("tp samples:    " <> show tOut)
+  putStrLn ("final samples: " <> show fOut)
   putStrLn ("traces: " <> show (Map.keys traces))
   let
     tks = Map.keys traces
@@ -176,6 +194,14 @@ main = do
   check
     "interface ports not traced without trace-ports"
     (P.not (P.any ("knotTop" `isInfixOf`) (P.filter ("i_Fwd" `isInfixOf`) tks)))
+  -- finalTop: a = register 0 i (reset held 1 cycle) = 0,0,1,1,…; out = a + i
+  check "final-statement samples" (fOut P.== [1, 1, 2, 2, 2, 2, 2, 2])
+  check
+    "synthesised final:stmt binder not traced"
+    (P.not (has "final:stmt"))
+  check
+    "…while the port the user DID name still is"
+    (P.any (\k -> "finalTop" `isInfixOf` k P.&& "a_Fwd" `isInfixOf` k) tks)
   check "trace-ports: same knot still terminates" (tOut P.== kOut)
   check
     "trace-ports: interface port traced"
