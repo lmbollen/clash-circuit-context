@@ -2,21 +2,26 @@
 --
 -- SPDX-License-Identifier: Apache-2.0
 
+{-# LANGUAGE StandaloneDeriving #-}
 {-# OPTIONS -fplugin=Protocols.Plugin #-}
+-- Orphan 'Waveform' instances for clash-vexriscv's bus types (see below).
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module Bittide.ProcessingElement where
 
 import Clash.Explicit.Prelude hiding (delay)
 import Clash.CircuitContext (HasCircuitContext)
 import Clash.Prelude
+import Clash.Shockwaves.Waveform (Waveform)
 import Clash.Sized.Vector.Extra (incrementWithBlacklist)
 
 import Data.String.Interpolate (i)
 import GHC.Stack (HasCallStack)
 import Protocols
 import Protocols.Experimental.Wishbone
+import Protocols.Experimental.Wishbone.Orphans ()
 import Protocols.Idle
-import VexRiscv (CpuIn (..), CpuOut (..), DumpVcd, Jtag)
+import VexRiscv (CpuIn (..), CpuOut (..), DumpVcd, Jtag, JtagIn (..), JtagOut (..))
 
 import Bittide.Cpus.Types (BittideCpu)
 import Bittide.DoubleBufferedRam
@@ -35,6 +40,20 @@ import qualified Protocols.MemoryMap as Mm (
  )
 import qualified Protocols.ToConst as ToConst
 import qualified Protocols.Vec as Vec
+
+{- | clash-vexriscv is an external pin (not part of this instrumented tree),
+so its CPU and JTAG bus types get their typed-waveform instances here, next
+to the component whose traced bindings carry them ('rvCircuit''s @cpuOut@\/
+@rvIn@\/@jtagIn@). Orphans by necessity; every DUT imports this module
+transitively.
+-}
+deriving anyclass instance Waveform JtagIn
+
+deriving anyclass instance Waveform JtagOut
+
+deriving anyclass instance Waveform CpuIn
+
+deriving anyclass instance Waveform CpuOut
 
 -- | Configuration for a Bittide Processing Element.
 data PeConfig nBusses where

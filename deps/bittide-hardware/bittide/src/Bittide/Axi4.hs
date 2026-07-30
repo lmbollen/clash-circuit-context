@@ -43,6 +43,7 @@ module Bittide.Axi4 (
 
 import Clash.CircuitContext (HasCircuitContext, HasProbe, mealyBProbed)
 import Clash.Prelude
+import Clash.Shockwaves.Waveform (Waveform)
 
 import Bittide.Axi4.Internal
 import Bittide.Extra.Maybe
@@ -1067,7 +1068,7 @@ data WishboneToAxiState = WishboneToAxiState
   , waDone :: Bool
   , wdDone :: Bool
   }
-  deriving (Generic, NFDataX, BitPack, Typeable, Show)
+  deriving (Generic, NFDataX, BitPack, Typeable, Show, Waveform)
 
 type Axi4ReadDataFromWishbone = 'Axi4ReadDataConfig 'True 0
 type Axi4ReadAddressFromWishbone addrW =

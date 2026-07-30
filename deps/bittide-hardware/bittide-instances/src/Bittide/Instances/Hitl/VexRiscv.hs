@@ -11,6 +11,7 @@ module Bittide.Instances.Hitl.VexRiscv where
 import Clash.Annotations.TH (makeTopEntity)
 
 import Clash.Explicit.Prelude (noReset, orReset)
+import Clash.Shockwaves.Waveform (Waveform)
 import Clash.Prelude
 
 import Bittide.SharedTypes (BitboneMm)
@@ -51,7 +52,7 @@ import System.FilePath ((</>))
 import qualified Protocols.MemoryMap as Mm
 
 data TestStatus = Running | Success | Fail
-  deriving (Enum, Eq, Generic, NFDataX, BitPack, BitPackC, Show)
+  deriving (Enum, Eq, Generic, NFDataX, BitPack, BitPackC, Show, Waveform)
 deriveTypeDescription ''TestStatus
 
 type TestDone = Bool

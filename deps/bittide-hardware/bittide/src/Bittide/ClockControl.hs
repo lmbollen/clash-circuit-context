@@ -16,6 +16,7 @@ module Bittide.ClockControl (
 where
 
 import Clash.Explicit.Prelude hiding (PeriodToCycles)
+import Clash.Shockwaves.Waveform (Waveform)
 
 import Bittide.Arithmetic.Time (PeriodToCycles)
 import Clash.Class.BitPackC (BitPackC)
@@ -45,7 +46,7 @@ data SpeedChange
   = NoChange
   | SlowDown
   | SpeedUp
-  deriving (Eq, Show, Generic, BitPack, ShowX, NFDataX, BitPackC)
+  deriving (Eq, Show, Generic, BitPack, ShowX, NFDataX, BitPackC, Waveform)
 
 deriveTypeDescription ''SpeedChange
 

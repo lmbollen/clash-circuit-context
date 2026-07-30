@@ -7,6 +7,7 @@ module Bittide.ClockControl.Si539xSpi where
 
 import Clash.CircuitContext (HasCircuitContext, HasProbe, mealyBProbed)
 import Clash.Prelude hiding (PeriodToCycles)
+import Clash.Shockwaves.Waveform (Waveform)
 
 import Data.Maybe
 import GHC.Stack (HasCallStack)
@@ -59,7 +60,7 @@ data RegisterOperation = RegisterOperation
   , write :: Maybe Byte
   -- ^ @Nothing@ for a read operation, @Just byte@ to write @byte@ to this 'Page' and 'Address'.
   }
-  deriving (Show, Generic, NFDataX, BitPack, BitPackC)
+  deriving (Show, Generic, NFDataX, BitPack, BitPackC, Waveform)
 
 deriveTypeDescription ''RegisterOperation
 

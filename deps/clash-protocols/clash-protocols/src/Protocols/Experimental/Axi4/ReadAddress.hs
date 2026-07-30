@@ -43,6 +43,7 @@ import GHC.Generics (Generic)
 
 -- clash-prelude
 import Clash.Prelude qualified as C
+import Clash.Shockwaves.Waveform (Waveform)
 
 -- me
 import Protocols.Experimental.Axi4.Common
@@ -200,7 +201,7 @@ deriving instance
 newtype S2M_ReadAddress = S2M_ReadAddress
   {_arready :: Bool}
   deriving stock (Show, Generic, Eq)
-  deriving anyclass (C.ShowX, C.NFDataX, C.BitPack)
+  deriving anyclass (C.ShowX, C.NFDataX, C.BitPack, Waveform)
 
 {- | Shorthand for a "well-behaved" read address config,
 so that we don't need to write out a bunch of type constraints later.

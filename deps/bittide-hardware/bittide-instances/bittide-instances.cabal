@@ -275,6 +275,7 @@ library
     clash-cores,
     clash-prelude,
     clash-protocols-memmap,
+    clash-shockwaves,
     clash-vexriscv,
     clock,
     constraints,

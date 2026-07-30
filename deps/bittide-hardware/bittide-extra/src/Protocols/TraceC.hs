@@ -145,8 +145,8 @@ instance (TraceC a) => TraceC (Reverse a) where
   names _ name = Trace.names (Proxy @a) name
   trace name = reverseCircuit (Trace.trace name)
 
--- Df derivations
-deriving newtype instance Shock.Waveform Ack
+-- Df derivations: Ack's Waveform instance now lives at its definition site
+-- (Protocols.Internal, dogfood/deps instrumentation).
 
 -- Wishbone derivations
 deriving anyclass instance Shock.Waveform (CycleTypeIdentifier)
@@ -179,11 +179,8 @@ deriving anyclass instance
   BitPack (S2M_ReadData conf userType dataType)
 deriving anyclass instance ShowX (S2M_WriteData)
 deriving instance (Typeable (Proxy a), BitPack (Proxy a)) => Shock.Waveform (Proxy a)
-deriving anyclass instance Shock.Waveform Axi4.S2M_ReadAddress
-deriving anyclass instance Shock.Waveform Axi4.S2M_WriteAddress
-deriving anyclass instance Shock.Waveform Axi4.M2S_ReadData
-deriving anyclass instance Shock.Waveform Axi4.S2M_WriteData
-deriving anyclass instance Shock.Waveform Axi4.M2S_WriteResponse
+-- The Axi4 channel-response Waveform instances now live at their definition
+-- sites (Protocols.Experimental.Axi4.*, dogfood/deps instrumentation).
 
 instance
   ( KnownDomain dom

@@ -9,6 +9,7 @@ check whether we can run hardware-in-the-loop tests.
 module Bittide.Instances.Hitl.BoardTest where
 
 import Clash.Explicit.Prelude
+import Clash.Shockwaves.Waveform (Waveform)
 
 import Clash.Annotations.TH (makeTopEntity)
 import Clash.Cores.Xilinx.Ibufds (ibufdsClock)
@@ -37,7 +38,7 @@ type TestStart = Bool
 data TestState = Busy | Done TestSuccess
 data TestSuccess = TestFailed | TestSuccess deriving (Generic, Eq, NFDataX)
 
-data Test = A | B deriving (Generic, Eq, Show, BitPack, Bounded, Enum, ShowX)
+data Test = A | B deriving (Generic, Eq, Show, BitPack, Bounded, Enum, ShowX, Waveform)
 
 toDoneSuccess :: TestState -> (Bool, Bool)
 toDoneSuccess Busy = (False, False)

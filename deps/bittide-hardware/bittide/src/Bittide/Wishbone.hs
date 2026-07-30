@@ -12,6 +12,7 @@ module Bittide.Wishbone where
 
 -- prelude imports
 import Clash.Prelude hiding (Exp)
+import Clash.Shockwaves.Waveform (Waveform)
 
 -- external imports
 import Clash.Class.BitPackC
@@ -618,7 +619,7 @@ wbToVec readableData m@WishboneM2S{} = (writtenData, wbS2M)
   wbS2M = (emptyWishboneS2M @4){acknowledge, readData, err}
 
 data TimeCmd = Capture | WaitForCmp
-  deriving (Eq, Generic, Show, NFDataX, BitPack, BitPackC)
+  deriving (Eq, Generic, Show, NFDataX, BitPack, BitPackC, Waveform)
 deriveTypeDescription ''TimeCmd
 
 {- | Wishbone accessible circuit that contains a free running 64 bit counter with stalling
@@ -921,6 +922,8 @@ data WishboneResponse nBytes
   deriving (Generic, NFData, NFDataX, Show, ShowX, Eq)
 
 deriving instance (KnownNat nBytes) => BitPack (WishboneResponse nBytes)
+
+deriving anyclass instance (KnownNat nBytes) => Waveform (WishboneResponse nBytes)
 
 {- | Receives a `Df` stream of `WishboneRequest` and acts as a Wishbone manager.
 All responses to the master will be forwarded as a `Df` stream of `WishboneResponse`.

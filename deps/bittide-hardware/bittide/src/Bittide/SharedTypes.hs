@@ -10,6 +10,7 @@ module Bittide.SharedTypes (
 ) where
 
 import Clash.Prelude
+import Clash.Shockwaves.Waveform (Waveform)
 
 import Clash.Class.BitPackC (ByteOrder (..), Bytes)
 import Data.Constraint
@@ -20,7 +21,7 @@ import Protocols.Experimental.Wishbone
 import Protocols.MemoryMap (Mm)
 
 -- | To be used when there are two options.
-data AorB = A | B deriving (Eq, Generic, BitPack, Show, NFDataX)
+data AorB = A | B deriving (Eq, Generic, BitPack, Show, NFDataX, Waveform)
 
 -- | If we receive 'A', return 'B'. If we receive 'B', return 'A'
 swapAorB :: AorB -> AorB

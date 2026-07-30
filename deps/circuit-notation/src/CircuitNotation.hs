@@ -510,6 +510,36 @@ genLocName (locA -> GHC.RealSrcSpan rss _) prefix =
     foldMap (\f -> show (f rss)) [srcSpanStartLine, srcSpanEndLine, srcSpanStartCol, srcSpanEndCol]
 genLocName _ prefix = prefix
 
+{- Note [Synthesised binder names]
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+Every term binder this plugin INVENTS -- one the user wrote in no form --
+carries a @:@ in its name ('final:stmt', @lam:@-prefixed interface binders,
+@val:in@/@val:out@ buses, @circuit:logic@). No source-language variable
+identifier can contain a colon, so the mark is unforgeable: a renamer-stage
+tool (a tracing plugin, say) that skips colon-carrying binders skips exactly
+the notation's plumbing and never a designer's port. User-named ports keep
+their names verbatim (suffixed @_Fwd@/@_Bwd@), so they remain instrumentable
+-- that is what @trace-ports@ exists for. Without this mark, @final:stmt@
+alone dominated real traced designs: 979 of 4823 declarations (20%) across
+bittide's waveforms, each duplicating a signal already present under its own
+name.
+
+Two tempting alternative marks do NOT work:
+
+ * a bad/generated SrcSpan: 'genLocName' derives collision-free binder names
+   from the span and degrades to the bare prefix without one, so blanking a
+   'PortName' span made every @final:stmt@ in a module share a name -- the
+   resulting self-referential binding turned the notation's lazy knot into a
+   cycle and hung the COMPILER on designs that evaluate circuits at compile
+   time. Real spans are also what error messages point at. Synthesised
+   binders therefore keep real spans; the NAME carries the mark.
+
+ * a leading underscore: 'completeUnderscores' gives @_@-ports "don't care"
+   semantics, binding them to 'def' -- and it applies to 'circuitMasters',
+   which is precisely what @final:stmt@ is, so the block's output would be
+   silently replaced by a default value.
+-}
+
 -- | Extract a simple lambda into inputs and body.
 simpleLambda :: HsExpr GhcPs -> Maybe ([LPat GhcPs], LHsExpr GhcPs)
 simpleLambda expr = do
@@ -664,6 +694,9 @@ circuitBody = \case
           --   finalStmt <- c -< x
           --   idC -< finalStmt
           _ -> do
+            -- The ':' marks this binder as invented, and 'finLoc' must stay
+            -- real ('genLocName' collision-freedom, error locations); see
+            -- Note [Synthesised binder names].
             let ref = Ref (PortName finLoc "final:stmt")
             bodyBinding (Just ref) (bod)
             circuitMasters .= ref
@@ -855,10 +888,12 @@ portBindName (PortName _ fs) dir = GHC.unpackFS fs <> "_" <> show dir
 
 {- | The fresh (span-suffixed, collision-free) lambda binder a leaf port binds
 under when @trace-ports@ re-binds interface ports through let indirections
-(see 'lamIndirections').
+(see 'lamIndirections'). The @lam:@ prefix marks it as plumbing -- the
+user's port is the indirection's LHS, not this binder; see
+Note [Synthesised binder names].
 -}
 lamBindName :: PortName -> Direction -> String
-lamBindName pn@(PortName loc _) dir = genLocName loc (portBindName pn dir)
+lamBindName pn@(PortName loc _) dir = "lam:" <> genLocName loc (portBindName pn dir)
 
 -- | 'bindWithSuffix' with the leaf binder names picked by @nameOf@.
 bindWithSuffixNamed :: (p ~ GhcPs, ?nms :: ExternalNames) => GHC.DynFlags -> (PortName -> Direction -> String) -> Direction -> PortDescription PortName -> LPat p
@@ -1270,9 +1305,11 @@ valueCircuitQQExpM = do
   masters0 <- L.use circuitMasters
   binds0 <- L.use circuitBinds
 
-  let inPrefix  = genLocName loc "valIn" <> "_"
-      outPrefix = genLocName loc "valOut" <> "_"
-      logicName = genLocName loc "circuitLogic"
+  -- The ':' in these names marks them as invented binders; see
+  -- Note [Synthesised binder names].
+  let inPrefix  = genLocName loc "val:in" <> "_"
+      outPrefix = genLocName loc "val:out" <> "_"
+      logicName = genLocName loc "circuit:logic"
 
   -- Value patterns become the arguments of circuitLogic (values sampled off
   -- buses) ...

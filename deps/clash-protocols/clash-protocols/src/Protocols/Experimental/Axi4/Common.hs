@@ -15,6 +15,7 @@ import GHC.TypeNats (Nat)
 
 import Clash.Prelude (type (-), type (^))
 import Clash.Prelude qualified as C
+import Clash.Shockwaves.Waveform (Waveform)
 
 import Protocols.Internal
 
@@ -147,7 +148,7 @@ data BurstMode
     This burst type is used for cache line accesses.
     -}
     BmWrap
-  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack)
+  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack, Waveform)
 
 {- | The maximum number of bytes to transfer in each data transfer, or beat,
 in a burst.
@@ -161,7 +162,7 @@ data BurstSize
   | Bs32
   | Bs64
   | Bs128
-  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack)
+  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack, Waveform)
 
 -- | Convert burst size to a numeric value
 burstSizeToNum :: (Num a) => BurstSize -> a
@@ -177,19 +178,19 @@ burstSizeToNum = \case
 
 -- | Whether a transaction is bufferable
 data Bufferable = NonBufferable | Bufferable
-  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack)
+  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack, Waveform)
 
 {- | When set to "LookupCache", it is recommended that this transaction is
 allocated in the cache for performance reasons.
 -}
 data Allocate = NoLookupCache | LookupCache
-  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack)
+  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack, Waveform)
 
 {- | When set to "OtherLookupCache", it is recommended that this transaction is
 allocated in the cache for performance reasons.
 -}
 data OtherAllocate = OtherNoLookupCache | OtherLookupCache
-  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack)
+  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack, Waveform)
 
 {- | Memory attributes. Note that the 'Allocate' and 'OtherAllocate' bits are
 in different positions for read and write requests.
@@ -219,19 +220,19 @@ data Resp
     indicate that there is no slave at the transaction address.
     -}
     RDecodeError
-  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack)
+  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack, Waveform)
 
 -- | Whether a resource is accessed with exclusive access or not
 data AtomicAccess
   = NonExclusiveAccess
   | ExclusiveAccess
-  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack)
+  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack, Waveform)
 
 -- | Whether transaction can be modified
 data Modifiable
   = Modifiable
   | NonModifiable
-  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack)
+  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack, Waveform)
 
 {- | An AXI master might support Secure and Non-secure operating states, and
 extend this concept of security to memory access.
@@ -239,7 +240,7 @@ extend this concept of security to memory access.
 data Secure
   = Secure
   | NonSecure
-  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack)
+  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack, Waveform)
 
 {- | An AXI master might support more than one level of operating privilege,
 and extend this concept of privilege to memory access.
@@ -247,7 +248,7 @@ and extend this concept of privilege to memory access.
 data Privileged
   = NotPrivileged
   | Privileged
-  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack)
+  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack, Waveform)
 
 {- | Whether the transaction is an instruction access or a data access. The AXI
 protocol defines this indication as a hint. It is not accurate in all cases,
@@ -259,7 +260,7 @@ instruction access.
 data InstructionOrData
   = Data
   | Instruction
-  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack)
+  deriving (Show, C.ShowX, Generic, C.NFDataX, NFData, Eq, C.BitPack, Waveform)
 
 -- | Enables or disables t'Privileged', t'Secure', and 'InstructionOrData'
 type Permissions = (Privileged, Secure, InstructionOrData)

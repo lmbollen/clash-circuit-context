@@ -24,6 +24,7 @@ import GHC.Generics (Generic)
 
 -- clash-prelude
 import Clash.Prelude qualified as C
+import Clash.Shockwaves.Waveform (Waveform)
 
 -- me
 import Protocols.Experimental.Axi4.Common
@@ -88,7 +89,7 @@ data
 -- | See Table A2-4 "Write response channel signals"
 newtype M2S_WriteResponse = M2S_WriteResponse {_bready :: Bool}
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (C.ShowX, C.NFDataX, C.BitPack)
+  deriving anyclass (C.ShowX, C.NFDataX, C.BitPack, Waveform)
 
 {- | Shorthand for a "well-behaved" write response config,
 so that we don't need to write out a bunch of type constraints later.

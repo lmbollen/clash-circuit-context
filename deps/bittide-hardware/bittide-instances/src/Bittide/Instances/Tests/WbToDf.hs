@@ -4,6 +4,7 @@
 module Bittide.Instances.Tests.WbToDf where
 
 import Clash.Explicit.Prelude
+import Clash.Shockwaves.Waveform (Waveform)
 import Clash.Prelude (withClockResetEnable)
 
 import Bittide.Cpus.Riscv32imc (vexRiscv0)
@@ -34,7 +35,7 @@ data SomeAdt
   | ConB (Unsigned 40)
   | ConC (BitVector 16) (BitVector 20)
   | ConD (Vec 3 (BitVector 8))
-  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack, Eq, NFData)
+  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack, Eq, NFData, Waveform)
 deriveTypeDescription ''SomeAdt
 
 testValue :: Vec 4 SomeAdt

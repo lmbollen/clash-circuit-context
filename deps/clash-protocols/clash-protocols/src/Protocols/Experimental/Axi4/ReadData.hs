@@ -39,6 +39,7 @@ import Prelude hiding (
 
 -- clash-prelude
 import Clash.Prelude qualified as C
+import Clash.Shockwaves.Waveform (Waveform)
 
 -- me
 import Protocols.Experimental.Axi4.Common
@@ -109,7 +110,7 @@ data
 -- | See Table A2-6 "Read data channel signals"
 newtype M2S_ReadData = M2S_ReadData {_rready :: Bool}
   deriving stock (Show, Eq, Generic)
-  deriving anyclass (C.ShowX, C.NFDataX, C.BitPack)
+  deriving anyclass (C.ShowX, C.NFDataX, C.BitPack, Waveform)
 
 {- | Shorthand for a "well-behaved" read data config,
 so that we don't need to write out a bunch of type constraints later.

@@ -1,4 +1,4 @@
-{
+{ 
   description = "A flake for developing & using circuit-notation";
   inputs = {
     clash-compiler.url = "github:clash-lang/clash-compiler";

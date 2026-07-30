@@ -6,6 +6,7 @@ module Bittide.ClockControl.Callisto.Types (
 ) where
 
 import Clash.Prelude
+import Clash.Shockwaves.Waveform (Waveform)
 
 -- | Stability results to be returned by the 'stability_detector'.
 data Stability = Stability
@@ -16,4 +17,4 @@ data Stability = Stability
   'targetDataCount'.
   -}
   }
-  deriving (Generic, NFDataX, BitPack, ShowX, Show)
+  deriving (Generic, NFDataX, BitPack, ShowX, Show, Waveform)

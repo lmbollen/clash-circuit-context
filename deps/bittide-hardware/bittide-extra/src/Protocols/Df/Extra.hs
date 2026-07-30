@@ -1,10 +1,14 @@
 -- SPDX-FileCopyrightText: 2025 Google LLC
 --
 -- SPDX-License-Identifier: Apache-2.0
+{-# LANGUAGE StandaloneDeriving #-}
+-- Orphan 'Waveform' instance for clash-prelude's 'RamOp' (see below).
+{-# OPTIONS_GHC -Wno-orphans #-}
 
 module Protocols.Df.Extra where
 
 import Clash.Prelude hiding (traceSignal)
+import Clash.Shockwaves.Waveform (Waveform)
 import Data.Bifunctor (Bifunctor (..))
 import Data.Maybe
 import GHC.Stack (HasCallStack)
@@ -72,6 +76,12 @@ skid = Circuit go
 
 ackWhen :: Signal dom Bool -> Circuit (Df dom a) ()
 ackWhen canDrop = Circuit $ \_ -> (Ack <$> canDrop, ())
+
+{- | clash-prelude is an external pin, so its 'RamOp' gets its typed-waveform
+instance here, next to the RAM wrapper whose traced ports carry it. Orphan by
+necessity.
+-}
+deriving anyclass instance (KnownNat n, Waveform a) => Waveform (RamOp n a)
 
 -- | Creates a wrapper around 'tdpbram' to make it work on 'RamOp'
 tdpbramRamOp ::

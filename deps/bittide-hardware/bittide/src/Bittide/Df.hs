@@ -6,6 +6,7 @@ module Bittide.Df (asciiDebugMux, wbToDf, unsafeToDf, unsafeFromDf) where
 
 import Clash.CircuitContext (HasCircuitContext)
 import Clash.Prelude
+import Clash.Shockwaves.Waveform (Waveform)
 import Protocols
 
 import Bittide.PacketStream (timeout)
@@ -160,6 +161,8 @@ wbToDf ::
   , NFDataX a
   , BitPack a
   , BitPackC a
+  , -- Typed waveforms: the traced @dat@/@maybeA@ bindings carry @a@.
+    Waveform a
   , ?byteOrder :: ByteOrder
   , HasCallStack
   ) =>

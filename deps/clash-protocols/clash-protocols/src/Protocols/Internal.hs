@@ -40,6 +40,11 @@ import Data.Kind (Type)
 import Data.Tuple (swap)
 import GHC.Generics (Generic)
 
+-- Typed-waveform support: every 'C.BitPack' payload that can appear on a
+-- traced wire carries a 'Waveform' instance, so waveform viewers can decode
+-- it (dogfood/deps instrumentation).
+import Clash.Shockwaves.Waveform (Waveform)
+
 {- $setup
 >>> import Protocols
 -}
@@ -47,7 +52,7 @@ import GHC.Generics (Generic)
 -- | Protocol-agnostic acknowledgement
 newtype Ack = Ack Bool
   deriving stock (Generic, Show)
-  deriving anyclass (C.Bundle, C.ShowX)
+  deriving anyclass (C.Bundle, C.ShowX, Waveform)
   deriving newtype (C.NFDataX, Eq, Ord, C.BitPack)
 
 -- | Acknowledge. Used in circuit-notation plugin to drive ignore components.

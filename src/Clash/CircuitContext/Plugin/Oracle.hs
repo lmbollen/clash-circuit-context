@@ -49,8 +49,10 @@ import qualified GHC.Core.Type as GHC
 import qualified GHC.Iface.Load as GHC (loadSysInterface)
 import qualified GHC.Plugins as GHC (
   getOccString,
+  idType,
   moduleName,
   moduleNameString,
+  nameModule,
   nameModule_maybe,
   text,
  )
@@ -91,11 +93,22 @@ initEnv = do
       -- instrumented modules never import Clash.CircuitContext.Auto, so without
       -- this the first oracle query can run before the Traceable/Probeable
       -- instances are visible and wrongly decide 'False (observed).
-      _ <-
-        APIInternal.unsafeLiftTcM
-          ( GHC.initIfaceTcRn
-              (GHC.loadSysInterface (GHC.text "clash-circuit-context") md)
-          )
+      forceInterface md
+      -- Same hazard one package over: the Traceable Signal instance requires
+      -- clash-shockwaves' Waveform per payload, and a module that never
+      -- mentions clash-shockwaves never loads its instances — every stock
+      -- payload (BitVector, Index, …) would silently stop tracing there
+      -- (observed on bittide's Prbs). The module cannot be resolved by name
+      -- from an arbitrary unit (only DIRECT dependencies are), so read the
+      -- class off 'waveformClassWitness' and force its home interface.
+      witId <-
+        API.tcLookupId =<< API.lookupOrig md (API.mkVarOcc "waveformClassWitness")
+      let (_, theta, _) = GHC.tcSplitSigmaTy (GHC.idType witId)
+      case [cls | pred0 <- theta, GHC.ClassPred cls _ <- [GHC.classifyPredType pred0]] of
+        (cls : _) -> forceInterface (GHC.nameModule (GHC.getName cls))
+        [] ->
+          error
+            "Clash.CircuitContext.Plugin: waveformClassWitness carries no class constraint"
       let
         tc nm = API.tcLookupTyCon =<< API.lookupOrig md (API.mkTcOcc nm)
         cl nm = API.tcLookupClass =<< API.lookupOrig md (API.mkTcOcc nm)
@@ -109,6 +122,13 @@ initEnv = do
     _ ->
       error
         "Clash.CircuitContext.Plugin: Clash.CircuitContext.Auto not found (missing clash-circuit-context dependency?)"
+ where
+  forceInterface md =
+    ()
+      <$ APIInternal.unsafeLiftTcM
+        ( GHC.initIfaceTcRn
+            (GHC.loadSysInterface (GHC.text "clash-circuit-context") md)
+        )
 
 --------------------------------------------------------------------------------
 -- Rewriter stage: ground types only (givens are NOT available here)

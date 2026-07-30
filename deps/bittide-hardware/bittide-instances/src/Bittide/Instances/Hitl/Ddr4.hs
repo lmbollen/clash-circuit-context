@@ -12,6 +12,7 @@ the memory.
 module Bittide.Instances.Hitl.Ddr4 where
 
 import Clash.Explicit.Prelude
+import Clash.Shockwaves.Waveform (Waveform)
 
 import Data.Data (Proxy (..))
 import Data.Functor.Identity (Identity (Identity))
@@ -54,7 +55,7 @@ type StepSize = 1024 :: Nat
 data TestChunk
   = Bottom
   | Top
-  deriving (Enum, Generic, NFDataX, Bounded, BitPack, ShowX, Show)
+  deriving (Enum, Generic, NFDataX, Bounded, BitPack, ShowX, Show, Waveform)
 
 {- | Generate an address based on the current test chunk. The goal is to check
 the bottom range of the memory and the top range.

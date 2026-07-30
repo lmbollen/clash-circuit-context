@@ -5,6 +5,7 @@
 module Bittide.Instances.Common where
 
 import Clash.Prelude
+import Clash.Shockwaves.Waveform (Waveform)
 
 import Bittide.Arithmetic.PartsPer (PartsPer)
 import Bittide.ClockControl.Si5395J
@@ -32,7 +33,7 @@ data StepSizeSelect
   | PPB_100
   | PPB_500
   | PPM_1
-  deriving (Generic, NFDataX, BitPack, Eq, Enum, Bounded, Show)
+  deriving (Generic, NFDataX, BitPack, Eq, Enum, Bounded, Show, Waveform)
 
 {- | The step size, as it is used by all tests. Note that changing the
 step size for individual tests requires recalibration of the clock

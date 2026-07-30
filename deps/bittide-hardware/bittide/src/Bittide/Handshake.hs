@@ -18,6 +18,7 @@ words.
 module Bittide.Handshake where
 
 import Clash.Prelude
+import Clash.Shockwaves.Waveform (Waveform)
 import Protocols
 
 import Bittide.ElasticBuffer (ElasticBufferData (..), fromData)
@@ -63,7 +64,7 @@ data Meta a = Meta
   , softwareMeta :: a
   -- ^ Additional information transmitted to the software
   }
-  deriving (Generic, NFDataX, BitPack, Eq, Show, Functor)
+  deriving (Generic, NFDataX, BitPack, Eq, Show, Functor, Waveform)
 
 emptyMeta :: a -> Meta a
 emptyMeta softwareMeta =
@@ -107,7 +108,7 @@ data Status
     Last
   | -- | Current word is post-handshake
     PostHandshake
-  deriving (Generic, Show, Eq, NFDataX, BitPack, BitPackC)
+  deriving (Generic, Show, Eq, NFDataX, BitPack, BitPackC, Waveform)
 deriveTypeDescription ''Status
 
 {- | A circuit negotiating a common "first word" boundary on an unstructured stream of
@@ -135,6 +136,9 @@ handshake ::
   ( KnownNat n
   , BitPack a
   , NFDataX a
+  , -- Typed waveforms: the traced @transmitMeta@/@maybeNeighborMeta@ bindings
+    -- carry @Meta a@, whose derived 'Waveform' instance needs the payload's.
+    Waveform a
   , BitSize (Meta a) <= n
   , HiddenClock dom
   , HasCircuitContext
@@ -281,7 +285,7 @@ data Mode
     PassThrough
   | -- | Handshake module engaged
     Enabled
-  deriving (Generic, Show, Eq, NFDataX, BitPack, BitPackC)
+  deriving (Generic, Show, Eq, NFDataX, BitPack, BitPackC, Waveform)
 deriveTypeDescription ''Mode
 
 data Input dom = Input

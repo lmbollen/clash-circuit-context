@@ -7,6 +7,7 @@
 module Bittide.Instances.Tests.RegisterWb where
 
 import Clash.Prelude
+import Clash.Shockwaves.Waveform (Waveform)
 
 -- Local
 
@@ -67,61 +68,61 @@ type S64 = Signed 64
 type S96 = Signed 96
 
 data MyZeroSizedType = MyZeroSizedType
-  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack)
+  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack, Waveform)
 deriveTypeDescription ''MyZeroSizedType
 
 data Abc = A | B | C
-  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack)
+  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack, Waveform)
 deriveTypeDescription ''Abc
 
 data Xyz = H | I | J | K | L | M | N | O | P | Q | R | S | T | U | V | W | X | Y | Z
-  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack, Waveform)
 deriveTypeDescription ''Xyz
 
 data F = F {f :: Float, u :: Double}
-  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack, Waveform)
 deriveTypeDescription ''F
 
 data X3 = X3 B16 B8 B8
-  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack, Waveform)
 deriveTypeDescription ''X3
 
 data X2 = X2 B8 X3
-  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack, Waveform)
 deriveTypeDescription ''X2
 
 data P0 = P0 U16 U8 U8
-  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack, Waveform)
 deriveTypeDescription ''P0
 
 data P1 = P1 U16 U8 U16
-  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack, Waveform)
 deriveTypeDescription ''P1
 
 data P2 = P2 U16 U8 (Index 10)
-  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack, Waveform)
 deriveTypeDescription ''P2
 
 data P3 = P3 P2 U8
-  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack)
+  deriving (Generic, BitPackC, NFDataX, ShowX, Show, BitPack, Waveform)
 deriveTypeDescription ''P3
 
 data SoP
   = SoP0
   | SoP1 {u :: Unsigned 32}
   | SoP2
-  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack)
+  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack, Waveform)
 deriveTypeDescription ''SoP
 
 data Inner = Inner
   { innerA :: BitVector 8
   , innerB :: BitVector 16
   }
-  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack)
+  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack, Waveform)
 deriveTypeDescription ''Inner
 
 data OnlyReferencedInVec = OnlyReferencedInVec (BitVector 8) (BitVector 13)
-  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack)
+  deriving (Generic, NFDataX, ShowX, Show, BitPackC, BitPack, Waveform)
 deriveTypeDescription ''OnlyReferencedInVec
 
 -- | Example that exports a bunch of different types.

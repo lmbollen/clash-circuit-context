@@ -10,6 +10,7 @@ module Bittide.ClockControl.Config (
 ) where
 
 import Clash.Prelude
+import Clash.Shockwaves.Waveform (Waveform)
 
 import Bittide.ClockControl.Topology (Topology)
 import Clash.Class.BitPackC (BitPackC)
@@ -34,7 +35,7 @@ data CallistoConfig = CallistoConfig
   -- ^ See https://github.com/bittide/Callisto.jl/blob/e47139fca128995e2e64b2be935ad588f6d4f9fb/demo/pulsecontrol.jl#L24.
   }
   deriving (Eq, Ord, Show, Generic)
-  deriving (BitPack, BitPackC, NFDataX)
+  deriving (BitPack, BitPackC, NFDataX, Waveform)
   deriving (FromJSON, ToJSON)
 deriveTypeDescription ''CallistoConfig
 
@@ -50,7 +51,7 @@ data CcConf a = CcConf
   -- ^ Clock control configuration for the Callisto algorithm. See @callisto.rs@.
   }
   deriving (Eq, Ord, Show, Generic, Functor)
-  deriving (BitPack, BitPackC, NFDataX)
+  deriving (BitPack, BitPackC, NFDataX, Waveform)
   deriving (FromJSON, ToJSON)
 
 deriveTypeDescription ''CcConf

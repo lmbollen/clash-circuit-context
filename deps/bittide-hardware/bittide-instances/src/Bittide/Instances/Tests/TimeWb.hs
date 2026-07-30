@@ -5,6 +5,7 @@
 module Bittide.Instances.Tests.TimeWb where
 
 import Clash.Prelude
+import Clash.Shockwaves.Waveform (Waveform)
 
 import Bittide.Cpus.Riscv32imc (vexRiscv0)
 import Bittide.Instances.Common (PeConfigElfSource (NameOnly), emptyPeConfig, peConfigFromElf)
@@ -24,7 +25,7 @@ import VexRiscv (DumpVcd (NoDumpVcd))
 import qualified Protocols.MemoryMap as Mm
 
 data TestStatus = Running | Success | Fail
-  deriving (Show, Eq, Generic, NFDataX, BitPack, BitPackC)
+  deriving (Show, Eq, Generic, NFDataX, BitPack, BitPackC, Waveform)
 deriveTypeDescription ''TestStatus
 
 -- | Memory map for the C timer test

@@ -5,6 +5,7 @@ module Bittide.Ethernet.Mac where
 
 import Clash.CircuitContext (HasCircuitContext)
 import Clash.Explicit.Prelude hiding ((:<))
+import Clash.Shockwaves.Waveform (Waveform)
 
 import Bittide.Extra.Maybe
 import Bittide.Wishbone
@@ -34,7 +35,7 @@ data EthMacStatus = EthMacStatus
   , rxFifoBadFrame :: "rxFifoBadFrame" ::: Bool
   , rxFifoGoodFrame :: "rxFifoGoodFrame" ::: Bool
   }
-  deriving (Generic, NFDataX, BitPack, BitPackC)
+  deriving (Generic, NFDataX, BitPack, BitPackC, Waveform)
 deriveTypeDescription ''EthMacStatus
 
 {- | Wishbone peripheral that keeps track of the status flags of the Ethernet MAC.

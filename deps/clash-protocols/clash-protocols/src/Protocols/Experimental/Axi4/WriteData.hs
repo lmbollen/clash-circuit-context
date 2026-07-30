@@ -37,6 +37,7 @@ import Prelude hiding (
 
 -- clash-prelude
 import Clash.Prelude qualified as C
+import Clash.Shockwaves.Waveform (Waveform)
 
 -- me
 import Protocols.Experimental.Axi4.Common
@@ -104,7 +105,7 @@ data
 -- | See Table A2-3 "Write data channel signals"
 newtype S2M_WriteData = S2M_WriteData {_wready :: Bool}
   deriving stock (Show, Generic)
-  deriving anyclass (C.NFDataX, C.BitPack)
+  deriving anyclass (C.NFDataX, C.BitPack, Waveform)
 
 {- | Shorthand for a "well-behaved" write data config,
 so that we don't need to write out a bunch of type constraints later.

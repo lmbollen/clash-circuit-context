@@ -10,6 +10,7 @@ module Protocols.Wishbone.Extra (
 
 import Clash.Cores.Xilinx.Xpm.Cdc.Extra (xpmCdcHandshakeDf)
 import Clash.Prelude
+import Clash.Shockwaves.Waveform (Waveform)
 import Data.Maybe (fromMaybe, isJust)
 import Protocols
 import Protocols.Experimental.Wishbone
@@ -265,7 +266,7 @@ data DecreaseBusState power width
   , maskReg :: BitVector (2 ^ power * width)
   -- ^ Register to hold the bus select mask as we shift it out over multiple cycles.
   }
-  deriving (Generic, NFDataX, Show, ShowX, Eq, BitPack)
+  deriving (Generic, NFDataX, Show, ShowX, Eq, BitPack, Waveform)
 
 {- | Converts a bus of `2 ^ power * width` bytes wide to bus of `width` bytes wide based on
 the `busSelect` mask. It uses internal state to keep start at the lowest non-zero byte lane and

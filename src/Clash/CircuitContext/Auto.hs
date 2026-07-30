@@ -39,6 +39,7 @@ module Clash.CircuitContext.Auto (
   GTraceable (..),
   AutoTrace (..),
   autoTrace,
+  waveformClassWitness,
 
   -- * Probing
   CanProbe,
@@ -333,6 +334,20 @@ instance (Traceable t) => AutoTrace 'True t where
 
 instance AutoTrace 'False t where
   autoTraceAt _ x = x
+
+{- | Plugin support only; never call it. The oracle must consult
+@clash-shockwaves@' 'Waveform' instances (the 'Traceable' 'Signal' instance
+requires one per payload), but an instrumented module that never mentions
+clash-shockwaves never loads its interface — so 'GHC.Core.InstEnv.lookupInstEnv'
+would silently miss e.g. @Waveform (BitVector n)@ and the binder would fall
+back to identity. The plugin cannot resolve the clash-shockwaves module by
+name either (module lookup sees only the compiled unit's DIRECT dependencies).
+This value's TYPE names the class; the plugin reads the class off its context
+and force-loads the class's home interface, exactly as it does for this
+module's own instances.
+-}
+waveformClassWitness :: (Waveform a) => proxy a -> ()
+waveformClassWitness _ = ()
 
 {- | What the renamer pass wraps around named local declarations in
 'HasCircuitContext' functions.
