@@ -353,10 +353,31 @@ wrapPatBind abi m nm spn b@PatBind{pat_ext = fvs, pat_rhs = grhss}
       b{pat_rhs = wrapGRHSs abi m nm spn grhss}
 wrapPatBind _ _ _ _ b = b
 
+{- | Is this a binder the designer wrote and did not opt out of?
+
+Three gates:
+
+* a leading @_@ is the user-facing opt-out (and GHC's own "unused" idiom);
+
+* a @:@ anywhere in the name marks a binder a code generator INVENTED. No
+  source-language variable identifier can contain a colon, so the mark is
+  unforgeable — it can never skip a binder the user wrote. This is a contract
+  with circuit-notation, which names all its plumbing this way (@final:stmt@,
+  @lam:@…, @val:in@…); see Note [Synthesised binder names] there. Name-based
+  is deliberate: the SPAN cannot carry the mark, because generators need real
+  spans for their own name uniquification and for error locations, and
+  'patBinders' already falls back from the (often 'GHC.noLoc') name to the
+  enclosing pattern's span;
+
+* a binder with no good span anywhere is compiler-generated.
+-}
 wantedBinder :: GHC.Name -> GHC.SrcSpan -> Bool
 wantedBinder nm spn =
-  not ("_" `isPrefixOf` GHC.getOccString nm)
+  not ("_" `isPrefixOf` occ)
+    && ':' `notElem` occ
     && GHC.isGoodSrcSpan spn
+ where
+  occ = GHC.getOccString nm
 
 {- | Is this local binding /closed/ — no free variables besides top-level
 ('GHC.isExternalName') names and itself? Closed bindings are the ones GHC
