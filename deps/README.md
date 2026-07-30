@@ -273,6 +273,36 @@ real values — `uartInterfaceWb.bus_Bwd._1` (36 b `WishboneS2M`) shows
 on ack, and `bxxx…x1000` for a write ack where read data is legitimately
 undefined. Assertions still pass byte-exact.
 
+### Binders the notation invents are never traced
+
+A `circuit` block's final statement, unless it is literally `idC -< x`, is
+desugared as if the designer had written `final:stmt <- c -< x; idC -<
+final:stmt` — a binder that exists in no form in the source. Before it was
+excluded, this one artefact was 979 of 4,823 declarations (20 %) across the
+bittide waveforms — measured by toggling only this gate on today's build —
+every one duplicating a signal already present under its real name (its
+composite ports even fan out into per-leaf sub-scopes, which is exactly the
+`final:stmt_*` clutter that showed up under `manyTypesWb` in Surfer).
+
+The exclusion is a naming **contract** between the two plugins, not a filter
+over the output: no source-language variable identifier can contain a `:`, so
+circuit-notation puts one in the name of every binder it invents (`final:stmt`,
+the `lam:`-prefixed trace-ports lambda binders, the `val:in`/`val:out`/
+`circuit:logic` value-circuit plumbing — see `Note [Synthesised binder names]`
+in its source), and this plugin's renamer refuses to wrap any colon-carrying
+binder (`wantedBinder`). The signal is never instrumented, registered or
+sampled — and the mark is unforgeable, so no user-named port can ever be
+skipped by it.
+
+Two obvious alternatives fail, instructively: marking the *span* as generated
+breaks the notation itself (`genLocName` derives collision-free names from
+spans; blanking one collapsed every `final:stmt` in a module to a single
+self-referential binding, which hung the compiler on
+`Bittide.Instances.MemoryMaps`) and degrades error locations; a leading
+underscore collides with `completeUnderscores`, which binds `_`-ports to `def`
+— including the block's own master, so the circuit's output would silently
+become a default value.
+
 ## Typed waveforms: the shockwaves half
 
 A hierarchical VCD tells you a signal is `manyTypesWb.wb_Fwd` and 72 bits wide.
@@ -307,23 +337,48 @@ name matching, and nothing to keep in sync.
 wrong one, a record's own entry is missing from `types` while its members are
 present.
 
-### The cost, measured
+### The cost, measured — and the trap in it
 
 Requiring `Waveform` of every traced payload means tracing and typed waveforms
-always arrive together — but the constraint is viral, and a payload *without* an
-instance stops tracing (silently, like every other undecidable case, not a
-compile error). The measured cost of that choice:
+always arrive together. But the requirement is decided by the same oracle as
+every other tracing constraint, so a payload *without* an instance does not fail
+to compile — **it silently stops tracing**. That is the correct behaviour for an
+instrumentation library (it must never break a build), and it is a trap for
+exactly this reason: the failure mode is a wire that is simply absent, and no
+diagnostic anywhere says so.
 
-* **In this repository: one signature.** The polymorphic helper in `Fallback.hs`
-  now needs `Waveform a`. All three golden VCDs are byte-identical, so no
-  existing traced signal was lost.
-* **In bittide: one signature.** `Tests.Waveform`'s `withWaveformC`, which is
-  polymorphic in the payload it traces. 293 modules otherwise compiled unchanged.
+It caught us. Deriving `Waveform` on the types that obviously needed it left
+**366 wires (10 %) silently missing** across the 29 waveforms — `Ack` handshakes
+inside `xilinxElasticBuffer`, every `Status`/`Meta` wire in `handshake`, the CPU's
+`cpuOut`/`rvIn`, `RamOp` ports, whole `activeSubordinate` families. Nothing
+failed; the VCDs just quietly said less. It surfaced only from a **coverage diff
+against a build where nothing could be dropped**, not from reading the waveforms
+we had — a present-signal audit cannot see an absent signal.
 
-It is that small because the ecosystem was already shockwaves-aware:
-`clash-protocols-memmap` ships `Waveform` instances for `WishboneM2S`,
-`WishboneS2M`, `CycleTypeIdentifier` and `BurstTypeExtension`, and
-`bittide-extra` already depended on the library.
+The fix is to derive the instance everywhere rather than tolerate the gap:
+
+| where | what |
+| --- | --- |
+| `clash-protocols` | `Ack`, and all 16 `Experimental.Axi4` request/response types |
+| `bittide` | 10 modules (`Handshake`, `ClockControl` + `Config`/`Si539xSpi`/`Callisto`, `Wishbone`, `Axi4`, `SharedTypes`, `Ethernet.Mac`, …) |
+| `bittide-instances` | `RegisterWb`'s 13 register payloads, `TimeWb`, `WbToDf`, `Common`, 3 HITL modules |
+| `bittide-extra` | `Wishbone.Extra` |
+| orphans, by necessity | `clash-vexriscv`'s `CpuIn`/`CpuOut`/`JtagIn`/`JtagOut` (in `ProcessingElement`) and clash-prelude's `RamOp` (in `Df.Extra`) — both are external pins, instanced next to the component whose ports carry them |
+| polymorphic signatures | 3: `handshake`, `wbToDf`, and `Tests.Waveform`'s `withWaveformC` now carry `Waveform a` alongside `BitPack a` |
+
+One upstream constraint was also relaxed: `clash-shockwaves` required
+`1 <= n` for `Waveform (Index n)`, while `BitPack (Index n)` needs only
+`KnownNat n`. The stricter context made the instance unusable in any component
+polymorphic over `n` without that bound — common in interconnects — so it now
+matches `BitPack`.
+
+After the sweep the diff is exact: **4,823 declarations with everything
+traceable, minus 979 notation artifacts, equals the 3,844 the branch emits.**
+Every real wire is accounted for.
+
+The residual lesson is a maintenance one. A new `BitPack` payload that forgets
+`Waveform` will silently lose its wires the same way, and only a coverage diff
+will notice. Deriving both together is the habit that prevents it.
 
 ### What you get
 
@@ -532,9 +587,9 @@ also the *useful* run: on success hedgehog grows the size parameter, so the last
 case is the largest; on failure it shrinks, so the last case is the minimal
 counterexample.
 
-### The 27 waveforms
+### The 29 waveforms
 
-**`bittide:unittests` — 13**, from `bittide/tests/`. Plain Clash designs sampled
+**`bittide:unittests` — 15**, from `bittide/tests/`. Plain Clash designs sampled
 with `sampleN`/`simulateN` (`withWaveform`) or small `clash-protocols` circuits
 (`withWaveformC`):
 
@@ -546,6 +601,7 @@ with `sampleN`/`simulateN` (`withWaveform`) or small `clash-protocols` circuits
 | `byteAddressableBlockRamAsBlockRam`, `readWriteByteAddressableBlockram` | `Tests/DoubleBufferedRam.hs` |
 | `case_asciiDebugMuxWaveform` | `Tests/Df.hs` |
 | `case_axi4StreamPacketFifoWaveform` | `Tests/Axi4.hs` |
+| `prop_alignDealignLsb`, `prop_alignDealignMsb` | `Tests/Transceiver/WordAlign.hs` |
 | `bench_correctness`, `bench_recording` | `Tests/Bench.hs` — tracing-overhead benchmark |
 
 `Tests/Counter.hs` holds three more call sites (`case_zeroSameDomain`,
