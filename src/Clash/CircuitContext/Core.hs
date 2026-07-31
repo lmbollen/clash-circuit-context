@@ -245,6 +245,12 @@ type LiveTraces =
 data TraceEntry = TraceEntry
   { tePeriod :: !Int
   , teWidth :: !Int
+  , teCommitted :: !Int
+  {- ^ Cycles committed to 'teRuns'. One FEWER than the simulation forced:
+  'registerTrace' records cycle @i@ only when cell @i+1@ is forced, so the
+  last forced cycle is still packed in 'teRest' when the simulation stops.
+  See 'recordedCycles', which has to add it back.
+  -}
   , teRuns :: Runs
   -- ^ Change-compressed history of the cycles the simulation forced.
   , teRest :: [Value]
@@ -280,7 +286,14 @@ wasted compute whenever the simulation was cut short deliberately.
 recordedCycles :: TraceData -> ProbeMap -> Int
 recordedCycles td pm = maximum (0 : traceEnds ++ probeEnds)
  where
-  traceEnds = [e + 1 | TraceEntry _ _ ((_, e, _) : _) _ _ <- Map.elems td]
+  -- +1 for the cycle the recorder has not committed yet. 'registerTrace'
+  -- delays by one cell on purpose (packing a value while producing its own
+  -- cell blackholes on a combinational knot), so the LAST cycle a simulation
+  -- forced is never in 'teRuns' — it sits packed in 'teRest', which the dump
+  -- drains. Without this every lazily-captured waveform stops one cycle
+  -- early, and for a hedgehog counterexample that is usually the very cycle
+  -- the assertion is about.
+  traceEnds = [c + 1 | e <- Map.elems td, let c = teCommitted e, c > 0]
   probeEnds = [e + 1 | (_, _, (_, e, _) : _) <- Map.elems pm]
 
 {- | One hierarchy level: user name plus the encoded source location of the
@@ -494,8 +507,8 @@ newRecorders window = do
   pure (CircuitContext [] (Just tRef) (Just pRef) window (Just oRef), freeze)
  where
   freezeTrace (per, w, adt, tapRef) = do
-    TraceTap _ runs rest <- readIORef tapRef
-    pure (TraceEntry per w (wrunsToRuns runs) rest adt)
+    TraceTap committed runs rest <- readIORef tapRef
+    pure (TraceEntry per w committed (wrunsToRuns runs) rest adt)
   freezeProbe (per, w, accRef) = (,,) per w . wrunsToRuns <$> readIORef accRef
 
 {- | @component "fifo" circuit@: everything traced or probed inside
@@ -834,7 +847,7 @@ dumpVCDC slice@(offset, nSamples) td pm = do
   -- stored continuation — exactly the dump-time forcing the pre-runs
   -- implementation did. Cycles dropped by a trailing capture window (and
   -- any probe-style gaps) densify to @x@.
-  traceVals (TraceEntry per w runs rest _) =
+  traceVals (TraceEntry per w _ runs rest _) =
     ( ByteStringLazy.empty
     , per
     , w
