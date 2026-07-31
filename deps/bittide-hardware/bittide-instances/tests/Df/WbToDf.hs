@@ -41,7 +41,10 @@ prop_wb_to_df_test =
       streams = sampleC def{timeoutAfter = 200_000} (unMemmap (dut dumpVcd peConfig))
     -- SINGLE bounded capture run: the consumer stops as soon as the expected
     -- number of 'SomeAdt' outputs has been produced.
-    -- Artifact capture only (see RingBuffer): set CCC_WAVEFORMS to record.
+    -- Artifact capture only, and it has to be: the assertion below is
+    -- 'propWithModelT', which runs its OWN simulation (with stalls) rather
+    -- than this one, so capturing this run on that failure would show a
+    -- waveform of different stimulus. Set CCC_WAVEFORMS to record it.
     keep <- liftIO waveformsRequested
     wf <- newWaveformSlot "wb_to_df_test"
     _ <-

@@ -33,7 +33,8 @@ import Bittide.DoubleBufferedRam
 import Bittide.SharedTypes
 import Clash.CircuitContext (traceSignalC, withoutCircuitContext)
 import Tests.Shared
-import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested, withWaveformWhen, writeWaveformSlot)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested)
+import Clash.CircuitContext.Waveform.Hedgehog (withWaveformCase)
 
 import qualified Data.IntMap as I
 import qualified Data.List as L
@@ -132,34 +133,34 @@ readWriteByteAddressableBlockram = property $ do
       -- itself is a primitive with no traceable internals).
       keepwf0 <- waveformsRequested
       wf0 <- newWaveformSlot "readWriteByteAddressableBlockram"
-      simOut <-
-        withWaveformWhen keepwf0 wf0 simLength
-          $ let
-              topEntity (unbundle -> (readAddr, writePort, byteSelect)) =
-                traceSignalC @System "ramOut"
-                  $ withClockResetEnable
-                    clockGen
-                    resetGen
-                    enableGen
-                    blockRamByteAddressable
-                    (Vec contents)
-                    (traceSignalC @System "readAddr" readAddr)
-                    (traceSignalC @System "writePort" writePort)
-                    (traceSignalC @System "byteSelect" byteSelect)
-             in simulateN @System simLength topEntity topEntityInput
-
-      writeWaveformSlot wf0
-      let
-        (_, expectedOut) =
-          L.mapAccumL
-            byteAddressableRamBehavior
-            (L.head topEntityInput, contents)
-            $ L.drop 1 topEntityInput
-      -- TODO: Due to some unexpected mismatch between the expected behavior of either
-      -- blockRam or the behavioral model, the boot behavior is inconsistent. We drop the first
-      -- expectedOutput cycle too, we expect this is due to the resets supplied b simulateN.
-      -- An issue has been made regarding this.
-      L.drop 2 simOut === L.drop 1 expectedOut
+      withWaveformCase keepwf0 wf0 simLength
+        ( let
+            topEntity (unbundle -> (readAddr, writePort, byteSelect)) =
+              traceSignalC @System "ramOut"
+                $ withClockResetEnable
+                  clockGen
+                  resetGen
+                  enableGen
+                  blockRamByteAddressable
+                  (Vec contents)
+                  (traceSignalC @System "readAddr" readAddr)
+                  (traceSignalC @System "writePort" writePort)
+                  (traceSignalC @System "byteSelect" byteSelect)
+           in
+            simulateN @System simLength topEntity topEntityInput
+        )
+        $ \simOut -> do
+          let
+            (_, expectedOut) =
+              L.mapAccumL
+                byteAddressableRamBehavior
+                (L.head topEntityInput, contents)
+                $ L.drop 1 topEntityInput
+          -- TODO: Due to some unexpected mismatch between the expected behavior of either
+          -- blockRam or the behavioral model, the boot behavior is inconsistent. We drop the first
+          -- expectedOutput cycle too, we expect this is due to the resets supplied b simulateN.
+          -- An issue has been made regarding this.
+          L.drop 2 simOut === L.drop 1 expectedOut
 
 {- | This test checks if 'blockRamByteAddressable' behaves the same as 'blockRam' when the
 byteEnables are always high.
@@ -187,27 +188,28 @@ byteAddressableBlockRamAsBlockRam = property $ do
       -- debuggable — 'ramPair' bundles both outputs.
       keepwf1 <- waveformsRequested
       wf1 <- newWaveformSlot "byteAddressableBlockRamAsBlockRam"
-      simOut <-
-        withWaveformWhen keepwf1 wf1 simLength
-          $ let
-              -- topEntity returns a tuple of (byteAddressableRam, blockRam) outputs.
-              topEntity (unbundle -> (readAddr, writePort)) =
-                traceSignalC @System "ramPair"
-                  $ withClockResetEnable clockGen resetGen enableGen
-                  $ bundle
-                    ( blockRamByteAddressable
-                        (Vec contents)
-                        (traceSignalC @System "readAddr" readAddr)
-                        (traceSignalC @System "writePort" writePort)
-                        (pure maxBound)
-                    , blockRam contents readAddr writePort
-                    )
-             in simulateN @System simLength topEntity topEntityInput
-      writeWaveformSlot wf1
-      let
-        (fstOut, sndOut) = L.unzip simOut
-      footnote . fromString $ "simOut: " <> showX simOut
-      fstOut === sndOut
+      withWaveformCase keepwf1 wf1 simLength
+        ( let
+            -- topEntity returns a tuple of (byteAddressableRam, blockRam) outputs.
+            topEntity (unbundle -> (readAddr, writePort)) =
+              traceSignalC @System "ramPair"
+                $ withClockResetEnable clockGen resetGen enableGen
+                $ bundle
+                  ( blockRamByteAddressable
+                      (Vec contents)
+                      (traceSignalC @System "readAddr" readAddr)
+                      (traceSignalC @System "writePort" writePort)
+                      (pure maxBound)
+                  , blockRam contents readAddr writePort
+                  )
+           in
+            simulateN @System simLength topEntity topEntityInput
+        )
+        $ \simOut -> do
+          let
+            (fstOut, sndOut) = L.unzip simOut
+          footnote . fromString $ "simOut: " <> showX simOut
+          fstOut === sndOut
 
 {- | Model for 'byteAddressableRam', it stores the inputs in its state for a one cycle delay
 and updates the Ram based on the the write operation and byte enables.

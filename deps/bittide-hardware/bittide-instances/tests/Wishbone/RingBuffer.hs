@@ -24,7 +24,8 @@ import Bittide.Instances.Tests.RingBuffer (
  )
 import Control.Exception (evaluate)
 import qualified Prelude as P
-import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested, withWaveformLazyWhen, withWaveformOnFailure, writeWaveformSlot)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested)
+import Clash.CircuitContext.Waveform.Hedgehog (withWaveformCase)
 
 import qualified Hedgehog as H
 import qualified Hedgehog.Gen as Gen
@@ -36,26 +37,23 @@ prop_ring_buffer_test =
   H.withTests 1 $ H.property $ do
     latency <- H.forAll $ Gen.integral (Range.constant 0 100)
     liftIO $ putStrLn $ "Testing ring_buffer_test with latency " <> show latency <> " cycles"
-    -- SINGLE run: the assertion's own lazy simulation is recorded live; the
-    -- waveform (trailing 100k-cycle window) covers what was actually simulated.
-    result <- liftIO $ do
-      pc <- peConfigFromBinaryName "ring_buffer_test"
-      case someNatVal (fromInteger latency) of
-        Just (SomeNat (_ :: Proxy n)) -> do
-          -- Artifact capture only: a hedgehog assertion failure is reported
-          -- from PropertyT, not from this IO action, so there is nothing for
-          -- 'withWaveformOnFailure' to observe here. Replay a counterexample
-          -- with 'recheckWithWaveform', or set CCC_WAVEFORMS to record.
-          keep <- waveformsRequested
-          wf <- newWaveformSlot "ring_buffer_test"
-          r <-
-            withWaveformLazyWhen keep wf 100_000 (ringBufferStream (SNat @n) pc) $
-              \s -> evaluate (forceString s)
-          writeWaveformSlot wf
-          pure r
-        Nothing -> error [i|Invalid latency value: #{latency}|]
-    H.annotate [i|Result of ring_buffer_test with latency #{latency} cycles: \n#{result}|]
-    H.assert ("TEST PASSED" `isInfixOf` result)
+    pc <- liftIO $ peConfigFromBinaryName "ring_buffer_test"
+    case someNatVal (fromInteger latency) of
+      Just (SomeNat (_ :: Proxy n)) -> do
+        -- SINGLE run: the assertion's own lazy simulation is what gets
+        -- recorded, so the waveform (trailing 100k-cycle window) covers
+        -- exactly the cycles the test caused. The assertion lives INSIDE the
+        -- consumer so that a failure is observable: 'withWaveformCase' then
+        -- re-runs this case with recording on and writes the waveform of the
+        -- run that failed. Nothing is recorded while the test passes, unless
+        -- CCC_WAVEFORMS asks for the artifact.
+        keep <- waveformsRequested
+        wf <- newWaveformSlot "ring_buffer_test"
+        withWaveformCase keep wf 100_000 (ringBufferStream (SNat @n) pc) $ \s -> do
+          result <- liftIO (evaluate (forceString s))
+          H.annotate [i|Result of ring_buffer_test with latency #{latency} cycles: \n#{result}|]
+          H.assert ("TEST PASSED" `isInfixOf` result)
+      Nothing -> error [i|Invalid latency value: #{latency}|]
 
 -- | Force a String to normal form (the stream must be fully consumed inside
 -- the live-capture context).

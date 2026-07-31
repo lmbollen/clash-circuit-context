@@ -17,7 +17,13 @@ import Test.Tasty
 import Test.Tasty.HUnit (Assertion, assertBool, testCase)
 import Test.Tasty.Hedgehog
 import Tests.Shared
-import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested, withWaveformWhen, writeWaveformSlot)
+import Clash.CircuitContext.Waveform (
+  newWaveformSlot,
+  waveformsRequested,
+  withWaveformWhen,
+  writeWaveformSlot,
+ )
+import Clash.CircuitContext.Waveform.Hedgehog (withWaveformCase)
 
 import qualified Bittide.Transceiver.Prbs as Prbs
 import qualified Bittide.Transceiver.WordAlign as WordAlign
@@ -104,49 +110,50 @@ prop_happy = property $ do
       -- ('sendNoise'), and the checker's error output ('errors').
       keepwf0 <- waveformsRequested
       wf0 <- newWaveformSlot "prop_happy"
-      errorSamples <-
-        withWaveformWhen keepwf0 wf0 nSamp
-          $ let
-              prbs = Prbs.generator clk rst ena config
-              noiseCounter = register clk rst ena (0 :: Int) (noiseCounter + 1)
-              sendNoise = traceSignalC "sendNoise" (noiseCounter .<. pure nNoiseCycles)
-              noiseOrPrbs = mux sendNoise (fromList (noise <> L.repeat 0)) prbs
-              noiseOrPrbsDealigned =
-                traceSignalC "checkerIn"
-                  $ withClock clk
-                  $ WordAlign.aligner
-                    WordAlign.dealignLsbFirst
-                    (pure False)
-                    (pure offset)
-                    noiseOrPrbs
-              errors = Prbs.checker clk rst ena config noiseOrPrbsDealigned
-             in
-              sampleN nSamp (traceSignalC "errors" errors)
+      withWaveformCase keepwf0 wf0 nSamp
+        ( let
+            prbs = Prbs.generator clk rst ena config
+            noiseCounter = register clk rst ena (0 :: Int) (noiseCounter + 1)
+            sendNoise = traceSignalC "sendNoise" (noiseCounter .<. pure nNoiseCycles)
+            noiseOrPrbs = mux sendNoise (fromList (noise <> L.repeat 0)) prbs
+            noiseOrPrbsDealigned =
+              traceSignalC "checkerIn"
+                $ withClock clk
+                $ WordAlign.aligner
+                  WordAlign.dealignLsbFirst
+                  (pure False)
+                  (pure offset)
+                  noiseOrPrbs
+            errors = Prbs.checker clk rst ena config noiseOrPrbsDealigned
+           in
+            sampleN nSamp (traceSignalC "errors" errors)
+        )
+        $ \errorSamples -> do
+          let
+            (notOk, ok) = L.splitAt okAfter errorSamples
 
-      writeWaveformSlot wf0
-      let
-        (notOk, ok) = L.splitAt okAfter errorSamples
+            -- Note the first three cycles are always reported as errornous due to
+            -- start up behavior
+            anyNotOk = L.any (/= 0) (L.drop 3 notOk)
+            allOk = not anyNotOk
 
-        -- Note the first three cycles are always reported as errornous due to
-        -- start up behavior
-        anyNotOk = L.any (/= 0) (L.drop 3 notOk)
-        allOk = not anyNotOk
+          L.take checkOk ok === L.replicate checkOk 0
 
-      L.take checkOk ok === L.replicate checkOk 0
+          -- Statistics checks. Inside the consumer because they classify THIS
+          -- case by what the simulation produced; the re-run a failure
+          -- triggers is journalled quietly, so nothing is counted twice.
+          cover
+            20
+            "nNoiseCycles > expectAlignmentAfterNCycles"
+            (nNoiseCycles > expectAlignmentAfterNCycles)
 
-      -- Statistics checks
-      cover
-        20
-        "nNoiseCycles > expectAlignmentAfterNCycles"
-        (nNoiseCycles > expectAlignmentAfterNCycles)
+          cover
+            20
+            "nNoiseCycles <= expectAlignmentAfterNCycles"
+            (nNoiseCycles <= expectAlignmentAfterNCycles)
 
-      cover
-        20
-        "nNoiseCycles <= expectAlignmentAfterNCycles"
-        (nNoiseCycles <= expectAlignmentAfterNCycles)
-
-      cover 70 "any error detected after 3 cycles" anyNotOk
-      cover 2 "no errors detected after 3 cycles" allOk -- detect "always pass"
+          cover 70 "any error detected after 3 cycles" anyNotOk
+          cover 2 "no errors detected after 3 cycles" allOk -- detect "always pass"
 
 {- | Waveform for the link-stability 'Prbs.tracker' (its own OPAQUE component).
 Feeding it an error-free input, its @linkOk@ output must rise once it has seen

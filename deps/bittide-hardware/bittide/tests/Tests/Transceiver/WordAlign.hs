@@ -22,13 +22,8 @@ import Test.Tasty.HUnit
 import Test.Tasty.Hedgehog
 
 import Clash.CircuitContext (traceSignalC)
-import Clash.CircuitContext.Waveform (
-  newWaveformSlot,
-  waveformsRequested,
-  withWaveformWhen,
-  writeWaveformSlot,
- )
-import Clash.CircuitContext.Waveform.Hedgehog (recordLargestCase)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested)
+import Clash.CircuitContext.Waveform.Hedgehog (recordLargestCase, withWaveformCase)
 import Data.IORef (IORef, newIORef)
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -120,40 +115,43 @@ prop_alignDealign fired waveName alignFn dealignFn = property $ do
       -- 'traceSignalC' and name them; no plugin, no library changes, no shims.
       --
       -- A property runs its body once per generated case but should leave at
-      -- most ONE waveform, so the choice is made BEFORE simulating: the cases
-      -- that lose it run without a recording context and cost nothing at all.
-      -- 'recordLargestCase' picks the biggest (most thorough) case and claims
-      -- the caller's ref, so it fires exactly once however often shrinking
-      -- re-runs the generators. Gated on CCC_WAVEFORMS because this waveform
-      -- is an artifact, not a failure diagnosis.
+      -- most ONE waveform, and the case worth keeping depends on the outcome.
+      -- If the property FAILS, 'withWaveformCase' re-runs the failing case
+      -- with recording on, so what lands is the waveform of the shrunk
+      -- counterexample — the same 3-word failure hedgehog prints, in the
+      -- cycles that produced it. That costs nothing while the property passes.
+      -- If it passes, the flag decides: 'recordLargestCase' picks the biggest
+      -- (most thorough) case and claims the caller's ref, so it fires exactly
+      -- once however often shrinking re-runs the generators. That one is
+      -- gated on CCC_WAVEFORMS, being an artifact rather than a diagnosis.
       wanted <- waveformsRequested
       keepwf <- if wanted then recordLargestCase fired else pure False
       wf <- newWaveformSlot waveName
-      output <-
-        withWaveformWhen keepwf wf nCycles
-          $ let
-              -- Trace the whole pipeline so a roundtrip failure is debuggable:
-              -- the stimulus ('input', 'offset') the assertion is derived from,
-              -- the intermediate 'dealigned', and the recovered 'aligned'.
-              inputSignal = traceSignalC "input" (E.fromList (input <> L.repeat 0))
-              offsetSig = traceSignalC "offset" (pure offset)
-              dealigned =
-                traceSignalC "dealigned"
-                  $ WordAlign.aligner dealignFn (pure False) offsetSig inputSignal
-              aligned =
-                traceSignalC "aligned"
-                  $ WordAlign.aligner alignFn (pure False) offsetSig dealigned
-             in E.sampleN nCycles aligned
+      withWaveformCase keepwf wf nCycles
+        ( let
+            -- Trace the whole pipeline so a roundtrip failure is debuggable:
+            -- the stimulus ('input', 'offset') the assertion is derived from,
+            -- the intermediate 'dealigned', and the recovered 'aligned'.
+            inputSignal = traceSignalC "input" (E.fromList (input <> L.repeat 0))
+            offsetSig = traceSignalC "offset" (pure offset)
+            dealigned =
+              traceSignalC "dealigned"
+                $ WordAlign.aligner dealignFn (pure False) offsetSig inputSignal
+            aligned =
+              traceSignalC "aligned"
+                $ WordAlign.aligner alignFn (pure False) offsetSig dealigned
+           in
+            E.sampleN nCycles aligned
+        )
+        $ \output -> do
+          let
+            pipelineCycles = 1
+            startUpCycles = 1
 
-      writeWaveformSlot wf
-      let
-        pipelineCycles = 1
-        startUpCycles = 1
+            expected = L.dropEnd pipelineCycles (L.drop startUpCycles input)
+            actual = L.drop (startUpCycles + pipelineCycles) output
 
-        expected = L.dropEnd pipelineCycles (L.drop startUpCycles input)
-        actual = L.drop (startUpCycles + pipelineCycles) output
-
-      expected === actual
+          expected === actual
 
 -- | 'prop_alignDealign' with LSB-first transmission
 prop_alignDealignLsb :: Property
