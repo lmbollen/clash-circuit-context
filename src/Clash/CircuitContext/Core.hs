@@ -60,6 +60,7 @@ module Clash.CircuitContext.Core (
   withoutCircuitContext,
   withCircuitContext,
   withCircuitContextWindow,
+  withCircuitContextWindowE,
 
   -- * Hierarchy
   HierSeg (..),
@@ -130,7 +131,7 @@ import Clash.XException (NFDataX)
 import Clash.Shockwaves.Internal.Types (Translator, TypeName)
 import Clash.Shockwaves.Internal.Waveform (Waveform (typeName), tRef)
 
-import Control.Exception (SomeException, evaluate, try)
+import Control.Exception (SomeException, evaluate, throwIO, try)
 import Data.Bits (testBit, xor, (.&.))
 import qualified Data.ByteString.Lazy as ByteStringLazy
 import Data.Char (isDigit)
@@ -435,12 +436,29 @@ memory for signals that change every cycle (program counters, busses) — see
 withCircuitContextWindow ::
   Int -> ((HasCircuitContext) => IO r) -> IO (r, TraceData, ProbeMap)
 withCircuitContextWindow window k = do
+  (r, traces, probes) <- withCircuitContextWindowE window k
+  r' <- either throwIO pure r
+  pure (r', traces, probes)
+
+{- | 'withCircuitContextWindow' that survives a throwing action.
+
+Whatever the action recorded BEFORE it threw is still returned, so a failing
+test can be dumped — which is the whole point of capturing a waveform on
+failure. 'withCircuitContextWindow' cannot do this: an exception escapes
+before it reads the recorder refs, taking the recording with it.
+-}
+withCircuitContextWindowE ::
+  Int ->
+  ((HasCircuitContext) => IO r) ->
+  IO (Either SomeException r, TraceData, ProbeMap)
+withCircuitContextWindowE window k = do
   tRef <- newIORef Map.empty
   pRef <- newIORef Map.empty
   oRef <- newIORef emptyOrdinals
   r <-
-    let ?circuitContext = CircuitContext [] (Just tRef) (Just pRef) window (Just oRef)
-     in k
+    try $
+      let ?circuitContext = CircuitContext [] (Just tRef) (Just pRef) window (Just oRef)
+       in k
   live <- readIORef tRef
   traces <- traverse freezeTrace live
   probes <- readIORef pRef >>= traverse freezeProbe
