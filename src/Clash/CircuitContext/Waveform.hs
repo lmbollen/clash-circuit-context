@@ -83,6 +83,9 @@ module Clash.CircuitContext.Waveform (
   withWaveformOnFailure,
   withWaveformOnFailure',
 
+  -- * Building your own capture combinator
+  captureRun,
+
   -- * Writing
   waveformDir,
   waveformPath,
@@ -108,6 +111,8 @@ import Clash.Prelude (NFDataX, deepseqX)
 
 import Clash.CircuitContext.Core (
   HasCircuitContext,
+  ProbeMap,
+  TraceData,
   recordedCycles,
   withCircuitContext,
   withCircuitContextWindow,
@@ -205,6 +210,28 @@ capture (WaveformSlot _ pending) txt meta = do
   meta' <- evaluate (ByteString.toStrict (Json.encode meta))
   writeIORef pending (Just (txt', meta'))
 
+{- | Render what a recording context collected and store it in the slot,
+replacing any earlier run.
+
+The whole of \"turn a finished recording into this test's pending waveform\",
+exported so a suite can build capture combinators for monads this module does
+not know about — 'Clash.CircuitContext.Waveform.Hedgehog' uses it to capture a
+property's counterexample. Pair it with
+'Clash.CircuitContext.withCircuitContextWindowM' (or …@E@) and finish with
+'writeWaveformSlot'.
+
+A run that recorded nothing leaves the slot alone rather than clobbering a
+good earlier run with an empty one; so does a render that fails.
+-}
+captureRun :: WaveformSlot -> TraceData -> ProbeMap -> IO ()
+captureRun slot traces probes = do
+  let end = recordedCycles traces probes
+  unless (Map.null traces && Map.null probes || end == 0) $ do
+    rendered <- dumpVCDSW (0, end) traces probes
+    case rendered of
+      Left _ -> pure ()
+      Right (txt, meta) -> capture slot txt meta
+
 
 {- | Simulate under a fresh circuit context, force the result so every
 instrumented signal registers, and write ONE hierarchical VCD to
@@ -273,13 +300,7 @@ withWaveformLazy ::
   m a
 withWaveformLazy slot window sim consume = liftIO $ do
   (a, traces, probes) <- withCircuitContextWindow window (consume sim)
-  let end = recordedCycles traces probes
-  unless (Map.null traces && Map.null probes || end == 0) $ do
-    rendered <- dumpVCDSW (0, end) traces probes
-    case rendered of
-      Left _ -> pure ()
-      Right (txt, meta) -> do
-        capture slot txt meta
+  captureRun slot traces probes
   pure a
 
 
@@ -415,12 +436,7 @@ withWaveformOnFailure slot window sim consume = do
       case again of
         Left _ -> do
           -- Reproduced: this recording IS of a failing run.
-          let end = recordedCycles traces probes
-          unless (Map.null traces && Map.null probes || end == 0) $ do
-            rendered <- dumpVCDSW (0, end) traces probes
-            case rendered of
-              Left _ -> pure ()
-              Right (txt, meta) -> capture slot txt meta
+          captureRun slot traces probes
           writeWaveformSlot slot
         Right _ ->
           -- The re-run PASSED, so its waveform shows a working run and would
@@ -455,11 +471,6 @@ withWaveformOnFailure' slot window sim consume = do
   case r of
     Right a -> pure a -- discard the recording UNRENDERED
     Left err -> do
-      let end = recordedCycles traces probes
-      unless (Map.null traces && Map.null probes || end == 0) $ do
-        rendered <- dumpVCDSW (0, end) traces probes
-        case rendered of
-          Left _ -> pure ()
-          Right (txt, meta) -> capture slot txt meta
+      captureRun slot traces probes
       writeWaveformSlot slot
       throwIO err
