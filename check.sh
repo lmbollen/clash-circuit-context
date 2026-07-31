@@ -7,14 +7,21 @@ fail=0
 log=$(mktemp)
 
 run() { echo "== $* =="; "$@" || fail=1; }
+# Same, but keeping a copy of the output for the greps below. NOT `run … | tee`:
+# a pipeline runs its left side in a SUBSHELL, so `fail=1` would be set in a
+# child and lost — which silently reported ALL CHECKS PASSED while auto-smoke
+# was failing. PIPESTATUS[0] is the command's own status, not tee's.
+runlog() { echo "== $* =="; "$@" 2>&1 | tee -a "$log"; [ "${PIPESTATUS[0]}" -eq 0 ] || fail=1; }
 
-run cabal build all -j1 "$@" 2>&1 | tee "$log"
+runlog cabal build all -j1 "$@"
 run cabal test manual-smoke -j1 "$@"
 run cabal test fallback -j1 "$@"
-run cabal test auto-smoke -j1 "$@" 2>&1 | tee -a "$log"
+runlog cabal test auto-smoke -j1 "$@"
 # timeout: a strict port trace would deadlock on circuit-notation's lazy let
 # knot (silent hang under the threaded RTS) — fail loudly instead.
 run timeout 600 cabal test notation-smoke -j1 "$@"
+# Capture contract: nothing is rendered or written unless the waveform is kept.
+run cabal test capture-smoke -j1 "$@"
 
 for g in manual-smoke auto-smoke notation-smoke; do
   if diff <(grep -v '^\$date' "$g.vcd") "goldens/$g.vcd" >/dev/null; then
