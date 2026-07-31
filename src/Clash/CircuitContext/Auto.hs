@@ -101,10 +101,11 @@ EMPTY instance —
 >
 > instance KnownDomain dom => Traceable (Bus dom)
 
-A field @fld@ of a value traced as @nm@ is traced as @nm.fld@ — a
-sub-scope in the VCD hierarchy. Positional (non-record) fields are named
-@_0@, @_1@, … by position; for a sum type the constructor the value
-actually takes is traversed.
+A field @fld@ of a value traced as @nm@ is traced as @nm_fld@ — a sibling
+wire, NOT a sub-scope: VCD scopes denote design hierarchy (components), and
+a record is not a component. Positional (non-record) fields are named
+@nm_0@, @nm_1@, … by position, exactly like 'Vec' elements; for a sum type
+the constructor the value actually takes is traversed.
 
 Fields are tolerated **individually**: the generic path asks only for
 @'AutoTrace' ('CanTrace' c) c@ per field, which every type satisfies, so an
@@ -175,7 +176,7 @@ instance Traceable () where
 
 {- $tupleInstances
 Tuples trace component-wise through the generic default: positional
-sub-names @nm._0@, @nm._1@, … (composite protocol ports: @Fwd (a, b) =
+sub-names @nm_0@, @nm_1@, … (composite protocol ports: @Fwd (a, b) =
 (Fwd a, Fwd b)@; @clash-protocols@ defines tuple protocols up to 12).
 Demand-equivalent to identity: forcing the traced tuple to WHNF forces
 exactly the one constructor match a @let@-pattern selector would force
@@ -321,9 +322,17 @@ instance (Selector s, AutoTrace (CanTrace c) c) => GTraceable (M1 S s (K1 r c)) 
   gtraceNamed nm i m@(M1 (K1 c)) =
     (i + 1, M1 (K1 (autoTraceAt @(CanTrace c) fieldName c)))
    where
+    -- '_', never '.': a dot is the COMPONENT separator, and the VCD renderer
+    -- turns every dotted segment into a '$scope'. Qualifying a field with one
+    -- would claim the value is a design hierarchy level, which it is not — a
+    -- tuple is not a module. It also read badly: 79% of the scopes in
+    -- bittide's waveforms were structural rather than components, nearly all
+    -- of them a scope wrapping one positional leaf ('wbB0_Fwd' containing only
+    -- '_3'). Flat names keep the same information and match the 'Vec' instance
+    -- above, which has always used '_'.
     fieldName = case selName m of
-      "" -> nm <> "._" <> show i
-      fld -> nm <> "." <> fld
+      "" -> nm <> "_" <> show i
+      fld -> nm <> "_" <> fld
 
 -- | Flag-indexed dispatch; the flag comes from 'CanTrace'.
 class AutoTrace (flag :: Bool) t where

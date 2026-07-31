@@ -26,7 +26,7 @@ bindings trace. What this proves:
 * FORWARD REFERENCES survive: the notation closes them through a plain lazy
   let knot, so this test COMPLETING is the strictness proof — a trace that
   forced a port before the design does would @\<\<loop\>\>@;
-* a port of composite protocol type traces component-wise (@nm._0@\/@nm._1@),
+* a port of composite protocol type traces component-wise (@nm_0@\/@nm_1@),
   with unit halves recording nothing;
 * a port with a non-'BitPack' payload falls back to identity (still
   compiles, simply absent);
@@ -182,7 +182,7 @@ main = do
   check "knot: ports scoped under the component" (has "knotTop@")
   check
     "composite port traces component-wise"
-    (has "ab_Fwd._0@" P.&& has "ab_Fwd._1@")
+    (has "ab_Fwd_0@" P.&& has "ab_Fwd_1@")
   check
     "tuple-pattern ports trace per leaf"
     (has "x_Fwd@" P.&& has "y_Fwd@")
