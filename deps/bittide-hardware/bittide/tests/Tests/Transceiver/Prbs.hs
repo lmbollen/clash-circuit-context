@@ -17,7 +17,7 @@ import Test.Tasty
 import Test.Tasty.HUnit (Assertion, assertBool, testCase)
 import Test.Tasty.Hedgehog
 import Tests.Shared
-import Tests.Waveform (withWaveform)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested, withWaveformWhen, writeWaveformSlot)
 
 import qualified Bittide.Transceiver.Prbs as Prbs
 import qualified Bittide.Transceiver.WordAlign as WordAlign
@@ -102,8 +102,10 @@ prop_happy = property $ do
       -- them are traced at the top level so a sync failure is debuggable: what
       -- the checker actually sees ('checkerIn'), whether noise is being injected
       -- ('sendNoise'), and the checker's error output ('errors').
+      keepwf0 <- waveformsRequested
+      wf0 <- newWaveformSlot "prop_happy"
       errorSamples <-
-        withWaveform "prop_happy" nSamp
+        withWaveformWhen keepwf0 wf0 nSamp
           $ let
               prbs = Prbs.generator clk rst ena config
               noiseCounter = register clk rst ena (0 :: Int) (noiseCounter + 1)
@@ -121,6 +123,7 @@ prop_happy = property $ do
              in
               sampleN nSamp (traceSignalC "errors" errors)
 
+      writeWaveformSlot wf0
       let
         (notOk, ok) = L.splitAt okAfter errorSamples
 
@@ -157,9 +160,12 @@ case_trackerWaveform = do
     nSamp = 160
     -- Never report a PRBS error, so the tracker should latch "link OK".
     noErrors = pure False
+  keepwf1 <- waveformsRequested
+  wf1 <- newWaveformSlot "case_trackerWaveform"
   linkOk <-
-    withWaveform "case_trackerWaveform" nSamp $
+    withWaveformWhen keepwf1 wf1 nSamp $
       sampleN nSamp (Prbs.tracker clk rst noErrors)
+  writeWaveformSlot wf1
   -- After 127 error-free cycles the link must be reported stable and stay so.
   assertBool
     "tracker should report a stable link after enough error-free cycles"

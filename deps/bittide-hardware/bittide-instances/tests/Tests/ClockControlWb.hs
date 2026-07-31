@@ -17,7 +17,7 @@ import Test.Tasty.HUnit
 import Test.Tasty.TH
 import Clash.CircuitContext (HasCircuitContext, withoutCircuitContext)
 import Control.Exception (evaluate)
-import Tests.Waveform (withWaveformLive)
+import Clash.CircuitContext.Waveform (newWaveformSlot, withWaveformOnFailure)
 import Text.Parsec
 import Text.Parsec.String
 
@@ -62,34 +62,33 @@ case_clock_control_wb_self_test = do
     streams = sampleC def (dutNoMm peConfig)
   -- SINGLE run: the assertion's own lazy simulation is recorded live; the
   -- waveform (trailing 100k-cycle window) covers what was actually simulated.
-  (parsed, ccData) <-
-    withWaveformLive "clock_control_wb_self_test" 100_000 streams $
-      \(uartStream, ccData) -> do
-        let uartString = chr . fromIntegral <$> catMaybes uartStream
-        parsed <- evaluate (parse resultParser "" uartString)
-        pure (parsed, ccData)
-  case parsed of
-    Left err -> do
-      print err
-      assertFailure "Could not parse output"
-    Right actual -> do
-      let
-        expected =
-          SerialResult
-            { linkCount = linkCount
-            , linkMask = fromIntegral linkMask
-            , linksOk = fromIntegral linksOk
-            , linkMaskPopcnt = linkMaskPopcnt
-            , linksStable = 0
-            , linksSettled = 0
-            , dataCounts = expectedDataCounts
-            , clockMod =
-                L.take (L.length actual.clockMod)
-                  $ fromIntegral
-                  . pack
-                  <$> catMaybes ccData
-            }
-      assertEqual "Expected and actual differ" expected actual
+  wf <- newWaveformSlot "clock_control_wb_self_test"
+  withWaveformOnFailure wf 100_000 streams $
+    \(uartStream, ccData) -> do
+      let uartString = chr . fromIntegral <$> catMaybes uartStream
+      parsed <- evaluate (parse resultParser "" uartString)
+      case parsed of
+        Left err -> do
+          print err
+          assertFailure "Could not parse output"
+        Right actual -> do
+          let
+            expected =
+              SerialResult
+                { linkCount = linkCount
+                , linkMask = fromIntegral linkMask
+                , linksOk = fromIntegral linksOk
+                , linkMaskPopcnt = linkMaskPopcnt
+                , linksStable = 0
+                , linksSettled = 0
+                , dataCounts = expectedDataCounts
+                , clockMod =
+                    L.take (L.length actual.clockMod)
+                      $ fromIntegral
+                      . pack
+                      <$> catMaybes ccData
+                }
+          assertEqual "Expected and actual differ" expected actual
 
 type Margin = SNat 2
 type Framesize = PeriodToCycles System (Seconds 1)

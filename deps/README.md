@@ -530,6 +530,38 @@ constructors, field names and per-path type keys in the sidecar.
 
 ## Generating the waveforms
 
+### When a waveform is written
+
+A green test run writes **no** waveforms, and that is deliberate: recording,
+rendering and writing a VCD nobody reads is the dominant cost when tests run in
+parallel (measured on 24 cores: 25.2 GB peak and 6m22s with unconditional
+recording, versus 8.2 GB and 1m06s without). Two things produce a file:
+
+* **A failing test**, automatically. `withWaveformOnFailure` runs the
+  simulation with recording OFF; if the assertion throws it re-runs that
+  simulation with recording ON, writes the VCD and its sidecar, and rethrows.
+  Passing tests pay nothing at all. If the re-run does not reproduce the
+  failure — possible because `clash-vexriscv` resolves undefined CPU inputs
+  randomly per run — it says so and writes nothing rather than handing you a
+  passing run's waveform labelled as the failure; such a test can switch to
+  `withWaveformOnFailure'`, which records as it goes and renders only on
+  failure.
+
+* **`CCC_WAVEFORMS=1`**, for artifacts. Captures that exist to be looked at
+  rather than to diagnose a failure are gated on this variable:
+
+  ```bash
+  CCC_WAVEFORMS=1 cabal test bittide:unittests
+  CCC_WAVEFORMS=1 cabal test bittide-instances:unittests
+  ```
+
+  A hedgehog property still leaves only ONE waveform: the decision is made in a
+  generator before simulating (`recordLargestCase`, in
+  `Clash.CircuitContext.Waveform.Hedgehog`), so it picks the largest — most
+  thorough — case and the other 99 never record. To get the waveform of a
+  counterexample hedgehog already found, replay it with `recheckWithWaveform`
+  using the size and seed the failure printed.
+
 ### One-time setup after cloning
 
 `bittide-hardware` locates its own project root at **compile time** by shelling

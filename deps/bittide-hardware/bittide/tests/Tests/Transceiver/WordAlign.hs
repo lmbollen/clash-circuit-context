@@ -22,7 +22,15 @@ import Test.Tasty.HUnit
 import Test.Tasty.Hedgehog
 
 import Clash.CircuitContext (traceSignalC)
-import Tests.Waveform (withWaveform)
+import Clash.CircuitContext.Waveform (
+  newWaveformSlot,
+  waveformsRequested,
+  withWaveformWhen,
+  writeWaveformSlot,
+ )
+import Clash.CircuitContext.Waveform.Hedgehog (recordLargestCase)
+import Data.IORef (IORef, newIORef)
+import System.IO.Unsafe (unsafePerformIO)
 
 import qualified Bittide.Transceiver.WordAlign as WordAlign
 import qualified Clash.Explicit.Prelude as E
@@ -90,13 +98,17 @@ case_alignMsbFirst = do
   go offset = unpack (WordAlign.alignMsbFirst offset (pack word1) (pack word2))
 
 prop_alignDealign ::
+  -- | This test's "already recorded" flag, owned by the caller: one ref per
+  -- tasty test, so 'recordLargestCase' fires at most once for that test no
+  -- matter how often shrinking re-runs the generators.
+  IORef Bool ->
   -- | Waveform file base name (distinct per variant: two properties dumping
   -- the same file would race under tasty's parallel execution).
   String ->
   (forall n. WordAlign.AlignmentFn n) ->
   (forall n. WordAlign.AlignmentFn n) ->
   Property
-prop_alignDealign waveName alignFn dealignFn = property $ do
+prop_alignDealign fired waveName alignFn dealignFn = property $ do
   nMinusOne <- forAll $ Gen.integral (Range.linear 0 16)
   withSomeSNat nMinusOne $ \(succSNat -> SNat :: SNat n) -> do
     offset <- forAll $ genIndex @n Range.constantBounded
@@ -105,11 +117,20 @@ prop_alignDealign waveName alignFn dealignFn = property $ do
 
     withClock @XilinxSystem clockGen $ do
       -- Trivial waveform generation: wrap the two pipeline signals with
-      -- 'traceSignalC' inside 'withWaveform'. No plugin, no library changes,
-      -- no shims — just name the signals you want to see. Dumps the last run
-      -- to waveforms/prop_alignDealign.vcd.
+      -- 'traceSignalC' and name them; no plugin, no library changes, no shims.
+      --
+      -- A property runs its body once per generated case but should leave at
+      -- most ONE waveform, so the choice is made BEFORE simulating: the cases
+      -- that lose it run without a recording context and cost nothing at all.
+      -- 'recordLargestCase' picks the biggest (most thorough) case and claims
+      -- the caller's ref, so it fires exactly once however often shrinking
+      -- re-runs the generators. Gated on CCC_WAVEFORMS because this waveform
+      -- is an artifact, not a failure diagnosis.
+      wanted <- waveformsRequested
+      keepwf <- if wanted then recordLargestCase fired else pure False
+      wf <- newWaveformSlot waveName
       output <-
-        withWaveform waveName nCycles
+        withWaveformWhen keepwf wf nCycles
           $ let
               -- Trace the whole pipeline so a roundtrip failure is debuggable:
               -- the stimulus ('input', 'offset') the assertion is derived from,
@@ -124,6 +145,7 @@ prop_alignDealign waveName alignFn dealignFn = property $ do
                   $ WordAlign.aligner alignFn (pure False) offsetSig dealigned
              in E.sampleN nCycles aligned
 
+      writeWaveformSlot wf
       let
         pipelineCycles = 1
         startUpCycles = 1
@@ -136,12 +158,30 @@ prop_alignDealign waveName alignFn dealignFn = property $ do
 -- | 'prop_alignDealign' with LSB-first transmission
 prop_alignDealignLsb :: Property
 prop_alignDealignLsb =
-  prop_alignDealign "prop_alignDealignLsb" WordAlign.alignLsbFirst WordAlign.dealignLsbFirst
+  prop_alignDealign
+    firedLsb
+    "prop_alignDealignLsb"
+    WordAlign.alignLsbFirst
+    WordAlign.dealignLsbFirst
+
+-- | One flag per tasty test; see 'prop_alignDealign'.
+firedLsb :: IORef Bool
+firedLsb = unsafePerformIO (newIORef False)
+{-# NOINLINE firedLsb #-}
 
 -- | 'prop_alignDealign' with MSB-first transmission
 prop_alignDealignMsb :: Property
 prop_alignDealignMsb =
-  prop_alignDealign "prop_alignDealignMsb" WordAlign.alignMsbFirst WordAlign.dealignMsbFirst
+  prop_alignDealign
+    firedMsb
+    "prop_alignDealignMsb"
+    WordAlign.alignMsbFirst
+    WordAlign.dealignMsbFirst
+
+-- | One flag per tasty test; see 'prop_alignDealign'.
+firedMsb :: IORef Bool
+firedMsb = unsafePerformIO (newIORef False)
+{-# NOINLINE firedMsb #-}
 
 -- Should fail:
 -- prop_alignDealignMsbLsb :: Property

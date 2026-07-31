@@ -12,7 +12,7 @@ import Test.Tasty.TH (testGroupGenerator)
 
 import Bittide.Instances.Tests.NestedInterconnect (peConfigSim, simStream)
 import Control.Exception (evaluate)
-import Tests.Waveform (withWaveformLive)
+import Clash.CircuitContext.Waveform (newWaveformSlot, withWaveformOnFailure)
 
 import qualified Text.Parsec as P
 import qualified Text.Parsec.String as P
@@ -22,16 +22,16 @@ case_sim = do
   peConfig <- peConfigSim
   -- SINGLE run: the assertion's own lazy simulation is recorded live; the
   -- waveform (trailing 100k-cycle window) covers what was actually simulated.
-  parsed <-
-    withWaveformLive "nested_interconnect_sim" 100_000 (simStream peConfig) $
-      \s -> evaluate (parseResultLine s)
-  case parsed of
-    Left err ->
-      assertFailure $ "Parse error: " <> show err
-    Right (Just err) ->
-      assertFailure $ "Test failed with error: " <> err
-    Right Nothing ->
-      pure ()
+  wf <- newWaveformSlot "nested_interconnect_sim"
+  withWaveformOnFailure wf 100_000 (simStream peConfig) $ \s -> do
+    parsed <- evaluate (parseResultLine s)
+    case parsed of
+      Left err ->
+        assertFailure $ "Parse error: " <> show err
+      Right (Just err) ->
+        assertFailure $ "Test failed with error: " <> err
+      Right Nothing ->
+        pure ()
 
 parseResultLine :: String -> Either P.ParseError (Maybe String)
 parseResultLine = P.parse resultLineParser ""

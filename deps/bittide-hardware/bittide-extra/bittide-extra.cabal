@@ -149,6 +149,7 @@ library
     bytestring,
     clash-cores,
     clash-prelude,
+    clash-circuit-context,
     clash-protocols,
     clash-shockwaves,
     containers,
@@ -188,6 +189,7 @@ library
     Protocols.Internal.Types.Extra
     Protocols.Spi
     Protocols.TraceC
+    Protocols.Waveform
     Protocols.Wishbone.Extra
     System.Timeout.Extra
 

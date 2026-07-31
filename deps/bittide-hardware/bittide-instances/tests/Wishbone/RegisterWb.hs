@@ -23,7 +23,7 @@ import Bittide.Instances.Tests.RegisterWb (
 import Project.FilePath (CargoBuildType (Release))
 import Protocols.MemoryMap (unMemmap)
 import Control.Exception (evaluate)
-import Tests.Waveform (withWaveformLive)
+import Clash.CircuitContext.Waveform (newWaveformSlot, withWaveformOnFailure)
 
 import qualified Text.Parsec as P
 import qualified Text.Parsec.String as P
@@ -34,16 +34,16 @@ case_sim = do
   peConfig <- peConfigSim
   -- SINGLE run: the assertion's own lazy simulation is recorded live; the
   -- waveform (trailing 100k-cycle window) covers what was actually simulated.
-  parsed <-
-    withWaveformLive "registerwb_sim" 100_000 (simStream dumpVcd peConfig) $
-      \s -> evaluate (parseResultLine s)
-  case parsed of
-    Left err ->
-      assertFailure $ "Parse error: " <> show err
-    Right (Just err) ->
-      assertFailure $ "Test failed with error: " <> err
-    Right Nothing ->
-      pure ()
+  wf0 <- newWaveformSlot "registerwb_sim"
+  withWaveformOnFailure wf0 100_000 (simStream dumpVcd peConfig) $ \s -> do
+    parsed <- evaluate (parseResultLine s)
+    case parsed of
+      Left err ->
+        assertFailure $ "Parse error: " <> show err
+      Right (Just err) ->
+        assertFailure $ "Test failed with error: " <> err
+      Right Nothing ->
+        pure ()
 
 -- | Test the C version of the RegisterWb test
 case_c_sim :: Assertion
@@ -60,16 +60,16 @@ case_c_sim = do
       False
       vexRiscv0
   -- SINGLE run (see 'case_sim').
-  parsed <-
-    withWaveformLive "registerwb_c_sim" 100_000 (simStream dumpVcd peConfig) $
-      \s -> evaluate (parseResultLine s)
-  case parsed of
-    Left err ->
-      assertFailure $ "Parse error: " <> show err
-    Right (Just err) ->
-      assertFailure $ "Test failed with error: " <> err
-    Right Nothing ->
-      pure ()
+  wf1 <- newWaveformSlot "registerwb_c_sim"
+  withWaveformOnFailure wf1 100_000 (simStream dumpVcd peConfig) $ \s -> do
+    parsed <- evaluate (parseResultLine s)
+    case parsed of
+      Left err ->
+        assertFailure $ "Parse error: " <> show err
+      Right (Just err) ->
+        assertFailure $ "Test failed with error: " <> err
+      Right Nothing ->
+        pure ()
 
 parseResultLine :: String -> Either P.ParseError (Maybe String)
 parseResultLine = P.parse resultLineParser ""

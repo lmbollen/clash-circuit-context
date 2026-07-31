@@ -20,7 +20,7 @@ import Test.Tasty.HUnit (Assertion, assertEqual, testCase)
 import Test.Tasty.Hedgehog (testPropertyNamed)
 
 import Clash.CircuitContext (HasCircuitContext, Traceable)
-import Tests.Waveform (withWaveform)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested, withWaveformWhen, writeWaveformSlot)
 
 import qualified Data.List as List
 import qualified Hedgehog.Gen as Gen
@@ -357,8 +357,10 @@ prop_noHandshake = property $ do
 
   -- Run the simulation under a circuit context and dump a hierarchical VCD of
   -- the (last) run to waveforms/prop_noHandshake.vcd.
+  keepwf0 <- waveformsRequested
+  wf0 <- newWaveformSlot "prop_noHandshake"
   (aToCoreStatus, bToCoreStatus, aFromCoreStatus, bFromCoreStatus) <-
-    withWaveform "prop_noHandshake" nCycles
+    withWaveformWhen keepwf0 wf0 nCycles
       $ let (outA, outB) = dut (sideA, sideB)
          in ( sampleN nCycles outA.toCoreStatus
             , sampleN nCycles outB.toCoreStatus
@@ -366,6 +368,7 @@ prop_noHandshake = property $ do
             , sampleN nCycles outB.fromCoreStatus
             )
 
+  writeWaveformSlot wf0
   footnote ("aToCoreStatus: " <> show aToCoreStatus)
   footnote ("bToCoreStatus: " <> show bToCoreStatus)
   footnote ("aFromCoreStatus: " <> show aFromCoreStatus)
@@ -446,8 +449,10 @@ prop_handshake = property $ do
 
   -- Run the simulation under a circuit context and dump a hierarchical VCD of
   -- the (last) run to waveforms/prop_handshake.vcd.
+  keepwf1 <- waveformsRequested
+  wf1 <- newWaveformSlot "prop_handshake"
   (aToCoreStatus, aFromCoreStatus, bToCoreStatus, bFromCoreStatus, aToCore, bToCore) <-
-    withWaveform "prop_handshake" nCycles
+    withWaveformWhen keepwf1 wf1 nCycles
       $ let (outA, outB) = dut (sideA, sideB)
          in ( sampleN nCycles outA.toCoreStatus
             , sampleN nCycles outA.fromCoreStatus
@@ -457,6 +462,7 @@ prop_handshake = property $ do
             , sampleN nCycles outB.toCore
             )
 
+  writeWaveformSlot wf1
   footnote ("aToCoreStatus: " <> show aToCoreStatus)
   footnote ("aFromCoreStatus: " <> show aFromCoreStatus)
   footnote ("bToCoreStatus: " <> show bToCoreStatus)

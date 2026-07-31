@@ -33,7 +33,7 @@ import Bittide.DoubleBufferedRam
 import Bittide.SharedTypes
 import Clash.CircuitContext (traceSignalC, withoutCircuitContext)
 import Tests.Shared
-import Tests.Waveform (withWaveform)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested, withWaveformWhen, writeWaveformSlot)
 
 import qualified Data.IntMap as I
 import qualified Data.List as L
@@ -130,8 +130,10 @@ readWriteByteAddressableBlockram = property $ do
       -- and expose the boot-X cycle. The RAM's inputs are traced alongside its
       -- output so a mismatch against the model is debuggable (the blockRam
       -- itself is a primitive with no traceable internals).
+      keepwf0 <- waveformsRequested
+      wf0 <- newWaveformSlot "readWriteByteAddressableBlockram"
       simOut <-
-        withWaveform "readWriteByteAddressableBlockram" simLength
+        withWaveformWhen keepwf0 wf0 simLength
           $ let
               topEntity (unbundle -> (readAddr, writePort, byteSelect)) =
                 traceSignalC @System "ramOut"
@@ -146,6 +148,7 @@ readWriteByteAddressableBlockram = property $ do
                     (traceSignalC @System "byteSelect" byteSelect)
              in simulateN @System simLength topEntity topEntityInput
 
+      writeWaveformSlot wf0
       let
         (_, expectedOut) =
           L.mapAccumL
@@ -182,8 +185,10 @@ byteAddressableBlockRamAsBlockRam = property $ do
       -- Trace the inputs (read addr, write port) beside the two RAM outputs, so
       -- a mismatch between 'blockRamByteAddressable' and 'blockRam' is
       -- debuggable — 'ramPair' bundles both outputs.
+      keepwf1 <- waveformsRequested
+      wf1 <- newWaveformSlot "byteAddressableBlockRamAsBlockRam"
       simOut <-
-        withWaveform "byteAddressableBlockRamAsBlockRam" simLength
+        withWaveformWhen keepwf1 wf1 simLength
           $ let
               -- topEntity returns a tuple of (byteAddressableRam, blockRam) outputs.
               topEntity (unbundle -> (readAddr, writePort)) =
@@ -198,6 +203,7 @@ byteAddressableBlockRamAsBlockRam = property $ do
                     , blockRam contents readAddr writePort
                     )
              in simulateN @System simLength topEntity topEntityInput
+      writeWaveformSlot wf1
       let
         (fstOut, sndOut) = L.unzip simOut
       footnote . fromString $ "simOut: " <> showX simOut

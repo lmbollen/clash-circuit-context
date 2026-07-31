@@ -316,7 +316,6 @@ test-suite unittests
     Tests.Transceiver
     Tests.Transceiver.Prbs
     Tests.Transceiver.WordAlign
-    Tests.Waveform
     Tests.WireDemoProcessingElement
     Tests.Wishbone
     Tests.Wishbone.Arbiter

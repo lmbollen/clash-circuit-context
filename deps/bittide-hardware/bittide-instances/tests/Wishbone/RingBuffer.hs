@@ -24,7 +24,7 @@ import Bittide.Instances.Tests.RingBuffer (
  )
 import Control.Exception (evaluate)
 import qualified Prelude as P
-import Tests.Waveform (withWaveformLive)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested, withWaveformLazyWhen, withWaveformOnFailure, writeWaveformSlot)
 
 import qualified Hedgehog as H
 import qualified Hedgehog.Gen as Gen
@@ -41,9 +41,18 @@ prop_ring_buffer_test =
     result <- liftIO $ do
       pc <- peConfigFromBinaryName "ring_buffer_test"
       case someNatVal (fromInteger latency) of
-        Just (SomeNat (_ :: Proxy n)) ->
-          withWaveformLive "ring_buffer_test" 100_000 (ringBufferStream (SNat @n) pc) $
-            \s -> evaluate (forceString s)
+        Just (SomeNat (_ :: Proxy n)) -> do
+          -- Artifact capture only: a hedgehog assertion failure is reported
+          -- from PropertyT, not from this IO action, so there is nothing for
+          -- 'withWaveformOnFailure' to observe here. Replay a counterexample
+          -- with 'recheckWithWaveform', or set CCC_WAVEFORMS to record.
+          keep <- waveformsRequested
+          wf <- newWaveformSlot "ring_buffer_test"
+          r <-
+            withWaveformLazyWhen keep wf 100_000 (ringBufferStream (SNat @n) pc) $
+              \s -> evaluate (forceString s)
+          writeWaveformSlot wf
+          pure r
         Nothing -> error [i|Invalid latency value: #{latency}|]
     H.annotate [i|Result of ring_buffer_test with latency #{latency} cycles: \n#{result}|]
     H.assert ("TEST PASSED" `isInfixOf` result)

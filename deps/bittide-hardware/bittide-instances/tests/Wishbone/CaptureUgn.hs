@@ -21,7 +21,7 @@ import Test.Tasty.TH
 import Bittide.Instances.Tests.CaptureUgn (dut, peConfigSim)
 import Clash.CircuitContext (HasCircuitContext, withoutCircuitContext)
 import Control.Exception (evaluate)
-import Tests.Waveform (withWaveformLive)
+import Clash.CircuitContext.Waveform (newWaveformSlot, withWaveformOnFailure)
 
 import qualified Data.List as L
 
@@ -67,15 +67,16 @@ case_capture_ugn_self_test = do
       counter = register clk rst ena (0 :: Index 1000) (satSucc SatBound <$> counter)
   -- SINGLE run: the assertion's own lazy simulation is recorded live; the
   -- waveform (trailing 100k-cycle window) covers what was actually simulated.
-  (actualLocalCounter, actualRemoteCounter) <-
-    withWaveformLive "capture_ugn_self_test" 100_000 simStream (evaluate . parseResult)
-  assertBool
-    (msg actualLocalCounter actualRemoteCounter)
-    ( actualLocalCounter
-        == expectedLocalCounter
-        && actualRemoteCounter
-        == expectedRemoteCounter
-    )
+  wf <- newWaveformSlot "capture_ugn_self_test"
+  withWaveformOnFailure wf 100_000 simStream $ \s -> do
+    (actualLocalCounter, actualRemoteCounter) <- evaluate (parseResult s)
+    assertBool
+      (msg actualLocalCounter actualRemoteCounter)
+      ( actualLocalCounter
+          == expectedLocalCounter
+          && actualRemoteCounter
+          == expectedRemoteCounter
+      )
 
 {- | Simulation function which matches the remote counter to the correct sample
 of the local counter.

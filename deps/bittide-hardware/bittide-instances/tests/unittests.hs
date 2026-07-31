@@ -7,13 +7,12 @@ module Main where
 
 import Prelude
 
-import Control.Exception (finally)
 import Data.String.Interpolate (i)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.Process (cwd, proc, readCreateProcessWithExitCode, readProcess)
 import Test.Tasty
 import Test.Tasty.HUnit (assertFailure, testCase)
-import Tests.Waveform (flushWaveforms)
+
 import "extra" Data.List.Extra (trim)
 
 import qualified Df.ElasticBufferWb as ElasticBufferWb
@@ -88,6 +87,6 @@ prepareTests = do
 main :: IO ()
 main = do
   tests <- prepareTests
-  -- 'flushWaveforms' renders every captured VCD once, after the suite finishes.
-  -- 'defaultMain' exits by throwing 'ExitCode', so it must run in a 'finally'.
-  defaultMain tests `finally` flushWaveforms
+  -- Each instrumented test owns its waveform slot and writes it when the test
+  -- ends; nothing to flush here.
+  defaultMain tests

@@ -21,7 +21,7 @@ import Test.Tasty.TH
 import Bittide.Instances.Tests.DnaPortE2 (dut, peConfigSim)
 import Bittide.ProcessingElement
 import Control.Exception (evaluate)
-import Tests.Waveform (withWaveformLive)
+import Clash.CircuitContext.Waveform (newWaveformSlot, withWaveformOnFailure)
 
 import Clash.CircuitContext (HasCircuitContext, withoutCircuitContext)
 
@@ -49,18 +49,19 @@ case_dna_port_self_test :: Assertion
 case_dna_port_self_test = do
   peConfig <- peConfigSim
   -- SINGLE run: the assertion's own lazy simulation is recorded live (see
-  -- 'withWaveformLive'); parsing stops at the first output line, and the
+  -- 'withWaveformLazy'); parsing stops at the first output line, and the
   -- waveform covers exactly the cycles that were simulated — no separate
   -- strict re-run over a fixed window.
-  receivedDna <-
-    withWaveformLive "dna_port_self_test" 100_000 (simStream peConfig) (evaluate . parseResult)
-  let
-    msg =
-      "Received dna "
-        <> showHex receivedDna ""
-        <> " not equal to expected dna "
-        <> showHex simDna2 ""
-  assertBool msg (receivedDna == simDna2)
+  wf <- newWaveformSlot "dna_port_self_test"
+  withWaveformOnFailure wf 100_000 (simStream peConfig) $ \s -> do
+    receivedDna <- evaluate (parseResult s)
+    let
+      msg =
+        "Received dna "
+          <> showHex receivedDna ""
+          <> " not equal to expected dna "
+          <> showHex simDna2 ""
+    assertBool msg (receivedDna == simDna2)
 
 parseResult :: String -> BitVector 96
 parseResult = pack . (read :: String -> Unsigned 96) . P.head . lines

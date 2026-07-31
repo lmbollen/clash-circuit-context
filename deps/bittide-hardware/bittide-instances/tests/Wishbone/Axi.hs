@@ -18,7 +18,7 @@ import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.TH
 import Control.Exception (evaluate)
-import Tests.Waveform (withWaveformLive)
+import Clash.CircuitContext.Waveform (newWaveformSlot, withWaveformOnFailure)
 import Text.Parsec
 import Text.Parsec.String
 
@@ -39,19 +39,18 @@ case_axi_stream_rust_self_test = do
   peConfig <- peConfigSim
   -- SINGLE run: the assertion's own lazy simulation is recorded live; the
   -- waveform (trailing 100k-cycle window) covers what was actually simulated.
-  (parsed, simResult) <-
-    withWaveformLive
-      "axi_stream_self_test"
-      100_000
-      (chr . fromIntegral <$> catMaybes (sampleC def (dut peConfig)))
-      (\simResult -> do
-        parsed <- evaluate (parseTestResults simResult)
-        pure (parsed, simResult))
-  -- Run the test with HUnit
-  case parsed of
-    Left errMsg -> assertFailure $ show errMsg <> "\n" <> simResult
-    Right results -> do
-      forM_ results $ \result -> assertResult result
+  wf <- newWaveformSlot "axi_stream_self_test"
+  withWaveformOnFailure
+    wf
+    100_000
+    (chr . fromIntegral <$> catMaybes (sampleC def (dut peConfig)))
+    $ \simResult -> do
+      parsed <- evaluate (parseTestResults simResult)
+      -- Run the test with HUnit
+      case parsed of
+        Left errMsg -> assertFailure $ show errMsg <> "\n" <> simResult
+        Right results ->
+          forM_ results $ \result -> assertResult result
  where
   assertResult (TestResult name (Just errMsg)) =
     assertFailure ("Test " <> name <> " failed with error \"" <> errMsg <> "\"")

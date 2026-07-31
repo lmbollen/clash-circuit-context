@@ -36,7 +36,7 @@ import Test.Tasty
 import Test.Tasty.HUnit
 
 import Clash.CircuitContext
-import Tests.Waveform (withWaveform)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested, withWaveformWhen, writeWaveformSlot)
 
 type St = (Unsigned 32, Unsigned 32)
 
@@ -127,7 +127,10 @@ case_recording = do
   _ <- evaluate (sampleN n inp `deepseqX` ())
   performMajorGC
   t0 <- getCPUTime
-  _ <- withWaveform "bench_recording" n (sampleN n (accInstr clk rst ena inp))
+  keepwf0 <- waveformsRequested
+  wf0 <- newWaveformSlot "bench_recording"
+  _ <- withWaveformWhen keepwf0 wf0 n (sampleN n (accInstr clk rst ena inp))
+  writeWaveformSlot wf0
   t1 <- getCPUTime
   printf "\n  instrumented, recording+VCD    n=%d : %.3fs\n" n (P.fromIntegral (t1 - t0) / 1e12 :: Double)
 
@@ -137,7 +140,10 @@ case_correctness = do
   let n = 20_000
       xsBase = sampleN n (accPlain clk rst ena inp)
       xsOff = let ?circuitContext = noCircuitContext in sampleN n (accInstr clk rst ena inp)
-  xsOn <- withWaveform "bench_correctness" n (sampleN n (accInstr clk rst ena inp))
+  keepwf1 <- waveformsRequested
+  wf1 <- newWaveformSlot "bench_correctness"
+  xsOn <- withWaveformWhen keepwf1 wf1 n (sampleN n (accInstr clk rst ena inp))
+  writeWaveformSlot wf1
   assertEqual "instrumented-off must equal baseline" xsBase xsOff
   assertEqual "instrumented-recording must equal baseline" xsBase xsOn
 

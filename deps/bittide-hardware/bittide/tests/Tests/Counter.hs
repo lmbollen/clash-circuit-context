@@ -18,7 +18,7 @@ import Test.Tasty.TH
 import Bittide.Counter (domainDiffCounter)
 
 import Clash.CircuitContext (traceSignalC, withoutCircuitContext)
-import Tests.Waveform (withWaveform)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested, withWaveformWhen, writeWaveformSlot)
 
 import qualified Clash.Class.Cdc as Cdc
 
@@ -52,25 +52,34 @@ top rstSrc rstDst =
 -- | 'domainDiffCounter' should continuously emit zeros when applied to the same domain
 case_zeroSameDomain :: Assertion
 case_zeroSameDomain = do
+  keepwf0 <- waveformsRequested
+  wf0 <- newWaveformSlot "case_zeroSameDomain"
   sampled <-
-    withWaveform "case_zeroSameDomain" 1000
+    withWaveformWhen keepwf0 wf0 1000
       $ sampleN 1000 (traceSignalC "diff" (top @D10 @D10 noRst noRst))
+  writeWaveformSlot wf0
   sampled @?= P.replicate 1000 0
 
 -- | 'domainDiffCounter' should continuously emit zeros when src reset is kept asserted
 case_zeroSrcRst :: Assertion
 case_zeroSrcRst = do
+  keepwf1 <- waveformsRequested
+  wf1 <- newWaveformSlot "case_zeroSrcRst"
   sampled <-
-    withWaveform "case_zeroSrcRst" 1000
+    withWaveformWhen keepwf1 wf1 1000
       $ sampleN 1000 (traceSignalC "diff" (top @D10 @D17 rst noRst))
+  writeWaveformSlot wf1
   sampled @?= P.replicate 1000 0
 
 -- | 'domainDiffCounter' should continuously emit zeros when dst reset is kept asserted
 case_zeroDstRst :: Assertion
 case_zeroDstRst = do
+  keepwf2 <- waveformsRequested
+  wf2 <- newWaveformSlot "case_zeroDstRst"
   sampled <-
-    withWaveform "case_zeroDstRst" 1000
+    withWaveformWhen keepwf2 wf2 1000
       $ sampleN 1000 (traceSignalC "diff" (top @D10 @D17 noRst rst))
+  writeWaveformSlot wf2
   sampled @?= P.replicate 1000 0
 
 -- | No matter when we release the destination reset, we should zeros followed by counting
