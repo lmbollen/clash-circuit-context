@@ -132,13 +132,27 @@ capture_ugn 7→**40**, registerwb 2→**35**, ring_buffer 7→**46**; scopes 1�
    strict 100 k-cycle capture and a model-driven CPU sim — the slowest test in
    the suite by far. `withTests 1` plus a live, output-count-bounded capture
    brought it to 0.6 s.
-10b3. **Parallel test runners multiply sim memory but not sim speed.** A Clash
-   simulation evaluates on one thread; tasty running N CPU tests concurrently
-   holds N partially evaluated sims (GBs each) while one thread works — the
-   observed "many near-idle memory hogs, one busy thread". The harness now
-   serializes heavyweight sims on a global lock (`heavySimLock`): peak memory
-   is one sim's worth, cheap tests still parallelize, and nothing is lost
-   because the sims never parallelized anyway.
+10b4. **Record only what you keep.** Even leak-free, recording every run is
+   wasteful: a 100-case property rendered 100 VCDs to keep one, and a passing
+   firmware test rendered 270 MB nobody reads. Under a parallel runner that is
+   the dominant cost. The capture decision now happens BEFORE the simulation
+   wherever possible (`withWaveformWhen`; the losing cases run under
+   `noCircuitContext`, where tracing is identity), and a failing test gets its
+   waveform by re-running with recording on (`withWaveformOnFailure`).
+   Measured on all 24 cores: peak 25.2 GB -> 8.2 GB and wall 6m22s -> 1m06s
+   for bittide-instances, with zero VCDs written on a green run. The wall-clock
+   win is the surprise — per-cycle packing and RLE encoding cost real time, not
+   just memory.
+
+10b3. **A serializing lock was the wrong fix — the leak was.** Tasty running N
+   CPU tests concurrently held N partially evaluated sims (GBs each), so the
+   harness serialized heavyweight sims on a global lock (`heavySimLock`). That
+   treated the symptom: what made concurrency unaffordable was per-test
+   retention (a lazy sidecar pinning every run's history, and a process-global
+   store holding every rendered VCD to the end of the suite). With capture
+   bounded per test, the lock was removed and the suite runs on all cores
+   again. Serializing to control memory hides the retention bug that makes
+   serializing feel necessary.
 10c. **What remains is the simulation itself.** Control-measured: dna's
    UN-instrumented assertion run alone costs ~60 s and ~3.3 GB max residency
    (ghci) — sampleC + the VexRiscv FFI over 540 k cycles. Recording now adds
