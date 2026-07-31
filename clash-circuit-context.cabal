@@ -91,6 +91,19 @@ library
 
 -- Manual autoTrace calls (no renamer rewrite) against the real runtime;
 -- validates the oracle's trace/fallback decisions per type.
+-- A worked example of the API, kept honest by being built and run: it is what
+-- the README's "Waveforms from your test suite" section points at.
+executable example-waveforms
+  import: common-options
+  main-is: Waveforms.hs
+  hs-source-dirs: examples
+  build-depends:
+    base,
+    clash-circuit-context,
+    clash-prelude,
+    directory,
+    hedgehog,
+
 test-suite capture-smoke
   import: common-options
   type: exitcode-stdio-1.0

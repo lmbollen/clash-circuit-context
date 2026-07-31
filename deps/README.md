@@ -595,6 +595,22 @@ cd deps/bittide-hardware
 nix develop          # or `direnv allow`, the tree ships an .envrc
 ```
 
+The `bittide-instances` self-tests each run a RISC-V core against real
+firmware, so the firmware ELFs have to exist before the Haskell tests can load
+them. Build `bittide-instances` first (the firmware's `build.rs` generates its
+HAL from the memory map), then the binaries:
+
+```bash
+cabal build bittide-instances
+(cd firmware-binaries && cargo build --release)
+```
+
+`firmware-binaries/.cargo/config.toml` already pins the target and the output
+directory, so no flags are needed; the ELFs land in
+`_build/cargo/firmware-binaries/riscv32imc-unknown-none-elf/release/`, which is
+where `peConfigFromElf` looks. Skipping this step is not a subtle failure — a
+dozen tests abort with *"does not point to an extant file"*.
+
 Then run the two suites that carry instrumentation:
 
 ```bash
@@ -736,6 +752,41 @@ repository root:
 ```bash
 ./check.sh              # all four suites + golden VCD diffs
 ```
+
+## What this unlocks
+
+The other two branches argue about *coverage* — which signals reach the
+waveform at all. This one is about whether the waveform is **readable**, and
+that turns out to be a different problem with a different owner.
+
+**A waveform stops being bits.** `clash-circuit-context` knows the hierarchy
+and the names; it does not know that a 34-bit wire is a `WishboneM2S` with an
+`addr` field at 2..33 and a `cycle` bit at 0. `clash-shockwaves` knows exactly
+that, for any `BitPack` type, derived. Neither library had to learn the other's
+job: tracing carries a `Waveform` descriptor alongside each signal, and one
+`dumpVCDSW` writes the VCD and the JSON sidecar a typed viewer reads. In
+[Surfer](https://surfer-project.org/) the result is a decoded constructor and
+named fields where there used to be a hex blob.
+
+**The pair is written as a pair, so it cannot drift.** One call produces both
+files, the sidecar lands *first* through temp + rename, and the invariant a
+reader depends on holds: if the `.vcd` is there, its `.json` is there and
+complete. The sidecar is rounding error — 82 KB against a 190 MB VCD.
+
+**It also made the type requirement honest.** Requiring `Waveform` of every
+traced payload turned "this signal silently isn't in the waveform" into a
+compile-time question the oracle can answer. Finding that gap cost a
+coverage audit — 366 wires, 10% of the total, had been quietly missing — and
+the fix was to derive `Waveform` everywhere rather than to fall back to
+untyped bits, because a silent fallback is how the gap appeared in the first
+place.
+
+**And it is the branch where the capture model earned its keep.** Typed
+waveforms are bigger than untyped ones, and this suite is where recording
+everything became unaffordable: 25.2 GB and 6m22s on 24 cores, against 8.2 GB
+and 1m06s once a waveform is only recorded when it will be kept. If you take
+one thing from this branch into another project, take that — a failing test
+should hand you a waveform, and a passing one should cost nothing.
 
 ## See also
 
