@@ -207,3 +207,56 @@ Initial version.
   `FOURMOLU_DISABLE`); `packMaskValue` uses `unsafeDupablePerformIO` (the
   guard is pure, so duplicate-suppression bought nothing per sample); the
   tree is `-Wall -Wcompat`-clean on GHC 9.6.7 and 9.10.3.
+* Waveforms from a test suite: `Clash.CircuitContext.Waveform` ships the
+  lifecycle every instrumented project otherwise re-derives — a `WaveformSlot`
+  owning one test's pending waveform, `withWaveform`/`withWaveformLazy` by how
+  the design is sampled, and atomic writes. Deliberately not a global
+  registry, which can only be drained once every test has finished and so must
+  retain every rendered VCD until then (measured: 26 GB resident across a
+  suite).
+* Capture only what will be kept. `withWaveformWhen` (and
+  `waveformsRequested`, reading `CCC_WAVEFORMS`) decide BEFORE simulating: a
+  run that will not be kept executes under `noCircuitContext`, where nothing
+  registers, accumulates, renders or is written. `withWaveformOnFailure` runs
+  with recording off and re-runs only if the consumer throws;
+  `withWaveformOnFailure'` records as it goes for a design whose re-run may
+  not reproduce, and still renders only on failure. Under a parallel runner
+  peak memory is the sum over concurrent tests, so this is the dominant cost:
+  measured on a 24-core suite, 25.2 GB and 6m22s became 8.2 GB and 1m06s,
+  with no waveform at all on a green run.
+* `Clash.CircuitContext.Waveform.Hedgehog` for properties. A hedgehog failure
+  is a value in `PropertyT`'s error layer, not a thrown exception, so no `try`
+  in IO can observe one — a property would fail, print a counterexample and
+  leave no waveform. `withWaveformCase` runs the property monad itself, re-runs
+  the failing case with recording on, and re-raises the failure unchanged, so
+  what survives is the waveform of the SHRUNK counterexample (each failing
+  case overwrites the slot as hedgehog shrinks). `recordThisCase` /
+  `recordCaseOfSize` / `recordLargestCase` choose which passing case to keep,
+  deciding inside a generator — the only place hedgehog exposes `Size`.
+* `withCircuitContextWindowE` returns what was recorded even when the action
+  threw (the plain version reads the recorder refs after the action, so an
+  exception escaped with the recording); `withCircuitContextWindowM` runs the
+  action in any monad over IO, for monads that report failure as a value.
+* Signals with an identical recorded history now share one VCD identifier,
+  with the copies re-attached as extra `$var` declarations. Cuts VCD size
+  roughly 3x on real designs, where a bus and its aliases carry the same bits.
+* A VCD scope is a COMPONENT. Generically-derived composite traces used to
+  name fields `binder.field`, and the renderer splits every `.` into a scope,
+  so data structure was indistinguishable from design hierarchy — 850 of 1064
+  scopes across a real suite's waveforms were structural. Fields are now
+  siblings (`binder_field`, `binder_0`).
+* The plugin never traces a binder a code generator invented. Names
+  containing `:` are skipped, which is unforgeable because no source-language
+  variable identifier can contain one; `circuit-notation`'s `trace-ports`
+  patch marks its synthesised binders accordingly. Removed 979 of 4823
+  declarations (20%) across a real suite, each a duplicate of a signal
+  already present under its own name.
+* `recordedCycles` no longer stops one cycle short. A recorder commits cycle
+  `i` only when cell `i+1` is forced — the one-cell delay `registerTrace`
+  takes deliberately, because packing a value while producing its own cell
+  blackholes on a combinational knot — so the last forced cycle was never in
+  the runs; it sits packed in the continuation, which the dump drains. Every
+  lazily-captured waveform was therefore one cycle short, which is invisible
+  on a 600k-cycle trace and fatal on a 3-cycle counterexample.
+* `examples/Waveforms.hs` is a runnable worked example of all of the above,
+  built and run by `check.sh` so it cannot drift from the API.

@@ -428,6 +428,45 @@ repository root:
 ./check.sh              # all four suites + golden VCD diffs
 ```
 
+## What this unlocks
+
+`dogfood/bittide` shows that a design can trace itself. This branch shows what
+changes when the layer *below* it participates, and the difference is the
+argument for instrumenting a library rather than only an application.
+
+**A library's internal state becomes visible to its users' waveforms.** One
+expression inside `registerWbDf` gives every user of `registerWb` — and of the
+five wrappers around it — a named `<device>_<register>_content` wire, at the
+register's real width, carrying its real value. 45 of them in `registerwb_sim`
+alone, and the watchdog test gains the CPU's live register contents by name
+(`Timer_scratchpad_content`, `Uart_data_content`, …) with its byte-exact
+assertion untouched. No user of the library wrote anything to get that.
+
+**The cost to the library is close to nothing.** `clash-protocols` and
+`clash-cores` here carry `.cabal`-level changes and almost no source changes;
+`clash-protocols-memmap` carries one tap and some constraints. Instrumentation
+is opt-in *by signature*, and a user who never supplies a context pays
+literally nothing — the combinators are identity. A library can therefore ship
+instrumented without imposing anything on anyone, which is what makes this
+approach viable outside a single repository at all.
+
+**Component boundaries become visible, not just component internals.** The
+`trace-ports` patch to `circuit-notation` makes a `circuit` block's interface
+ports traceable, so a bus crossing a component boundary is a named wire on both
+sides. Combined with the colon contract — every binder the desugarer *invents*
+carries a `:` in its name, which no source identifier can — the waveform shows
+the designer's ports and none of the plumbing.
+
+**And the measurement that should shape where you spend effort.**
+`clash-protocols-memmap` was worth +54 wires; `Df.fifo` in `clash-protocols`
+was worth **zero**, no matter how it was annotated, because it is built
+straight from the `Circuit` constructor and its internals are `where`-bound
+inside a function the renamer never sees. Annotating a dependency is not what
+makes it traceable — being written in circuit-notation is. That is the single
+most useful thing this branch established, and it is why the assessment in
+[`docs/dep-instrumentation-assessment.md`](../docs/dep-instrumentation-assessment.md)
+is per-dependency rather than a single number.
+
 ## See also
 
 * **`main`** — the plugin and runtime themselves, plus `docs/`. No vendored

@@ -1,3 +1,22 @@
+> ### You are on `dogfood/deps`
+>
+> This branch is the plugin — everything below — **plus five vendored
+> checkouts**: a real Clash design ([`bittide-hardware`](deps/bittide-hardware/))
+> *and* four of its dependencies instrumented too — `clash-protocols`,
+> `clash-protocols-memmap`, `clash-cores` and `circuit-notation`.
+>
+> It answers the question `dogfood/bittide` leaves open: *what does
+> instrumenting the dependencies buy?* The headline is register **contents** —
+> state that lives in a `where`-binding inside a dependency's low-level
+> `Circuit`, invisible from the design side at any effort. Read
+> **[`deps/README.md`](deps/README.md)** for the measured per-dependency
+> answer, and diff this branch against `dogfood/bittide` to see the whole
+> substitution.
+>
+> This branch also carries the `trace-ports` patch to `circuit-notation`, which
+> is why `check.sh` here runs a fifth suite — `notation-smoke`, a golden test
+> against the real desugarer rather than an imitation of its output.
+
 # clash-circuit-context
 
 Scoped simulation tracing for [Clash](https://clash-lang.org/) designs: a
@@ -16,6 +35,48 @@ level), auto-traces every named local binding of traceable type under its
 binder name, and auto-probes bindings inside `HasProbe` functions (e.g.
 mealy step functions). Remove the plugin (or use `noCircuitContext`) and
 every combinator collapses to identity.
+
+## Adding it to your project
+
+Not on Hackage yet, so pin it from git. In your `cabal.project`:
+
+```cabal
+source-repository-package
+  type: git
+  location: https://github.com/lmbollen/clash-circuit-context.git
+  tag: main
+
+-- clash-prelude 1.11 is not on Hackage yet either; this package is developed
+-- against the commit below. Drop this stanza if you are on a released 1.9/1.10.
+source-repository-package
+  type: git
+  location: https://github.com/clash-lang/clash-compiler.git
+  tag: e16599387a68d6361134b4fe7e63bf4ad3ae8408
+  subdir: clash-prelude
+```
+
+In the `.cabal` file of the package whose designs you want traced:
+
+```cabal
+build-depends: clash-circuit-context
+ghc-options:   -fplugin=Clash.CircuitContext.Plugin
+```
+
+Enabling the plugin package-wide is safe and is the recommended default: it
+only touches top-level binders whose *written signature* carries
+`HasCircuitContext` or `HasProbe`, so every other module compiles to exactly
+the same code. Measured on a real repository, flipping 13 per-module pragmas
+to one package-wide flag left seven waveforms bit-for-bit identical. You can
+still enable it per module with
+`{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}` — but do not do
+both, or the plugin runs twice.
+
+Requires GHC 9.6 or 9.10 and `clash-prelude >= 1.9 && < 1.12`. Nothing else,
+and in particular no patched `clash-prelude`.
+
+Then instrument a function with the two annotations above, and see
+[Waveforms from your test suite](#waveforms-from-your-test-suite) for getting
+a VCD out of a test.
 
 ## Example
 
@@ -181,6 +242,88 @@ A non-viral opt-in — tracing a component "from the outside" — is the main op
 design question, tracked as finding F1 in
 [`docs/dogfooding-bittide.md`](docs/dogfooding-bittide.md).
 
+## Waveforms from your test suite
+
+`withCircuitContext` + `dumpVCDC` is the raw API. In a real test suite you
+also want to decide *which* run survives, write the file atomically, and —
+above all — not pay for waveforms nobody will look at.
+`Clash.CircuitContext.Waveform` is that lifecycle, so a project does not have
+to grow its own (two suites in the proof-of-concept repository had):
+
+```haskell
+import Clash.CircuitContext.Waveform
+
+case_myDesign :: Assertion
+case_myDesign = withWaveformSlot "my_design" $ \wf -> do
+  out <- withWaveform wf 1000 (sampleN 1000 (top (fromList [1 ..])))
+  expected @=? out
+```
+
+That writes `waveforms/my_design.vcd`. A *slot* is one test's pending
+waveform, created and owned by that test — deliberately not a global registry,
+which would have to retain every rendered VCD until the whole suite finished.
+
+### Capture only what you will keep
+
+Recording is not free, and under a parallel runner peak memory is the sum over
+concurrently running tests. So decide *before* simulating rather than
+discarding afterwards — a run that will not be kept executes under
+`noCircuitContext`, where `traceSignalC` is identity and nothing is recorded,
+rendered or written:
+
+```haskell
+-- Only when asked for (CCC_WAVEFORMS=1), e.g. to regenerate documentation.
+keep <- waveformsRequested
+out  <- withWaveformWhen keep wf 1000 (sampleN 1000 (top inp))
+
+-- Or: nothing while the test passes, the failing run's waveform when it does
+-- not. `consume` runs twice, so it must be assertions and forcing, not
+-- one-shot IO.
+withWaveformOnFailure wf 1000 (sampleN 1000 (top inp)) $ \out ->
+  expected @=? out
+```
+
+On a real 24-core suite that took unconditional recording from 25.2 GB and
+6m22s to **8.2 GB and 1m06s**, with no waveform at all on a green run and the
+failing test's waveform when one goes red. `withWaveformOnFailure'` covers a
+design whose re-run may not reproduce (a CPU model resolving undefined inputs
+randomly): it records as it goes but still renders only on failure.
+
+For a design whose consumer decides how far to simulate — firmware reading a
+UART stream until it prints its result — use `withWaveformLazy`, which
+captures exactly the cycles the consumer forced instead of a fixed window.
+
+### Hedgehog properties
+
+A hedgehog failure is a value in `PropertyT`'s error layer, not a thrown
+exception, so no `try` in IO can see one — a property fails, prints a perfect
+counterexample, and leaves no waveform.
+`Clash.CircuitContext.Waveform.Hedgehog` closes that:
+
+```haskell
+import Clash.CircuitContext.Waveform.Hedgehog
+
+prop_roundtrip :: IORef Bool -> WaveformSlot -> Property
+prop_roundtrip fired wf = property $ do
+  input <- forAll genInput
+  keep  <- recordLargestCase fired          -- which PASSING case to keep
+  withWaveformCase keep wf nCycles (sampleN nCycles (dut input)) $ \out ->
+    out === model input
+```
+
+If the property fails, the waveform you get is of the **shrunk
+counterexample** — shrinking re-runs the property on smaller inputs and each
+failing case overwrites the slot, so what survives is the minimal case
+hedgehog reports, and its absolute path is printed in the failure report.
+If it passes, `recordLargestCase` keeps the biggest case and fires exactly
+once however often shrinking re-runs the generators; `recordCaseOfSize` picks
+a smaller, readable one instead (hedgehog's `Size` is also the knob on how big
+the waveform is).
+
+A worked version of all of this is in
+[`examples/Waveforms.hs`](examples/Waveforms.hs), which `check.sh` builds and
+runs.
+
 ## Manual API
 
 Everything the plugin injects is ordinary user API from
@@ -266,11 +409,14 @@ actually collects a waveform.
 ./check.sh -w ghc-9.10.3         # or any other GHC ≥ 9.6
 ```
 
-`check.sh` builds everything and runs four suites — `manual-smoke`
+`check.sh` builds everything and runs five suites — `manual-smoke`
 (hand-instrumented reference), `fallback` (oracle decisions per type),
 `auto-smoke` (the same design written naturally, instrumented entirely by
-the plugin), and `notation-smoke` (the real circuit-notation desugarer,
-against the vendored `deps/circuit-notation`) — then diffs the generated VCDs
+the plugin), `capture-smoke` (the capture contract: nothing is rendered or
+written unless the waveform is kept) and `notation-smoke` (the real
+circuit-notation desugarer, against the vendored `deps/circuit-notation`) —
+then runs [`examples/Waveforms.hs`](examples/Waveforms.hs), diffs the
+generated VCDs
 against the goldens in `goldens/` and asserts the fall-through warning fires. VCD output is fully
 deterministic by design, so the goldens are byte-identical across GHC 9.6
 and 9.10.
@@ -290,6 +436,7 @@ instrumented checkouts committed so the waveforms can be reproduced:
 | --- | --- |
 | `dogfood/bittide` | bittide instrumented, **every dependency on its pristine upstream pin** — what you get when you may only touch your own design |
 | `dogfood/deps` | the above **plus instrumented `clash-protocols`, `clash-protocols-memmap`, `clash-cores` and `circuit-notation`** — what dependency instrumentation adds |
+| `dogfood/shockwaves` | the above **plus [`clash-shockwaves`](https://github.com/clash-lang/clash-shockwaves)** — hierarchy *and* the ADT structure that makes the bits readable, in one simulation |
 
 Each branch has a `deps/README.md` covering setup and how to generate all of its
 waveforms. The diff between them is the measure of what instrumenting
