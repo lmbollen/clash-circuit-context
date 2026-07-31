@@ -304,6 +304,22 @@ cd deps/bittide-hardware
 nix develop          # or `direnv allow`, the tree ships an .envrc
 ```
 
+The `bittide-instances` self-tests each run a RISC-V core against real
+firmware, so the firmware ELFs have to exist before the Haskell tests can load
+them. Build `bittide-instances` first (the firmware's `build.rs` generates its
+HAL from the memory map), then the binaries:
+
+```bash
+cabal build bittide-instances
+(cd firmware-binaries && cargo build --release)
+```
+
+`firmware-binaries/.cargo/config.toml` already pins the target and the output
+directory, so no flags are needed; the ELFs land in
+`_build/cargo/firmware-binaries/riscv32imc-unknown-none-elf/release/`, which is
+where `peConfigFromElf` looks. Skipping this step is not a subtle failure — a
+dozen tests abort with *"does not point to an extant file"*.
+
 Then run the two suites that carry instrumentation:
 
 ```bash
@@ -388,7 +404,16 @@ flushWaveforms
 putStrLn "DONE"
 ```
 
-and run it against the test suite (which is where `Tests.Waveform` lives):
+and run it against the test suite, which is where `Tests.Waveform` lives.
+
+That helper is the reason `Clash.CircuitContext.Waveform` now exists: two
+copies of the same lifecycle in one repository is what finding F7 is about, and
+the plugin ships it today. This branch deliberately keeps its own copy — the
+measurements here were taken with it, and rewriting the plumbing would break
+the correspondence between this branch and its own numbers.
+[`dogfood/shockwaves`](#see-also) is where the migrated form lives: slots
+instead of a global flush, and capture-on-failure instead of recording every
+run. If you are starting a project, start from the shipped module.
 
 ```bash
 cabal repl bittide-instances:unittests < regwb.ghci
