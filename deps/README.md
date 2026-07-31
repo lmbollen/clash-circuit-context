@@ -287,12 +287,18 @@ same netlist as the un-instrumented one — verified here on the real
 tracing leakage. Instrumentation you have to strip before taping out is
 instrumentation you stop using; this one has no such deadline.
 
-**A failing CI job can hand you the waveform.** Capture-on-failure records
-nothing while a test passes and writes the failing run's VCD when it does not,
-so waveforms cost a green pipeline nothing at all: on this suite, 24 cores,
-unconditional recording was 25.2 GB and 6m22s, capture-on-failure is 8.2 GB
-and 1m06s. For a hedgehog property what lands is the *shrunk counterexample* —
-the minimal case, in the cycles that produced it.
+**A failing CI job can hand you the waveform, and a green one pays nothing.**
+This branch is the *before* picture: it records every run unconditionally, and
+`bittide-instances:unittests` takes **10m18s and peaks at 7.7 GB** for 32
+tests, almost all of it spent rendering waveforms nobody asked for. The same
+32 tests on `dogfood/shockwaves`, which records only what will be kept, take
+**69 s** — and still write the failing test's waveform when one goes red. For
+a hedgehog property what lands is the *shrunk counterexample*: the minimal
+case, in the cycles that produced it.
+
+That difference is why `Clash.CircuitContext.Waveform` exists on `main`, and
+it is the one result from this whole exercise most worth taking to another
+project.
 
 **A firmware bug becomes a hardware waveform.** The `bittide-instances`
 waveforms each cover a RISC-V core executing real firmware against real
