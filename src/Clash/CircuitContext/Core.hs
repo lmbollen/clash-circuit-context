@@ -60,6 +60,8 @@ module Clash.CircuitContext.Core (
   withoutCircuitContext,
   withCircuitContext,
   withCircuitContextWindow,
+  withCircuitContextWindowE,
+  withCircuitContextWindowM,
 
   -- * Hierarchy
   HierSeg (..),
@@ -126,7 +128,8 @@ import Clash.Signal.Trace (
 import Clash.Sized.Internal.BitVector (BitVector (BV))
 import Clash.XException (NFDataX)
 
-import Control.Exception (SomeException, evaluate, try)
+import Control.Exception (SomeException, evaluate, throwIO, try)
+import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Bits (testBit, xor, (.&.))
 import qualified Data.ByteString.Lazy as ByteStringLazy
 import Data.Char (isDigit)
@@ -419,16 +422,60 @@ memory for signals that change every cycle (program counters, busses) — see
 withCircuitContextWindow ::
   Int -> ((HasCircuitContext) => IO r) -> IO (r, TraceData, ProbeMap)
 withCircuitContextWindow window k = do
+  (r, traces, probes) <- withCircuitContextWindowE window k
+  r' <- either throwIO pure r
+  pure (r', traces, probes)
+
+{- | 'withCircuitContextWindow' that survives a throwing action.
+
+Whatever the action recorded BEFORE it threw is still returned, so a failing
+test can be dumped — which is the whole point of capturing a waveform on
+failure. 'withCircuitContextWindow' cannot do this: an exception escapes
+before it reads the recorder refs, taking the recording with it.
+-}
+withCircuitContextWindowE ::
+  Int ->
+  ((HasCircuitContext) => IO r) ->
+  IO (Either SomeException r, TraceData, ProbeMap)
+withCircuitContextWindowE window k = do
+  (ctx, freeze) <- newRecorders window
+  r <- try (let ?circuitContext = ctx in k)
+  (traces, probes) <- freeze
+  pure (r, traces, probes)
+
+{- | 'withCircuitContextWindow' for a simulation consumed in some monad over
+IO rather than in IO itself — a hedgehog @PropertyT@, say, where the
+assertions that force the circuit live in the property monad.
+
+No 'try' here, deliberately: this is for monads that report failure as a
+/value/ (hedgehog's @Failure@), so the action always returns and the recorder
+refs are always read. A monad that reports failure by throwing needs
+'withCircuitContextWindowE', which catches; an escaping exception here takes
+the recording with it.
+-}
+withCircuitContextWindowM ::
+  (MonadIO m) => Int -> ((HasCircuitContext) => m r) -> m (r, TraceData, ProbeMap)
+withCircuitContextWindowM window k = do
+  (ctx, freeze) <- liftIO (newRecorders window)
+  r <- let ?circuitContext = ctx in k
+  (traces, probes) <- liftIO freeze
+  pure (r, traces, probes)
+
+{- | Fresh recorder refs wrapped in a context, paired with the action that
+reads them back out. Split out so the variants above differ only in how they
+run the action, not in what recording means.
+-}
+newRecorders :: Int -> IO (CircuitContext, IO (TraceData, ProbeMap))
+newRecorders window = do
   tRef <- newIORef Map.empty
   pRef <- newIORef Map.empty
   oRef <- newIORef emptyOrdinals
-  r <-
-    let ?circuitContext = CircuitContext [] (Just tRef) (Just pRef) window (Just oRef)
-     in k
-  live <- readIORef tRef
-  traces <- traverse freezeTrace live
-  probes <- readIORef pRef >>= traverse freezeProbe
-  pure (r, traces, probes)
+  let freeze = do
+        live <- readIORef tRef
+        traces <- traverse freezeTrace live
+        probes <- readIORef pRef >>= traverse freezeProbe
+        pure (traces, probes)
+  pure (CircuitContext [] (Just tRef) (Just pRef) window (Just oRef), freeze)
  where
   freezeTrace (per, w, tapRef) = do
     TraceTap _ runs rest <- readIORef tapRef
