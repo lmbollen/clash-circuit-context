@@ -364,7 +364,7 @@ The fix is to derive the instance everywhere rather than tolerate the gap:
 | `bittide-instances` | `RegisterWb`'s 13 register payloads, `TimeWb`, `WbToDf`, `Common`, 3 HITL modules |
 | `bittide-extra` | `Wishbone.Extra` |
 | orphans, by necessity | `clash-vexriscv`'s `CpuIn`/`CpuOut`/`JtagIn`/`JtagOut` (in `ProcessingElement`) and clash-prelude's `RamOp` (in `Df.Extra`) — both are external pins, instanced next to the component whose ports carry them |
-| polymorphic signatures | 3: `handshake`, `wbToDf`, and `Tests.Waveform`'s `withWaveformC` now carry `Waveform a` alongside `BitPack a` |
+| polymorphic signatures | 3: `handshake`, `wbToDf`, and `bittide-extra`'s `withWaveformC` now carry `Waveform a` alongside `BitPack a` |
 
 One upstream constraint was also relaxed: `clash-shockwaves` required
 `1 <= n` for `Waveform (Index n)`, while `BitPack (Index n)` needs only
@@ -421,8 +421,8 @@ Three things keep the coupling cheap:
   `registerwb_sim`, 45 KB against 29 MB for `watchdog_self_test` — about 0.04 %.
   It is per-dump, not per-signal.
 * **One call produces both**, so they cannot drift apart in content, and
-  `flushWaveforms` writes both through temp + rename with the **sidecar landing
-  first**. That gives readers the invariant they need: if the `.vcd` exists, its
+  `writeWaveformSlot` writes both through temp + rename with the **sidecar
+  landing first**. That gives readers the invariant they need: if the `.vcd` exists, its
   `.json` exists and is complete. Writing the sidecar non-atomically (the first
   version of this) would let an interrupted run leave a whole VCD beside a
   truncated sidecar, silently disagreeing.
@@ -610,14 +610,27 @@ VCDs land in `waveforms/` **relative to each package directory** — so
 `bittide/waveforms/` and `bittide-instances/waveforms/`. They are gitignored;
 regenerate rather than commit them.
 
-One file per test, holding that test's **last** run. A hedgehog property runs
-many cases, and rendering a VCD per case would dominate the suite; instead each
-run overwrites the pending waveform for its name and a single `flushWaveforms`
-(wired via `finally` in both `unittests.hs` mains, so it fires even on the exit
-exception `defaultMain` throws) writes each file once at the end. Last run is
-also the *useful* run: on success hedgehog grows the size parameter, so the last
-case is the largest; on failure it shrinks, so the last case is the minimal
-counterexample.
+**A green run writes none of them.** Recording is not a filter applied at the
+end: a run that will not be kept never enters a recording context, so it costs
+no maps, no render and no file. That is what makes the suite affordable in
+parallel — 25.2 GB and 6m22s when every run recorded, 8.2 GB and 1m06s now, on
+24 cores. Two things do produce a file:
+
+* **a failing test**, always. `withWaveformOnFailure` (IO) and
+  `withWaveformCase` (hedgehog properties) re-run the case that failed with
+  recording on and write its waveform. For a property that means the waveform
+  of the **shrunk counterexample** — the minimal case hedgehog reports, not the
+  first one that happened to fail.
+* **`CCC_WAVEFORMS=1`**, for the artifacts. Tests whose waveform is documentation
+  rather than diagnosis capture only under that flag; a property picks which case
+  to keep with `recordLargestCase` (or `recordCaseOfSize` for a smaller, readable
+  one), which fires exactly once however often shrinking re-runs its generators.
+
+Two designs cannot use the re-run: the VexRiscv firmware sims resolve undefined
+CPU inputs randomly (`unsafeMakeDefinedRandom`), so a second run may differ.
+`withWaveformOnFailure'` records as it goes for those, rendering only on
+failure; where a re-run does not reproduce, the harness says so on stderr rather
+than writing a passing run's waveform under a failure's name.
 
 ### The 29 waveforms
 
@@ -644,8 +657,8 @@ the instrumentation introduced. Reach them via the REPL recipe below.
 
 **`bittide-instances:unittests` — 14**, from `bittide-instances/tests/`. Each is
 a RISC-V firmware self-test `sampleC`-ing a `Circuit () (Df dom (BitVector 8))`
-UART DUT built around a VexRiscv CPU. All use `withWaveformLive`, so each
-captures the cycles its assertion actually forced rather than a fixed window:
+UART DUT built around a VexRiscv CPU. Each captures the cycles its assertion
+actually forced rather than a fixed window:
 
 | Waveform | Source |
 | --- | --- |
@@ -672,29 +685,30 @@ the table above was generated this way during development — e.g. for
 ```haskell
 import Bittide.Instances.Tests.RegisterWb (dutWithVcdAndPeConfig, peConfigSim)
 import Protocols.MemoryMap (unMemmap)
-import Tests.Waveform (withWaveformC, flushWaveforms)
+import Protocols.Waveform (withWaveformC)
+import Clash.CircuitContext.Waveform (withWaveformSlot)
 import VexRiscv (DumpVcd (NoDumpVcd))
 pc <- peConfigSim
-_ <- withWaveformC "registerwb_sim" 2 150000 "uartTx" id (unMemmap (dutWithVcdAndPeConfig NoDumpVcd pc))
-flushWaveforms
+_ <- withWaveformSlot "registerwb_sim" $ \wf -> withWaveformC wf 2 150000 "uartTx" id (unMemmap (dutWithVcdAndPeConfig NoDumpVcd pc))
 putStrLn "DONE"
 ```
 
-and run it against the test suite (which is where `Tests.Waveform` lives):
+and run it against the test suite (`Protocols.Waveform` lives in
+`bittide-extra`, the rest in `clash-circuit-context`):
 
 ```bash
 cabal repl bittide-instances:unittests < regwb.ghci
 ```
 
-The `withWaveformC` arguments are: VCD base name, reset cycles, cycles to
-sample, traced wire name, a projection of the circuit's forward output, and the
-fully driven circuit. `flushWaveforms` must run for anything to reach disk — the
-render is deferred by design (see above).
+The `withWaveformC` arguments are: the slot, reset cycles, cycles to sample,
+traced wire name, a projection of the circuit's forward output, and the fully
+driven circuit. The slot is what reaches disk: `withWaveformSlot` creates one,
+runs the action, and writes whatever it captured — even if the action threw.
 
 Designs sampled with `sampleN`/`simulateN` rather than `sampleC` use
-`withWaveform` instead, and long-running firmware tests that should stop at their
-own exit condition use `withWaveformLive`, which captures the cycles the consumer
-actually forced instead of a fixed window.
+`withWaveform` instead, and long-running firmware tests that should stop at
+their own exit condition use `withWaveformLazy`, which captures the cycles the
+consumer actually forced instead of a fixed window.
 
 ### Reading the result
 

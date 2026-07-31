@@ -335,7 +335,7 @@ add `{-# OPAQUE f #-}`"). Auto-injecting the pragma is possible but risks a
 silent instance-identity bug if the injection is a no-op at that stage, so a
 warning is the safer first step.
 
-### F7 — Waveform lifecycle helpers are re-implemented per project
+### F7 — Waveform lifecycle helpers are re-implemented per project ✅ FIXED
 `withWaveform`/`withWaveformC`, the one-file-per-name discipline, "keep the last
 run", and the `clash-protocols` `toSignals` bridge all live in a bittide-side
 `Tests.Waveform` helper. Every project that wants VCDs from tests will
@@ -343,10 +343,12 @@ re-derive them, and the subtleties (force once to avoid double-instantiation;
 `dumpVCDC` must not throw on an empty run; last-run-wins via a deferred flush at
 teardown) are easy to get wrong.
 
-*Proposal:* ship a small `Clash.CircuitContext.Hedgehog` (or `…Test`) module
-with a blessed `withWaveform`/flush, and — since the `toSignals` bridge needs
-`clash-protocols` — a separate `clash-circuit-context-protocols` package for
-`withWaveformC`/`driveFwd`.
+*Shipped* as `Clash.CircuitContext.Waveform` (slots, capture, writing) plus
+`Clash.CircuitContext.Waveform.Hedgehog` (which case of a property leaves a
+waveform). No separate package was needed: only the `toSignals` bridge is
+`clash-protocols`-shaped, and that one edge stays project-side —
+`clash-protocols` depends on this package, so depending back would be a cycle.
+bittide keeps its `withWaveformC`/`driveFwd` in `bittide-extra`.
 
 ### F8 — Auto-tracing a partial binding crashed the whole VCD dump ✅ FIXED
 Instrumenting real peripherals (the `bittide-instances` firmware DUTs) surfaced
@@ -452,6 +454,49 @@ boilerplate, and with the global flag a newly constrained function is
 instrumented with zero further ceremony. (One caveat worth documenting in the
 ccc README: the plugin listed at both package and module level runs twice —
 remove module pragmas when going global.)
+
+### F11 — A hedgehog failure is invisible to an IO-level capture ✅ FIXED
+Capture-on-failure was built in IO: run with recording off, `try` the consumer,
+and on an exception re-run with recording on. That covers HUnit and the firmware
+tests, and covers **nothing** in a hedgehog property. `===`, `assert` and
+`failure` do not throw — they put a `Failure` into `PropertyT`'s `ExceptT`
+layer, which no `try` in IO can observe. Verified the hard way: breaking
+`prop_alignDealignMsb` produced a perfectly good printed counterexample and
+zero waveform files.
+
+The fix is `Clash.CircuitContext.Waveform.Hedgehog.withWaveformCase`, which runs
+the property monad itself (`runTestT`/`mkTestT`) to catch the failure as a
+value, re-runs that case under a recording context, and re-raises the failure
+unchanged so hedgehog still shrinks and still reports exactly what it would
+have. Two properties fall out of it that are better than the IO version:
+
+* **the waveform is of the SHRUNK counterexample.** Shrinking re-runs the
+  property on ever-smaller inputs and each failing case overwrites the slot, so
+  what survives is the minimal case hedgehog prints. Measured on the broken
+  `prop_alignDealignMsb`: a 2-cycle, 4-wire, 384-byte VCD showing 8-bit `input`
+  going 0→1 while `aligned` never follows — the whole bug, and nothing else.
+* **only failing cases pay.** A passing property records nothing at all, so the
+  cost is one recording per step down the shrink path.
+
+Two constraints to document, both from the re-run: the consumer must contain no
+`forAll` (the second run would draw different values — the seeds differ by
+position in the bind chain), and it must be assertions and forcing rather than
+one-shot IO.
+
+This required `withCircuitContextWindowM` in `Core`: a recording context for an
+action in any `MonadIO`, with no `try`, precisely because the monads that need
+it report failure as a value rather than by throwing.
+
+The same shape covers the artifact case, so it is one combinator, not two:
+`withWaveformCase keep` records as it goes when `keep` (no re-run, no
+reproducibility needed) and falls back to capture-on-failure otherwise. A case
+either passes or fails, so it is never simulated twice.
+
+*Also added:* `recordCaseOfSize fired n`, since hedgehog's `Size` is the only
+knob on how big a generated case is and therefore on how big its waveform is.
+Demonstrated on one property, one run, both waveforms: **size 10 → 2 cycles,
+16-bit words, 470 B; size 90 → 32 cycles, 64-bit words, 6.2 kB.** Small enough
+to read by eye, or large enough to be representative — the caller picks.
 
 ## Dogfooding `bittide-instances` (firmware DUTs)
 
@@ -660,9 +705,9 @@ The audit's coverage gap 1 (`wbStorage` invisible; protocol wiring binds no
    prevents a silent-flatten surprise.
 6. **Probe-mode: stop descending into multi-arg local helpers** (F5) — removes a
    correctness+perf footgun.
-7. **`Clash.CircuitContext.Hedgehog` test helpers** (F7) — package the waveform
-   lifecycle so projects don't re-implement it (now duplicated in *two* bittide
-   test-suites — `bittide` and `bittide-instances`).
+7. **`Clash.CircuitContext.Waveform` test helpers** (F7) — ✅ shipped, with
+   `…Waveform.Hedgehog` for the property-monad half (F11). The duplicate
+   `Tests.Waveform` in both bittide suites is gone.
 8. **README "gotchas"** — lexical context resolution (F3), opt-in model, viral
    constraints and how `withoutCircuitContext` cuts them.
 9. **Empty-component visibility** (audit gap 1) — ✅ RESOLVED 2026-07-23 at
