@@ -24,6 +24,12 @@ import Clash.Explicit.Prelude
 
 import Clash.CircuitContext
 import Clash.CircuitContext.Waveform
+import Clash.CircuitContext.Waveform.Hedgehog (
+  withWaveformCase,
+  withWaveformOnCounterexample,
+ )
+
+import qualified Hedgehog
 
 -- | A trivial traced design; the payload type is irrelevant to what we assert.
 counter :: (HasCircuitContext) => Signal System (Unsigned 8)
@@ -96,5 +102,39 @@ main = do
   (v4, j4) <- filesFor failing'
   check "withWaveformOnFailure' writes both files when the test fails" (v4 P.&& j4)
 
-  P.mapM_ scrub [kept, failing, failing']
+  -- The same contract inside a hedgehog property, where a failure is a VALUE
+  -- in the property monad and no amount of `try` in IO can see it.
+  hPassing <- newWaveformSlot "capture-prop-passing"
+  scrub hPassing
+  okP <-
+    Hedgehog.check . Hedgehog.property $
+      withWaveformOnCounterexample hPassing 8 (sampleN 8 counter) $ \xs ->
+        P.length xs Hedgehog.=== 8
+  check "the passing property passes" okP
+  (v5, j5) <- filesFor hPassing
+  check "withWaveformOnCounterexample writes nothing when the property passes" (P.not v5 P.&& P.not j5)
+
+  -- A failing property still fails, and leaves the counterexample's waveform.
+  hFailing <- newWaveformSlot "capture-prop-failing"
+  scrub hFailing
+  okF <-
+    Hedgehog.check . Hedgehog.property $
+      withWaveformOnCounterexample hFailing 8 (sampleN 8 counter) $ \xs ->
+        P.length xs Hedgehog.=== 7
+  check "the failing property fails" (P.not okF)
+  (v6, j6) <- filesFor hFailing
+  check "withWaveformOnCounterexample writes both files for a counterexample" (v6 P.&& j6)
+
+  -- And a passing case can be kept deliberately (the artifact path).
+  hKept <- newWaveformSlot "capture-prop-kept"
+  scrub hKept
+  okK <-
+    Hedgehog.check . Hedgehog.withTests 1 . Hedgehog.property $
+      withWaveformCase True hKept 8 (sampleN 8 counter) $ \xs ->
+        P.length xs Hedgehog.=== 8
+  check "the kept property passes" okK
+  (v7, j7) <- filesFor hKept
+  check "withWaveformCase True writes both files for a passing case" (v7 P.&& j7)
+
+  P.mapM_ scrub [kept, failing, failing', hFailing, hKept]
   putStrLn "capture-smoke passed"
