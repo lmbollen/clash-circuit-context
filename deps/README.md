@@ -109,6 +109,22 @@ cd deps/bittide-hardware
 nix develop          # or `direnv allow`, the tree ships an .envrc
 ```
 
+The `bittide-instances` self-tests each run a RISC-V core against real
+firmware, so the firmware ELFs have to exist before the Haskell tests can load
+them. Build `bittide-instances` first (the firmware's `build.rs` generates its
+HAL from the memory map), then the binaries:
+
+```bash
+cabal build bittide-instances
+(cd firmware-binaries && cargo build --release)
+```
+
+`firmware-binaries/.cargo/config.toml` already pins the target and the output
+directory, so no flags are needed; the ELFs land in
+`_build/cargo/firmware-binaries/riscv32imc-unknown-none-elf/release/`, which is
+where `peConfigFromElf` looks. Skipping this step is not a subtle failure — a
+dozen tests abort with *"does not point to an extant file"*.
+
 Then run the two suites that carry instrumentation:
 
 ```bash
@@ -242,6 +258,46 @@ blocks and instrumented peripherals. The gap this branch exists to demonstrate:
 
 The full findings list, with the F-numbers referenced in code comments, is in
 [`docs/dogfooding-bittide.md`](../docs/dogfooding-bittide.md) on `main`.
+
+## What this unlocks
+
+The waveforms are the demonstration, not the point. What this branch is
+evidence for:
+
+**Waveforms stop being something you set up.** 27 of them fall out of a suite
+whose tests were written to assert, not to trace. The instrumentation is two
+annotations on a function — no `traceSignal` calls, no name strings, no
+per-signal work — so the marginal cost of the 28th waveform is one
+`HasCircuitContext` in a signature. A design where that is true is a design
+where "can I see this signal?" stops being a question worth asking.
+
+**It can stay in the design.** Every recording combinator is gated on
+`Clash.Magic.clashSimulation`, so an instrumented function synthesizes to the
+same netlist as the un-instrumented one — verified here on the real
+`xilinxElasticBuffer` (dcFifo + CDC), which generates clean Verilog with zero
+tracing leakage. Instrumentation you have to strip before taping out is
+instrumentation you stop using; this one has no such deadline.
+
+**A failing CI job can hand you the waveform.** Capture-on-failure records
+nothing while a test passes and writes the failing run's VCD when it does not,
+so waveforms cost a green pipeline nothing at all: on this suite, 24 cores,
+unconditional recording was 25.2 GB and 6m22s, capture-on-failure is 8.2 GB
+and 1m06s. For a hedgehog property what lands is the *shrunk counterexample* —
+the minimal case, in the cycles that produced it.
+
+**A firmware bug becomes a hardware waveform.** The `bittide-instances`
+waveforms each cover a RISC-V core executing real firmware against real
+peripherals. When a self-test prints the wrong byte, the VCD shows the bus
+transaction that produced it — the CPU side and the peripheral side on one
+time axis, which is exactly the boundary these bugs live on.
+
+**And the honest limit, which is why `dogfood/deps` exists.**
+`HasCircuitContext` is necessary but not sufficient: only combinators
+desugared through circuit-notation are reachable, so a `Circuit`-constructor
+combinator contributes nothing however it is annotated, and a dependency's
+internal state (a register's *contents*) is invisible from the design side.
+Instrument the dependency and it appears. That is the whole argument of the
+next branch.
 
 ## See also
 

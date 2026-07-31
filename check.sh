@@ -19,6 +19,8 @@ run cabal test fallback -j1 "$@"
 runlog cabal test auto-smoke -j1 "$@"
 # Capture contract: nothing is rendered or written unless the waveform is kept.
 run cabal test capture-smoke -j1 "$@"
+# The README's example must actually work; it is the documentation.
+run cabal run -v0 example-waveforms "$@"
 
 for g in manual-smoke auto-smoke; do
   if diff <(grep -v '^\$date' "$g.vcd") "goldens/$g.vcd" >/dev/null; then
