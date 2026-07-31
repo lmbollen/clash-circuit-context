@@ -41,7 +41,7 @@ Not on Hackage yet, so pin it from git. In your `cabal.project`:
 source-repository-package
   type: git
   location: https://github.com/lmbollen/clash-circuit-context.git
-  tag: main
+  tag: <commit-sha>   -- a branch name works, but pins nothing
 
 -- clash-prelude 1.11 is not on Hackage yet either; this package is developed
 -- against the commit below. Drop this stanza if you are on a released 1.9/1.10.
