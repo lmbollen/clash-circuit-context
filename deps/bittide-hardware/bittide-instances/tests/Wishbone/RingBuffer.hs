@@ -25,7 +25,7 @@ import Bittide.Instances.Tests.RingBuffer (
 import Control.Exception (evaluate)
 import qualified Prelude as P
 import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested)
-import Clash.CircuitContext.Waveform.Hedgehog (withWaveformCase)
+import Clash.CircuitContext.Waveform.Hedgehog (withWaveformCaseLazy)
 
 import qualified Hedgehog as H
 import qualified Hedgehog.Gen as Gen
@@ -49,7 +49,7 @@ prop_ring_buffer_test =
         -- CCC_WAVEFORMS asks for the artifact.
         keep <- waveformsRequested
         wf <- newWaveformSlot "ring_buffer_test"
-        withWaveformCase keep wf 100_000 (ringBufferStream (SNat @n) pc) $ \s -> do
+        withWaveformCaseLazy keep wf 100_000 (ringBufferStream (SNat @n) pc) $ \s -> do
           result <- liftIO (evaluate (forceString s))
           H.annotate [i|Result of ring_buffer_test with latency #{latency} cycles: \n#{result}|]
           H.assert ("TEST PASSED" `isInfixOf` result)

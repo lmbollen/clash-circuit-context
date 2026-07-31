@@ -125,6 +125,24 @@ main = do
   (v6, j6) <- filesFor hFailing
   check "withWaveformOnCounterexample writes both files for a counterexample" (v6 P.&& j6)
 
+  -- The counterexample's LAST cycle must be in the waveform. Two ways to lose
+  -- it, both found by reading a real one: the assertion here only looks at the
+  -- list's length, so nothing forces the samples unless the capture does; and
+  -- the recorder commits cycle i only when cell i+1 is forced, so the final
+  -- cycle is still pending in the packed tail when the simulation stops. A
+  -- counterexample is usually ABOUT its last cycle, so both matter.
+  hLast <- newWaveformSlot "capture-prop-lastcycle"
+  scrub hLast
+  _ <-
+    Hedgehog.check . Hedgehog.withTests 1 . Hedgehog.property $
+      withWaveformOnCounterexample hLast 8 (sampleN 8 counter) $ \xs ->
+        P.length xs Hedgehog.=== 7
+  vcd <- P.readFile (waveformSlotPath hLast)
+  let stamps = [l | l <- P.lines vcd, P.take 1 l P.== "#"]
+  check
+    ("all 8 cycles are captured, not 7 (got " <> show (P.length stamps) <> ")")
+    (P.length stamps P.== 8 P.&& P.last stamps P.== "#7")
+
   -- And a passing case can be kept deliberately (the artifact path).
   hKept <- newWaveformSlot "capture-prop-kept"
   scrub hKept
@@ -136,5 +154,5 @@ main = do
   (v7, j7) <- filesFor hKept
   check "withWaveformCase True writes both files for a passing case" (v7 P.&& j7)
 
-  P.mapM_ scrub [kept, failing, failing', hFailing, hKept]
+  P.mapM_ scrub [kept, failing, failing', hFailing, hKept, hLast]
   putStrLn "capture-smoke passed"

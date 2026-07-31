@@ -36,6 +36,7 @@ module Clash.CircuitContext.Waveform.Hedgehog (
   -- * Capturing the counterexample
   withWaveformOnCounterexample,
   withWaveformCase,
+  withWaveformCaseLazy,
 
   -- * Choosing a passing case to keep
   recordThisCase,
@@ -45,6 +46,7 @@ module Clash.CircuitContext.Waveform.Hedgehog (
   recheckWithWaveform,
 ) where
 
+import Control.Exception (evaluate)
 import Control.Monad (forM_, when)
 import Control.Monad.IO.Class (liftIO)
 import Data.IORef (IORef, atomicModifyIORef')
@@ -62,6 +64,8 @@ import Hedgehog.Internal.Property (
 
 import qualified Hedgehog
 import qualified Hedgehog.Gen as Gen
+
+import Clash.Prelude (NFDataX, deepseqX)
 
 import Clash.CircuitContext.Core (
   HasCircuitContext,
@@ -119,6 +123,7 @@ directory, which differs between @cabal test@ and @cabal run@, so a relative
 path would be a small treasure hunt.
 -}
 withWaveformOnCounterexample ::
+  (NFDataX r) =>
   -- | This test's slot; the counterexample is recorded into it.
   WaveformSlot ->
   -- | Trailing capture window in cycles; see
@@ -146,6 +151,7 @@ overwrites it, since a failure is the more interesting of the two.
 property passes.
 -}
 withWaveformCase ::
+  (NFDataX r) =>
   -- | Keep this case's waveform even if it passes?
   Bool ->
   WaveformSlot ->
@@ -153,10 +159,49 @@ withWaveformCase ::
   (HasCircuitContext => r) ->
   (r -> PropertyT IO a) ->
   PropertyT IO a
-withWaveformCase keep slot window sim consume
+withWaveformCase = withWaveformCaseWith forceSim
+
+{- | 'withWaveformCase' for a simulation that must NOT be forced whole: a
+firmware test reading a UART stream until it sees its result, where the
+consumer's own exit condition is what bounds the run.
+
+The waveform then covers exactly the cycles the consumer forced, which is the
+point — but it also means a consumer that stops early records little. See
+'withWaveformCase' for what that costs when it is not deliberate.
+-}
+withWaveformCaseLazy ::
+  Bool ->
+  WaveformSlot ->
+  Int ->
+  (HasCircuitContext => r) ->
+  (r -> PropertyT IO a) ->
+  PropertyT IO a
+withWaveformCaseLazy = withWaveformCaseWith pure
+
+{- | Force a simulation result to normal form so that every traced signal
+records its whole run.
+
+Bound to ONE monomorphic thunk before forcing: forcing @sim@ twice would
+instantiate its @?circuitContext@ twice and register every signal twice
+(spurious @name_0@\/@name_1@ siblings).
+-}
+forceSim :: (NFDataX r) => r -> IO r
+forceSim r = evaluate (r `deepseqX` r)
+
+withWaveformCaseWith ::
+  (r -> IO r) ->
+  Bool ->
+  WaveformSlot ->
+  Int ->
+  (HasCircuitContext => r) ->
+  (r -> PropertyT IO a) ->
+  PropertyT IO a
+withWaveformCaseWith force keep slot window sim consume
   | keep = do
       (outcome, traces, probes) <-
-        withCircuitContextWindowM window (attempt (consume sim))
+        withCircuitContextWindowM window $ do
+          recorded <- liftIO (force sim)
+          attempt (consume recorded)
       liftIO $ do
         captured <- captureRun slot traces probes
         when captured (writeWaveformSlot slot)
@@ -170,7 +215,9 @@ withWaveformCase keep slot window sim consume
           -- @sim@ again gives an independent simulation; the journal of the
           -- re-run is dropped so the report shows each annotation once.
           (again, traces, probes) <-
-            withCircuitContextWindowM window (attemptQuietly (consume sim))
+            withCircuitContextWindowM window $ do
+              recorded <- liftIO (force sim)
+              attemptQuietly (consume recorded)
           case again of
             Left _ -> do
               wrote <- liftIO $ do
