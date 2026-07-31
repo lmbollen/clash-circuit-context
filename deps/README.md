@@ -32,6 +32,15 @@ edit, and only the first is interesting:
    `bittide-instances`), plus `clash-circuit-context` in the two `.cabal` files
    and `-fplugin=Clash.CircuitContext.Plugin` in their `common clash` stanzas.
 
+   That helper is the reason `Clash.CircuitContext.Waveform` now exists: two
+   copies of the same lifecycle in one repository is what finding F7 is about,
+   and the plugin ships it today. This branch deliberately keeps its own copy —
+   the measurements below were taken with it, and rewriting the plumbing would
+   break the correspondence between this branch and its own numbers.
+   [`dogfood/shockwaves`](#see-also) is where the migrated form lives: slots
+   instead of a global flush, and capture-on-failure instead of recording every
+   run. If you are starting a project, start from the shipped module.
+
 Enabling the plugin repo-wide is safe: it is a no-op for any module without a
 `HasCircuitContext`/`HasProbe` signature. Opt-in is **by signature, not by
 module**.
