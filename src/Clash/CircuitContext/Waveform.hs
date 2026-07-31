@@ -85,6 +85,7 @@ module Clash.CircuitContext.Waveform (
 
   -- * Building your own capture combinator
   captureRun,
+  announce,
 
   -- * Writing
   waveformDir,
@@ -92,11 +93,11 @@ module Clash.CircuitContext.Waveform (
 ) where
 
 import Control.Exception (SomeException, evaluate, finally, throwIO, try)
-import Control.Monad (forM_, unless)
+import Control.Monad (forM_, unless, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Char (toLower)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
-import System.Directory (createDirectoryIfMissing, renameFile)
+import System.Directory (createDirectoryIfMissing, makeAbsolute, renameFile)
 import System.FilePath (takeFileName, (-<.>), (<.>), (</>))
 import System.Environment (lookupEnv)
 import System.IO (hClose, hPutStrLn, openTempFile, stderr)
@@ -121,7 +122,12 @@ import Clash.CircuitContext.Core (
  )
 import Clash.CircuitContext.Shockwaves (dumpVCDSW)
 
--- | Directory (relative to the working directory) the VCDs are written to.
+{- | Directory the VCDs are written to, relative to the process's WORKING
+DIRECTORY — which is not the same place under every way of running a suite:
+@cabal test@ runs it in the package directory, @cabal run@ in whatever
+directory you invoked it from. That is why a capture triggered by a failure
+prints where it put the file ('announce') instead of leaving you to guess.
+-}
 waveformDir :: FilePath
 waveformDir = "waveforms"
 
@@ -185,6 +191,19 @@ writeWaveformSlot (WaveformSlot path pending) = liftIO $ do
     hClose h
     renameFile tmp path
 
+{- | Say on stderr where a failure's waveform landed, as an ABSOLUTE path.
+
+A developer reading a failure is not hunting for files, and 'waveformDir' is
+relative to the working directory, so a relative path is exactly the ambiguity
+they do not need. Only failure captures announce themselves: an artifact run
+writes its files because it was asked to, and would be announcing a dozen at
+once.
+-}
+announce :: WaveformSlot -> IO ()
+announce slot = do
+  path <- makeAbsolute (waveformSlotPath slot)
+  hPutStrLn stderr ("clash-circuit-context: wrote " <> path)
+
 {- | Bracket a test with its slot: create it, run the test, and write whatever
 the test captured — even if it throws, so a failing test still leaves the
 waveform that shows why.
@@ -221,16 +240,20 @@ property's counterexample. Pair it with
 'writeWaveformSlot'.
 
 A run that recorded nothing leaves the slot alone rather than clobbering a
-good earlier run with an empty one; so does a render that fails.
+good earlier run with an empty one; so does a render that fails. Returns
+whether this run reached the slot, so a caller can tell a real capture from
+one of those two no-ops.
 -}
-captureRun :: WaveformSlot -> TraceData -> ProbeMap -> IO ()
+captureRun :: WaveformSlot -> TraceData -> ProbeMap -> IO Bool
 captureRun slot traces probes = do
   let end = recordedCycles traces probes
-  unless (Map.null traces && Map.null probes || end == 0) $ do
-    rendered <- dumpVCDSW (0, end) traces probes
-    case rendered of
-      Left _ -> pure ()
-      Right (txt, meta) -> capture slot txt meta
+  if Map.null traces && Map.null probes || end == 0
+    then pure False
+    else do
+      rendered <- dumpVCDSW (0, end) traces probes
+      case rendered of
+        Left _ -> pure False
+        Right (txt, meta) -> capture slot txt meta >> pure True
 
 
 {- | Simulate under a fresh circuit context, force the result so every
@@ -300,7 +323,7 @@ withWaveformLazy ::
   m a
 withWaveformLazy slot window sim consume = liftIO $ do
   (a, traces, probes) <- withCircuitContextWindow window (consume sim)
-  captureRun slot traces probes
+  _ <- captureRun slot traces probes
   pure a
 
 
@@ -436,8 +459,8 @@ withWaveformOnFailure slot window sim consume = do
       case again of
         Left _ -> do
           -- Reproduced: this recording IS of a failing run.
-          captureRun slot traces probes
-          writeWaveformSlot slot
+          captured <- captureRun slot traces probes
+          when captured (writeWaveformSlot slot >> announce slot)
         Right _ ->
           -- The re-run PASSED, so its waveform shows a working run and would
           -- be read as the failure's. Say so and write nothing; the design is
@@ -471,6 +494,6 @@ withWaveformOnFailure' slot window sim consume = do
   case r of
     Right a -> pure a -- discard the recording UNRENDERED
     Left err -> do
-      captureRun slot traces probes
-      writeWaveformSlot slot
+      captured <- captureRun slot traces probes
+      when captured (writeWaveformSlot slot >> announce slot)
       throwIO err

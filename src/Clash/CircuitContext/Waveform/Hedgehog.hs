@@ -45,14 +45,16 @@ module Clash.CircuitContext.Waveform.Hedgehog (
   recheckWithWaveform,
 ) where
 
+import Control.Monad (forM_, when)
 import Control.Monad.IO.Class (liftIO)
 import Data.IORef (IORef, atomicModifyIORef')
-import System.IO (hPutStrLn, stderr)
+import System.Directory (makeAbsolute)
 
 import Hedgehog (PropertyT, Seed, Size (..))
 import Hedgehog.Internal.Property (
   Failure,
   PropertyT (PropertyT),
+  footnote,
   forAllWithT,
   mkTestT,
   runTestT,
@@ -107,13 +109,14 @@ Two constraints, both from the re-run:
   IO. Assertions and forcing, which is what a property body is.
 
 * the re-run must reproduce the failure, which holds for a simulation whose
-  inputs are all supplied by the test. Where it does not, the slot is left
-  alone and a note goes to stderr rather than writing the waveform of a run
-  that worked.
+  inputs are all supplied by the test. Where it does not, nothing is written
+  and the report says so, rather than offering the waveform of a run that
+  worked as if it were the failure's.
 
-Finish with 'Clash.CircuitContext.Waveform.writeWaveformSlot' — or let
-'Clash.CircuitContext.Waveform.withWaveformSlot' bracket it — as the file is
-written from the slot, not from here.
+The file is written here, and the failure report ends with its absolute path —
+'Clash.CircuitContext.Waveform.waveformDir' is relative to the working
+directory, which differs between @cabal test@ and @cabal run@, so a relative
+path would be a small treasure hunt.
 -}
 withWaveformOnCounterexample ::
   -- | This test's slot; the counterexample is recorded into it.
@@ -154,7 +157,9 @@ withWaveformCase keep slot window sim consume
   | keep = do
       (outcome, traces, probes) <-
         withCircuitContextWindowM window (attempt (consume sim))
-      liftIO (captureRun slot traces probes >> writeWaveformSlot slot)
+      liftIO $ do
+        captured <- captureRun slot traces probes
+        when captured (writeWaveformSlot slot)
       either reraise pure outcome
   | otherwise = do
       outcome <- attempt (consume (withoutCircuitContext sim))
@@ -166,17 +171,25 @@ withWaveformCase keep slot window sim consume
           -- re-run is dropped so the report shows each annotation once.
           (again, traces, probes) <-
             withCircuitContextWindowM window (attemptQuietly (consume sim))
-          liftIO $ case again of
+          case again of
             Left _ -> do
-              captureRun slot traces probes
-              writeWaveformSlot slot
+              wrote <- liftIO $ do
+                captured <- captureRun slot traces probes
+                when captured (writeWaveformSlot slot)
+                if captured
+                  then Just <$> makeAbsolute (waveformSlotPath slot)
+                  else pure Nothing
+              -- Into the JOURNAL rather than onto stderr: hedgehog prints the
+              -- journal of the case it finally reports, so the path appears
+              -- once, beside the counterexample it belongs to — and not once
+              -- per step down the shrink path.
+              forM_ wrote $ \path -> footnote ("waveform: " <> path)
             Right _ ->
-              hPutStrLn
-                stderr
-                ( "clash-circuit-context: "
+              footnote
+                ( "no waveform: re-running this case did not reproduce the"
+                    <> " failure, so "
                     <> waveformSlotPath slot
-                    <> ": the failing case did not reproduce, so no waveform"
-                    <> " was written."
+                    <> " would have shown a working run."
                 )
           reraise failure
 

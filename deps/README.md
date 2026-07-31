@@ -606,9 +606,12 @@ cabal test  bittide-instances:unittests
 Expect a long first build: unlike `dogfood/bittide`, this branch builds five
 dependency libraries from source rather than reusing cached upstream pins.
 
-VCDs land in `waveforms/` **relative to each package directory** — so
-`bittide/waveforms/` and `bittide-instances/waveforms/`. They are gitignored;
-regenerate rather than commit them.
+VCDs land in `waveforms/` **relative to the working directory** — so
+`bittide/waveforms/` and `bittide-instances/waveforms/` under `cabal test`,
+but wherever you invoked it from under `cabal run`. A capture triggered by a
+failure therefore prints its absolute path: for a property it appears in the
+failure report beside the counterexample, otherwise on stderr. They are
+gitignored; regenerate rather than commit them.
 
 **A green run writes none of them.** Recording is not a filter applied at the
 end: a run that will not be kept never enters a recording context, so it costs
