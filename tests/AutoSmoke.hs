@@ -196,7 +196,7 @@ main = do
   check "top.out traced" (hasT "top@" P.&& hasT ".out@")
   check
     "record binding traced field-wise (generic Traceable)"
-    (hasT ".pair.pFst@" P.&& hasT ".pair.pSnd@")
+    (hasT ".pair_pFst@" P.&& hasT ".pair_pSnd@")
   check
     "tuple pattern binders traced (sibling autoTrace binds)"
     (hasT ".accA@" P.&& hasT ".accB@")

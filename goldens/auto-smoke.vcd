@@ -3,7 +3,9 @@ $comment No comment $end
 $timescale 10000ps $end
 $scope module top $end
   $var wire 64 % out $end
+  $var wire 64 ' pair_pSnd $end
   $var wire 64 ' accB $end
+  $var wire 64 * pair_pFst $end
   $var wire 64 * accA $end
   $scope module acc_0 $end
     $var wire 64 * total $end
@@ -17,10 +19,6 @@ $scope module top $end
   $upscope $end
   $scope module guarded $end
     $var wire 64 & pos $end
-  $upscope $end
-  $scope module pair $end
-    $var wire 64 ' pSnd $end
-    $var wire 64 * pFst $end
   $upscope $end
   $scope module partialGuard $end
     $var wire 64 $ out2 $end
