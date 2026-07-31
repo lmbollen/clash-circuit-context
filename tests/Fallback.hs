@@ -21,7 +21,7 @@ against the real runtime, validating the oracle's decisions:
   compiles;
 * circuit-notation port shapes: @Tagged p (Signal …)@ → traced (newtype
   delegation); @Tagged p ((), Signal …)@ → the signal component traced as
-  @nm._1@, the unit recording nothing; @Tagged p (Signal … NoPack)@ →
+  @nm_1@, the unit recording nothing; @Tagged p (Signal … NoPack)@ →
   identity; a tuple with one untraceable component → identity for the
   WHOLE binder (all-or-nothing per binder), and compiles.
 -}
@@ -165,14 +165,14 @@ main = do
   check "vec traced element-wise" (has "vec_0@" P.&& has "vec_1@")
   check
     "record with derived instance traced field-wise"
-    (has "recy.roA@" P.&& has "recy.roB@")
+    (has "recy_roA@" P.&& has "recy_roB@")
   check "non-BitPack payload fell back to identity" (P.not (has "blocked"))
   check "poly-without-evidence fell back to identity" (P.not (has "polyno"))
   check "record without instance fell back to identity" (P.not (has "recn"))
   check "Tagged signal traced (newtype delegation)" (has "tagsig@")
   check
     "Tagged ((), signal) traced component-wise; unit records nothing"
-    (has "tagpair._1@" P.&& P.not (has "tagpair._0"))
+    (has "tagpair_1@" P.&& P.not (has "tagpair_0"))
   check
     "Tagged non-BitPack payload fell back to identity"
     (P.not (has "tagblocked"))
@@ -184,8 +184,8 @@ main = do
   -- bus response along with the untraceable memory map.
   check
     "tuple with one untraceable component traces the traceable one"
-    (has "tagmixed._1@")
+    (has "tagmixed_1@")
   check
     "...and the untraceable component alone falls back"
-    (P.not (has "tagmixed._0"))
+    (P.not (has "tagmixed_0"))
   putStrLn "fallback passed"

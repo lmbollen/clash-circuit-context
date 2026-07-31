@@ -11,12 +11,10 @@ $upscope $end
 $scope module portsTop $end
   $var wire 64 " z_Fwd $end
   $var wire 64 # out_Fwd $end
+  $var wire 64 $ ab_Fwd_1 $end
   $var wire 64 $ y_Fwd $end
+  $var wire 64 % ab_Fwd_0 $end
   $var wire 64 % x_Fwd $end
-  $scope module ab_Fwd $end
-    $var wire 64 $ _1 $end
-    $var wire 64 % _0 $end
-  $upscope $end
 $upscope $end
 $scope module tpTop $end
   $var wire 64 ! i_Fwd $end
