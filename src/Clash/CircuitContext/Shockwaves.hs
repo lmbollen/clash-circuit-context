@@ -69,9 +69,9 @@ dumpVCDSW ::
   TraceData ->
   ProbeMap ->
   IO (Either String (Text, Json.Value))
-dumpVCDSW slice traces probes = do
+dumpVCDSW slice@(offset, nSamples) traces probes = do
   vcd <- dumpVCDC slice traces probes
-  pure (fmap (\t -> (t, adtSidecar traces)) vcd)
+  pure (fmap (\t -> (t, adtSidecar (offset + nSamples) traces)) vcd)
 
 {- | The sidecar alone, in @clash-shockwaves@' schema:
 @{ signals, types, luts }@ — the same three keys its own @dumpVCD@ emits, so
@@ -85,8 +85,16 @@ Signals whose payload type has no 'Clash.Shockwaves.Waveform' instance simply
 have no descriptor and are absent from @signals@ — they still appear in the VCD
 as plain bits.
 -}
-adtSidecar :: TraceData -> Json.Value
-adtSidecar traces =
+adtSidecar ::
+  {- | One past the last cycle the paired VCD emits (for a
+  @'dumpVCDC' (offset, nSamples)@ dump: @offset + nSamples@). LUT entries
+  must cover every value the VCD shows, and the VCD's final cycles are
+  drained from 'teRest', not read from 'teRuns'.
+  -}
+  Int ->
+  TraceData ->
+  Json.Value
+adtSidecar end traces =
   Json.object ["signals" .= signals, "types" .= types, "luts" .= luts]
  where
   -- The same transform 'dumpVCDC' applies, so these ARE the VCD's names.
@@ -101,9 +109,12 @@ adtSidecar traces =
   types = foldl' (\acc (_, (_, tr), _) -> addTypesT tr acc) Map.empty described
 
   {- LUT entries are value-driven: a translator using the lookup-table approach
-  needs one per bit pattern that actually occurred. The recorder already keeps
-  exactly those, change-compressed, so a single pass over each described
-  signal's runs suffices. Translators that are not LUT-shaped contribute
+  needs one per bit pattern the VCD shows. That is the committed runs PLUS the
+  cells 'dumpVCDC' drains from 'teRest' — at least the LAST forced cycle of
+  every signal, which is never in 'teRuns' (see 'teForced'). A pattern that
+  first occurs there (for a counterexample, typically the failure cycle) needs
+  its entry like any other, or the viewer decodes every cycle except the one
+  the capture exists to show. Translators that are not LUT-shaped contribute
   nothing ('addValueT' returns no updates for them). -}
   luts :: LUTMap
   luts =
@@ -112,9 +123,20 @@ adtSidecar traces =
       Map.empty
       [ update
       | (_, (_, tr), entry) <- described
-      , (_, _, value) <- teRuns entry
+      , value <- dumpedValues entry
       , update <- addValueT tr (toBitList (teWidth entry) value)
       ]
+
+  -- The values the paired VCD emits for one signal: committed runs, then the
+  -- drained tail of @[0, end)@. Draining forces exactly the packed cells
+  -- 'dumpVCDC' forces for the same window.
+  dumpedValues entry =
+    [value | (_, _, value) <- teRuns entry]
+      ++ take (end - covered) (teRest entry)
+   where
+    covered = case teRuns entry of
+      [] -> 0
+      (_, c, _) : _ -> c + 1
 
 {- | The recorder's packed @(mask, value)@ plus a width is exactly shockwaves'
 dynamically sized bit list, and both use the same convention — a set mask bit

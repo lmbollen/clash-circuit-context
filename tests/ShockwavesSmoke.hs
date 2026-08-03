@@ -1,11 +1,13 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
-{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeApplications #-}
 
 {- | Both halves of the combined output, from one simulation and with no manual
 tracing calls:
@@ -30,8 +32,8 @@ import Control.Exception (evaluate)
 import Data.List (isInfixOf)
 import System.Exit (exitFailure)
 
-import qualified Data.ByteString.Lazy.Char8 as ByteStringLazyChar8
 import qualified Data.Aeson as Json
+import qualified Data.ByteString.Lazy.Char8 as ByteStringLazyChar8
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 
@@ -40,6 +42,9 @@ import Clash.Explicit.Prelude
 import Clash.CircuitContext
 import Clash.CircuitContext.Shockwaves (dumpVCDSW)
 import Clash.Shockwaves.Internal.Waveform (Waveform)
+import Clash.Shockwaves.LUT (WaveformForLut (..), WaveformLUT)
+
+import qualified Data.Aeson.KeyMap as KeyMap
 
 -- | A sum type: its CONSTRUCTOR names are what the sidecar must carry.
 data Phase = Idle | Busy | Done
@@ -53,6 +58,16 @@ data Packet = Packet
   , pPhase :: Phase
   }
   deriving (Show, Generic, BitPack, NFDataX, Waveform)
+
+{- | A LUT-translated payload: its sidecar translations are built from the bit
+patterns that actually occurred, one LUT entry each — which makes it the type
+that notices when a value is dumped without its entry.
+-}
+newtype Opcode = Opcode (Unsigned 2)
+  deriving (Generic, Show)
+  deriving anyclass (BitPack, NFDataX, WaveformLUT)
+
+deriving via WaveformForLut Opcode instance Waveform Opcode
 
 {- | A component: @OPAQUE@ + 'HasCircuitContext', so the plugin wraps it in its
 own VCD scope and auto-traces @packet@ and @phase@ underneath.
@@ -129,4 +144,29 @@ main = do
       check
         "a descriptor is keyed by the VCD's own hierarchical path"
         ("top.stage_0.packet" `isInfixOf` j)
-      putStrLn "shockwaves-smoke passed"
+
+  -- LUT entries must cover the DRAINED cycles too. Sampling 4 cells commits
+  -- cycles 0..2 (recording runs one cell behind), so cycle 3 — the only
+  -- occurrence of @Opcode 3@ — reaches the VCD by being drained from the
+  -- packed tail. Its LUT entry has to exist all the same, or the viewer
+  -- decodes every cycle except the last one: for a counterexample, exactly
+  -- the cycle the capture exists to show.
+  (_, traces2, probes2) <- withCircuitContext $ do
+    let op :: Signal System Opcode
+        op = fromList (P.map Opcode [0, 0, 0, 3, 0])
+        xs = sampleN 4 (traceSignalC "op" op)
+    _ <- evaluate (xs `deepseqX` xs)
+    pure xs
+  rendered2 <- dumpVCDSW (0, 4) traces2 probes2
+  case rendered2 of
+    Left err -> putStrLn ("FAIL: LUT dump failed: " <> err) >> exitFailure
+    Right (_, meta2) -> do
+      let lutsJson = case meta2 of
+            Json.Object o ->
+              P.maybe "" (ByteStringLazyChar8.unpack . Json.encode)
+                $ KeyMap.lookup "luts" o
+            _ -> ""
+      check
+        "a value first occurring at the drained last cycle has its LUT entry"
+        ("Opcode 3" `isInfixOf` lutsJson)
+  putStrLn "shockwaves-smoke passed"
