@@ -16,9 +16,10 @@ module Main where
 import qualified Prelude as P
 
 import Control.Exception (SomeException, evaluate, try)
-import Control.Monad (unless)
+import Control.Monad (when)
 import System.Directory (doesFileExist, removeFile)
 import System.Exit (exitFailure)
+import System.FilePath ((-<.>))
 
 import Clash.Explicit.Prelude
 
@@ -45,13 +46,12 @@ check what ok
 filesFor :: WaveformSlot -> IO (Bool, Bool)
 filesFor slot = do
   let vcd = waveformSlotPath slot
-  (,) <$> doesFileExist vcd <*> doesFileExist (P.takeWhile (/= '.') vcd <> ".json")
+  (,) <$> doesFileExist vcd <*> doesFileExist (vcd -<.> "json")
 
 scrub :: WaveformSlot -> IO ()
 scrub slot = do
   let vcd = waveformSlotPath slot
-      json = P.takeWhile (/= '.') vcd <> ".json"
-  P.mapM_ (\p -> doesFileExist p >>= \e -> unless (not e) (removeFile p)) [vcd, json]
+  P.mapM_ (\p -> doesFileExist p >>= \e -> when e (removeFile p)) [vcd, vcd -<.> "json"]
 
 main :: IO ()
 main = do
@@ -154,5 +154,16 @@ main = do
   (v7, j7) <- filesFor hKept
   check "withWaveformCase True writes both files for a passing case" (v7 P.&& j7)
 
-  P.mapM_ scrub [kept, failing, failing', hFailing, hKept, hLast]
+  -- A run that forces exactly ONE cycle must still capture it. Recording is
+  -- one cell behind the simulation, so after one forced cell nothing is
+  -- committed yet — only the tap's touched bit distinguishes this run from a
+  -- signal nobody looked at, and without it the capture is refused as empty.
+  one <- newWaveformSlot "capture-one-cycle"
+  scrub one
+  _ <- withWaveformLazy one 8 (sampleN 1 counter) (evaluate . P.length)
+  writeWaveformSlot one
+  (v8, j8) <- filesFor one
+  check "a run that forced exactly one cycle still captures it" (v8 P.&& j8)
+
+  P.mapM_ scrub [kept, failing, failing', hFailing, hKept, hLast, one]
   putStrLn "capture-smoke passed"

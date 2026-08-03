@@ -114,6 +114,7 @@ test-suite capture-smoke
     clash-circuit-context,
     clash-prelude,
     directory,
+    filepath,
     hedgehog,
 
 test-suite fallback
