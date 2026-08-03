@@ -58,10 +58,10 @@ way on a real suite:
   process-global store that meant every instrumented test's history at once,
   26 GB resident, measured.
 
-Nothing here serializes tests. An earlier version did — a global lock around
-the simulation phase — because a leak made each concurrent capture retain its
-whole history, so running several at once multiplied gigabytes. With capture
-bounded per test, a parallel runner is free to use every core.
+* Nothing here serializes tests. An earlier version did — a global lock around
+  the simulation phase — because a leak made each concurrent capture retain
+  its whole history, so running several at once multiplied gigabytes. With
+  capture bounded per test, a parallel runner is free to use every core.
 -}
 module Clash.CircuitContext.Waveform (
   -- * The per-test slot
@@ -106,8 +106,8 @@ import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Char (toLower)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import System.Directory (createDirectoryIfMissing, makeAbsolute, renameFile)
-import System.FilePath (takeFileName, (<.>), (</>))
 import System.Environment (lookupEnv)
+import System.FilePath (takeFileName, (<.>), (</>))
 import System.IO (hClose, hPutStrLn, openTempFile, stderr)
 
 import qualified Data.Map.Strict as Map
@@ -169,14 +169,14 @@ newWaveformSlot :: (MonadIO m) => String -> m WaveformSlot
 newWaveformSlot name =
   liftIO (WaveformSlot (waveformPath name) <$> newIORef Nothing)
 
-{- | Write the slot's surviving run, if it captured one. Idempotent: writing
-twice writes the same bytes, and a slot that never captured anything (every
-run empty, or the render failed) writes nothing rather than truncating a file.
--}
 -- | The @.vcd@ path a slot writes to.
 waveformSlotPath :: WaveformSlot -> FilePath
 waveformSlotPath (WaveformSlot path _) = path
 
+{- | Write the slot's surviving run, if it captured one. Idempotent: writing
+twice writes the same bytes, and a slot that never captured anything (every
+run empty, or the render failed) writes nothing rather than truncating a file.
+-}
 writeWaveformSlot :: (MonadIO m) => WaveformSlot -> m ()
 writeWaveformSlot (WaveformSlot path pending) = liftIO $ do
   captured <- readIORef pending
@@ -253,7 +253,6 @@ captureRun slot traces probes = do
         Left _ -> pure False
         Right txt -> capture slot txt >> pure True
 
-
 {- | Simulate under a fresh circuit context, force the result so every
 instrumented signal registers, and write ONE hierarchical VCD to
 @waveformDir\/\<name\>.vcd@.
@@ -264,9 +263,12 @@ list @sampleN@\/@simulateN@ returns): the implicit context is supplied here, and
 fires. The forced @r@ is returned unchanged so the caller can keep asserting on
 it.
 
-Safe to call from inside a hedgehog property: only the first recording run for
-@name@ writes a file (see the module header), and subsequent runs are simulated
-without a recording context so they cost nothing extra.
+Safe to call from inside a hedgehog property: every run replaces the slot's
+pending waveform (LAST run wins, see the module header) and the file is
+written once, when the slot is. Note that this records EVERY case; a property
+that should not pay for that uses 'withWaveformWhen' with a flag from
+"Clash.CircuitContext.Waveform.Hedgehog", or captures only its counterexample
+with 'Clash.CircuitContext.Waveform.Hedgehog.withWaveformOnCounterexample'.
 -}
 withWaveform ::
   forall m r.
@@ -280,13 +282,6 @@ withWaveform ::
   (HasCircuitContext => r) ->
   m r
 withWaveform slot nSamples sim = liftIO (recordAndDump slot (0, nSamples) sim)
-
-
-{- | Shared core: force @sim@ under a fresh recording context (so every
-@traceSignalC@\/probe fires), record this run as @name@'s pending waveform
-(overwriting the previous — LAST run wins), and return the forced result. The
-The waveform is written before returning.
--}
 
 {- | Single-run waveform capture: simulate ONCE, lazily.
 
@@ -324,7 +319,12 @@ withWaveformLazy slot window sim consume = liftIO $ do
   _ <- captureRun slot traces probes
   pure a
 
-
+{- | Shared core of the strict captures: force @sim@ under a fresh recording
+context (so every @traceSignalC@\/probe fires), render this run and store it
+as the slot's pending waveform (overwriting the previous — LAST run wins),
+and return the forced result. The file itself is written by
+'writeWaveformSlot', not here.
+-}
 recordAndDump ::
   forall r.
   (NFDataX r) =>
@@ -342,10 +342,11 @@ recordAndDump slot slice sim = do
       let forced = sim
       _ <- evaluate (forced `deepseqX` forced)
       pure forced
-  -- Write this run as @name@'s waveform, UNLESS it traced nothing (e.g. a
+  -- Record this run into the slot, UNLESS it traced nothing (e.g. a
   -- zero-cycle case): an empty run must not clobber a good earlier one.
-  -- Rendering and writing HERE, rather than deferring, is what releases this
-  -- run's trace and probe maps immediately (see 'writeWaveform').
+  -- Rendering HERE, rather than deferring, is what releases this run's trace
+  -- and probe maps immediately — after 'capture' the slot holds only the
+  -- forced, compact bytes (see the module header on memory).
   unless (Map.null traces && Map.null probes) $ do
     rendered <- dumpVCDC slice traces probes
     case rendered of
@@ -355,7 +356,7 @@ recordAndDump slot slice sim = do
 
 {- | Has the developer asked for waveforms this run?
 
-Reads @CCC_WAVEFORMS@: unset, empty, @0@, @no@ or @false@ mean no. This is the
+Reads @CCC_WAVEFORMS@: unset, empty, @0@, @no@, @off@ or @false@ mean no. This is the
 switch for captures that exist to produce artifacts rather than to debug a
 failure — regenerating the documented waveforms, or looking at a passing
 design — so that an ordinary green run pays nothing for them:
@@ -374,6 +375,7 @@ waveformsRequested = liftIO $ do
     Just "" -> False
     Just "0" -> False
     Just "no" -> False
+    Just "off" -> False
     Just "false" -> False
     Just _ -> True
 
@@ -407,16 +409,17 @@ withWaveformWhen keep slot nSamples sim
 -- | 'withWaveformLazy', but only record when the flag is 'True'; see
 -- 'withWaveformWhen'.
 withWaveformLazyWhen ::
-  forall r a.
+  forall r a m.
+  (MonadIO m) =>
   Bool ->
   WaveformSlot ->
   Int ->
   (HasCircuitContext => r) ->
   (r -> IO a) ->
-  IO a
+  m a
 withWaveformLazyWhen keep slot window sim consume
   | keep = withWaveformLazy slot window sim consume
-  | otherwise = consume (withoutCircuitContext sim)
+  | otherwise = liftIO (consume (withoutCircuitContext sim))
 
 {- | Capture a waveform ONLY for a failing run, by re-running it.
 
