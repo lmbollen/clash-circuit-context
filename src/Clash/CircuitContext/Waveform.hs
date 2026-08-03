@@ -92,7 +92,15 @@ module Clash.CircuitContext.Waveform (
   waveformPath,
 ) where
 
-import Control.Exception (SomeException, evaluate, finally, throwIO, try)
+import Control.Exception (
+  SomeAsyncException,
+  SomeException,
+  evaluate,
+  finally,
+  fromException,
+  throwIO,
+  try,
+ )
 import Control.Monad (forM_, unless, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Char (toLower)
@@ -450,6 +458,11 @@ withWaveformOnFailure slot window sim consume = do
   first <- try (consume (withoutCircuitContext sim))
   case first of
     Right a -> pure a
+    -- An ASYNC exception is not the test failing — it is the test being
+    -- cancelled (Ctrl-C, a runner timeout). Re-simulating the design on the
+    -- way out would turn "stop now" into minutes of work for a large DUT, so
+    -- rethrow immediately and record nothing.
+    Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
     Left err -> do
       -- Second run, recording. Instantiating the constrained @sim@ again gives
       -- a genuinely independent simulation (the same double-instantiation
@@ -493,6 +506,10 @@ withWaveformOnFailure' slot window sim consume = do
   (r, traces, probes) <- withCircuitContextWindowE window (consume sim)
   case r of
     Right a -> pure a -- discard the recording UNRENDERED
+    -- Cancellation, not failure (see 'withWaveformOnFailure'): rethrow
+    -- without rendering — a Ctrl-C should not leave a waveform claiming to
+    -- show a failing run.
+    Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
     Left err -> do
       captured <- captureRun slot traces probes
       when captured (writeWaveformSlot slot >> announce slot)
