@@ -839,7 +839,7 @@ dumpVCDC slice@(offset, nSamples) td pm = do
   aliasByRep' =
     Map.fromList
       [ (a, r)
-      | grp <- aliasGroups td
+      | grp <- aliasGroups end td
       , Just (r : as) <- [traverse (`Map.lookup` cleanOf) grp]
       , a <- as
       ]
@@ -911,9 +911,10 @@ interface port, its intermediate port, a composite half, an internal binding.
 In a bittide firmware trace that reached THIRTEEN names for one 72-bit bus, and
 67% of all value-change bytes were such copies.
 
-Grouping is observational (equal width, period and 'Runs') rather than
-structural, and that is a measured decision, not a shortcut. Runtime object
-identity was tried twice, both times against a real firmware DUT:
+Grouping is observational (equal width, period, 'Runs' — and the cells the
+dump will drain from 'teRest', see below) rather than structural, and that is
+a measured decision, not a shortcut. Runtime object identity was tried twice,
+both times against a real firmware DUT:
 
 * 'System.Mem.StableName' of the signal at REGISTRATION — recovered 0.003% of
   the bytes. The copies are distinct THUNKS (circuit-notation's port
@@ -934,16 +935,29 @@ identity, is the route to a structural criterion.
 
 Aliasing on equal history loses nothing: within the dumped range those signals
 genuinely carried the same values, sharing an identifier is precisely VCD's
-encoding for that, and a viewer still lists each name separately. It does mean
-two unrelated nets that happen to agree over the captured window share a code —
-which changes no displayed value, only the encoding.
+encoding for that, and a viewer still lists each name separately. "Within the
+dumped range" is load-bearing: the dump emits the committed 'teRuns' PLUS the
+cells it drains from 'teRest' — at least the LAST forced cycle of every signal,
+which is never in 'teRuns' (see 'teForced') — so the drained cells are part of
+the compared history too. Comparing them forces exactly the cells the dump
+would force anyway; skipping them would alias two signals that diverge only at
+their final cycle and display the representative's value for precisely the
+cycle a counterexample is usually about. It does mean two unrelated nets that
+happen to agree over the captured window share a code — which changes no
+displayed value, only the encoding.
 
 Returned groups have more than one member, ordered so the first is the
 representative whose changes are emitted. Keys absent from the result are
 unique.
 -}
-aliasGroups :: TraceData -> [[String]]
-aliasGroups td =
+aliasGroups ::
+  {- | One past the last cycle the dump will emit; bounds how much of
+  'teRest' is part of the compared history.
+  -}
+  Int ->
+  TraceData ->
+  [[String]]
+aliasGroups end td =
   [ map fst cls
   | bucket <- Map.elems buckets
   , cls <- classes bucket
@@ -967,11 +981,12 @@ aliasGroups td =
       (flip (++))
       [((teWidth e, tePeriod e, teRuns e), [(k, e)]) | (k, e) <- Map.toList td]
 
-  {- Entries sharing a key are already equal, so a bucket IS one class; the
-  'partition' pass is kept only because 'Map' equality on the key tuple is what
-  established that, and it keeps the head-is-representative invariant explicit.
-  Ascending-key order from 'Map.toList' is preserved, which keeps identifier
-  assignment (and the goldens) deterministic. -}
+  {- Entries sharing a Map key agree on their COMMITTED history; 'partition'
+  then splits a bucket by the drained cells, which the key deliberately leaves
+  out: keying on them would force every signal's packed tail up front, where
+  comparing inside a bucket touches only signals that already share their
+  whole committed history. Ascending-key order from 'Map.toList' is preserved,
+  which keeps identifier assignment (and the goldens) deterministic. -}
   classes [] = []
   classes (x@(_, e) : rest) =
     let (same, diff) = partition (sameHistory e . snd) rest
@@ -981,6 +996,16 @@ aliasGroups td =
     teWidth a == teWidth b
       && tePeriod a == tePeriod b
       && teRuns a == teRuns b
+      && drained a == drained b
+
+  -- The cells the dump will drain from 'teRest': the tail of @[0, end)@ that
+  -- the committed runs do not cover. At least the last forced cycle of every
+  -- signal lives here (see 'teForced'), and two signals equal on their
+  -- committed history can still diverge in it.
+  drained e = take (end - covered e) (teRest e)
+  covered e = case teRuns e of
+    [] -> 0
+    (_, c, _) : _ -> c + 1
 
 --------------------------------------------------------------------------------
 -- Downstream disambiguation of instance ids

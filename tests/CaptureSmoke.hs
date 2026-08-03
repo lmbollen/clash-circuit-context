@@ -17,6 +17,7 @@ import qualified Prelude as P
 
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (when)
+import Data.List (isPrefixOf)
 import System.Directory (doesFileExist, removeFile)
 import System.Exit (exitFailure)
 import System.FilePath ((-<.>))
@@ -36,6 +37,17 @@ import qualified Hedgehog
 counter :: (HasCircuitContext) => Signal System (Unsigned 8)
 counter = traceSignalC "count" (fromList [0 ..])
 {-# OPAQUE counter #-}
+
+{- | Two traced signals identical in every COMMITTED cycle and diverging only
+at the last forced one — which the recorder has not committed yet (it sits in
+the packed tail; see 'teForced') when the run stops. Sampled 4 cycles, both
+commit @[0, 0, 0]@ and the divergent cycle 3 is drained at dump time.
+-}
+twins :: (HasCircuitContext) => ([Unsigned 8], [Unsigned 8])
+twins =
+  ( sampleN 4 (traceSignalC "same" (fromList [0, 0, 0, 0, 0] :: Signal System (Unsigned 8)))
+  , sampleN 4 (traceSignalC "diff" (fromList [0, 0, 0, 1, 0] :: Signal System (Unsigned 8)))
+  )
 
 check :: String -> Bool -> IO ()
 check what ok
@@ -165,5 +177,21 @@ main = do
   (v8, j8) <- filesFor one
   check "a run that forced exactly one cycle still captures it" (v8 P.&& j8)
 
-  P.mapM_ scrub [kept, failing, failing', hFailing, hKept, hLast, one]
+  -- Signals that agree on every committed cycle but diverge at the drained
+  -- last one must NOT share a VCD identifier: an alias would display the
+  -- representative's value for exactly the cycle the capture is about. The
+  -- divergent value 1 only exists at that last cycle, so its (full-width)
+  -- change line appearing at all proves "diff" kept its own identifier.
+  twin <- newWaveformSlot "capture-alias-tail"
+  scrub twin
+  _ <-
+    withWaveformLazy twin 8 twins $ \(xs, ys) ->
+      evaluate (P.length xs + P.length ys)
+  writeWaveformSlot twin
+  vcdTwin <- P.readFile (waveformSlotPath twin)
+  check
+    "signals diverging only at the last (uncommitted) cycle are not aliased"
+    (P.any ("b00000001 " `isPrefixOf`) (P.lines vcdTwin))
+
+  P.mapM_ scrub [kept, failing, failing', hFailing, hKept, hLast, one, twin]
   putStrLn "capture-smoke passed"
