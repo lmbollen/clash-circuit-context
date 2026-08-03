@@ -202,10 +202,19 @@ withWaveformCaseWith force keep slot window sim consume
         withCircuitContextWindowM window $ do
           recorded <- liftIO (force sim)
           attempt (consume recorded)
-      liftIO $ do
+      wrote <- liftIO $ do
         captured <- captureRun slot traces probes
         when captured (writeWaveformSlot slot)
-      either reraise pure outcome
+        if captured
+          then Just <$> makeAbsolute (waveformSlotPath slot)
+          else pure Nothing
+      case outcome of
+        Right a -> pure a
+        Left failure -> do
+          -- A failure's report must say where its waveform went whichever
+          -- branch captured it; the re-run branch below already does.
+          forM_ wrote $ \path -> footnote ("waveform: " <> path)
+          reraise failure
   | otherwise = do
       outcome <- attempt (consume (withoutCircuitContext sim))
       case outcome of
