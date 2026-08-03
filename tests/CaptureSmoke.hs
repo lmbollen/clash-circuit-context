@@ -16,7 +16,7 @@ module Main where
 import qualified Prelude as P
 
 import Control.Exception (SomeException, evaluate, try)
-import Control.Monad (unless)
+import Control.Monad (when)
 import System.Directory (doesFileExist, removeFile)
 import System.Exit (exitFailure)
 
@@ -48,7 +48,7 @@ fileFor = doesFileExist . waveformSlotPath
 scrub :: WaveformSlot -> IO ()
 scrub slot = do
   let vcd = waveformSlotPath slot
-  doesFileExist vcd >>= \e -> unless (not e) (removeFile vcd)
+  doesFileExist vcd >>= \e -> when e (removeFile vcd)
 
 main :: IO ()
 main = do
@@ -151,5 +151,16 @@ main = do
   v7 <- fileFor hKept
   check "withWaveformCase True writes the VCD for a passing case" v7
 
-  P.mapM_ scrub [kept, failing, failing', hFailing, hKept, hLast]
+  -- A run that forces exactly ONE cycle must still capture it. Recording is
+  -- one cell behind the simulation, so after one forced cell nothing is
+  -- committed yet — only the tap's touched bit distinguishes this run from a
+  -- signal nobody looked at, and without it the capture is refused as empty.
+  one <- newWaveformSlot "capture-one-cycle"
+  scrub one
+  _ <- withWaveformLazy one 8 (sampleN 1 counter) (evaluate . P.length)
+  writeWaveformSlot one
+  v8 <- fileFor one
+  check "a run that forced exactly one cycle still captures it" v8
+
+  P.mapM_ scrub [kept, failing, failing', hFailing, hKept, hLast, one]
   putStrLn "capture-smoke passed"

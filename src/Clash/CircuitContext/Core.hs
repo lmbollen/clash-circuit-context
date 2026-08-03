@@ -227,11 +227,15 @@ values (full records, unevaluated closures) become garbage immediately
 instead of being pinned until the dump.
 -}
 data TraceTap
-  = {- | @TraceTap next runs rest@: cycles @[0, next)@ have been consumed
-    (packed and recorded into the windowed @runs@); @rest@ is the
-    not-yet-consumed packed tail.
+  = {- | @TraceTap touched next runs rest@: cycles @[0, next)@ have been
+    consumed (packed and recorded into the windowed @runs@); @rest@ is the
+    not-yet-consumed packed tail. @touched@ says whether the consumer ever
+    forced the traced signal at all: recording runs one cell behind the
+    simulation (see 'registerTrace'), so after a run that forced ONLY the
+    first cell the counters are indistinguishable from a signal nobody
+    looked at — and its one recorded cycle would otherwise be lost.
     -}
-    TraceTap !Int !WRuns [Value]
+    TraceTap !Bool !Int !WRuns [Value]
 
 -- | Live trace registry: name → (period ps, bit width, accumulator).
 type LiveTraces = Map.Map String (Int, Int, IORef TraceTap)
@@ -240,11 +244,13 @@ type LiveTraces = Map.Map String (Int, Int, IORef TraceTap)
 data TraceEntry = TraceEntry
   { tePeriod :: !Int
   , teWidth :: !Int
-  , teCommitted :: !Int
-  {- ^ Cycles committed to 'teRuns'. One FEWER than the simulation forced:
+  , teForced :: !Int
+  {- ^ Cycles the simulation forced. ONE MORE than the cycles committed to
+  'teRuns' (and zero for a signal that was never forced at all):
   'registerTrace' records cycle @i@ only when cell @i+1@ is forced, so the
   last forced cycle is still packed in 'teRest' when the simulation stops.
-  See 'recordedCycles', which has to add it back.
+  'dumpVCDC' drains it from there, and 'recordedCycles' relies on it being
+  counted here.
   -}
   , teRuns :: Runs
   -- ^ Change-compressed history of the cycles the simulation forced.
@@ -270,14 +276,14 @@ wasted compute whenever the simulation was cut short deliberately.
 recordedCycles :: TraceData -> ProbeMap -> Int
 recordedCycles td pm = maximum (0 : traceEnds ++ probeEnds)
  where
-  -- +1 for the cycle the recorder has not committed yet. 'registerTrace'
-  -- delays by one cell on purpose (packing a value while producing its own
-  -- cell blackholes on a combinational knot), so the LAST cycle a simulation
-  -- forced is never in 'teRuns' — it sits packed in 'teRest', which the dump
-  -- drains. Without this every lazily-captured waveform stops one cycle
-  -- early, and for a hedgehog counterexample that is usually the very cycle
-  -- the assertion is about.
-  traceEnds = [c + 1 | e <- Map.elems td, let c = teCommitted e, c > 0]
+  -- 'teForced' already counts the cycle the recorder has not committed yet
+  -- (the recorder delays by one cell on purpose — packing a value while
+  -- producing its own cell blackholes on a combinational knot — so the LAST
+  -- forced cycle sits packed in 'teRest', which the dump drains). Without
+  -- that cycle every lazily-captured waveform stops one cycle early, and for
+  -- a hedgehog counterexample that is usually the very cycle the assertion
+  -- is about.
+  traceEnds = map teForced (Map.elems td)
   probeEnds = [e + 1 | (_, _, (_, e, _) : _) <- Map.elems pm]
 
 {- | One hierarchy level: user name plus the encoded source location of the
@@ -491,8 +497,12 @@ newRecorders window = do
   pure (CircuitContext [] (Just tRef) (Just pRef) window (Just oRef), freeze)
  where
   freezeTrace (per, w, tapRef) = do
-    TraceTap committed runs rest <- readIORef tapRef
-    pure (TraceEntry per w committed (wrunsToRuns runs) rest)
+    TraceTap touched committed runs rest <- readIORef tapRef
+    -- committed + 1 is the pending cycle in 'teRest'; see 'teForced'. The
+    -- @touched@ bit is what distinguishes "forced exactly one cell" from
+    -- "never forced" — the counters alone cannot.
+    let forced = if touched then committed + 1 else 0
+    pure (TraceEntry per w forced (wrunsToRuns runs) rest)
   freezeProbe (per, w, accRef) = (,,) per w . wrunsToRuns <$> readIORef accRef
 
 {- | @component "fifo" circuit@: everything traced or probed inside
@@ -638,13 +648,26 @@ registerTrace ::
   Signal dom a ->
   IO (Signal dom a)
 registerTrace window ref period key sig = do
-  tapRef <- newIORef (TraceTap 0 emptyWRuns packed)
+  tapRef <- newIORef (TraceTap False 0 emptyWRuns packed)
   atomicModifyIORef' ref $ \m ->
     (Map.insert key (period, width, tapRef) m, ())
-  pure (tap window tapRef 0 packed sig)
+  pure (touchOnce tapRef (tap window tapRef 0 packed sig))
  where
   width = snatToNum (SNat @(BitSize a))
   packed = map packMaskValue (sample_lazy sig)
+
+  -- Mark the tap TOUCHED when the consumer takes the signal's first cell.
+  -- Recording proper runs one cell behind (see 'tap'), so without this a
+  -- run that forced ONLY cell 0 leaves the tap in its initial state and
+  -- 'recordedCycles' cannot tell it from a signal nobody forced — a
+  -- one-cycle simulation would capture nothing. Marking demands no design
+  -- value, so it cannot re-enter a combinational knot.
+  touchOnce :: IORef TraceTap -> Signal dom a -> Signal dom a
+  touchOnce tapRef s =
+    unsafePerformIO $ do
+      atomicModifyIORef' tapRef $ \(TraceTap _ n runs rest) ->
+        (TraceTap True n runs rest, ())
+      pure s
 
   -- Walk the raw signal and its packed view in lockstep, recording cycle /i/
   -- when the TAIL of cell /i/ (i.e. cell /i+1/) is first forced — cons cells
@@ -670,8 +693,8 @@ registerTrace window ref period key sig = do
         :- unsafePerformIO
           ( do
               !v <- evaluate v0
-              atomicModifyIORef' tapRef $ \(TraceTap _ runs _) ->
-                (TraceTap (cyc + 1) (addCycleW window cyc v runs) pkRest, ())
+              atomicModifyIORef' tapRef $ \(TraceTap _ _ runs _) ->
+                (TraceTap True (cyc + 1) (addCycleW window cyc v runs) pkRest, ())
               pure (tap window tapRef (cyc + 1) pkRest as)
           )
     _ -> s -- unreachable: both streams are infinite
