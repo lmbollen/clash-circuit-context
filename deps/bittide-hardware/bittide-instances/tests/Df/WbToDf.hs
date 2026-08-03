@@ -19,7 +19,7 @@ import Protocols.MemoryMap
 import Test.Tasty
 import Test.Tasty.Hedgehog
 import Test.Tasty.TH
-import Tests.Waveform (withWaveformLive)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested, withWaveformLazyWhen, writeWaveformSlot)
 
 import qualified Prelude as P
 
@@ -41,10 +41,17 @@ prop_wb_to_df_test =
       streams = sampleC def{timeoutAfter = 200_000} (unMemmap (dut dumpVcd peConfig))
     -- SINGLE bounded capture run: the consumer stops as soon as the expected
     -- number of 'SomeAdt' outputs has been produced.
+    -- Artifact capture only, and it has to be: the assertion below is
+    -- 'propWithModelT', which runs its OWN simulation (with stalls) rather
+    -- than this one, so capturing this run on that failure would show a
+    -- waveform of different stimulus. Set CCC_WAVEFORMS to record it.
+    keep <- liftIO waveformsRequested
+    wf <- newWaveformSlot "wb_to_df_test"
     _ <-
       liftIO $
-        withWaveformLive "wb_to_df_test" 100_000 streams $ \(adts, _uart) ->
+        withWaveformLazyWhen keep wf 100_000 streams $ \(adts, _uart) ->
           evaluate (forceList (P.take (length testValue) (catMaybes adts)))
+    writeWaveformSlot wf
     propWithModelT eOpts (pure []) model impl prop
  where
   eOpts =

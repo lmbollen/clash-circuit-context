@@ -325,7 +325,10 @@ test-suite unittests
   hs-source-dirs: tests
   type: exitcode-stdio-1.0
   main-is: unittests.hs
-  ghc-options: -threaded
+  ghc-options:
+    -threaded
+    -rtsopts
+    -with-rtsopts=-N
   other-modules:
     Df.ElasticBufferWb
     Df.WbToDf
@@ -333,7 +336,6 @@ test-suite unittests
     Tests.Bittide.Instances.Hitl.Utils.OpenOcd
     Tests.Bittide.Instances.Hitl.Utils.Serial
     Tests.ClockControlWb
-    Tests.Waveform
     Wishbone.AddressableBytesWb
     Wishbone.Axi
     Wishbone.CaptureUgn

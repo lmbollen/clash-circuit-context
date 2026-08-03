@@ -11,7 +11,7 @@ import Test.Tasty
 import Test.Tasty.HUnit
 
 import Bittide.ElasticBuffer
-import Tests.Waveform (withWaveform)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested, withWaveformWhen, writeWaveformSlot)
 
 import qualified Data.List as L
 
@@ -42,8 +42,10 @@ case_xilinxElasticBufferMaxBound = do
     wData = pure (0 :: Unsigned 8)
 
   -- overflow is in the Fast (5000ps) write domain: 16192 cycles * 200 ticks.
+  keepwf0 <- waveformsRequested
+  wf0 <- newWaveformSlot "case_xilinxElasticBufferMaxBound"
   (underflows, overflows, _, _, _) <-
-    withWaveform "case_xilinxElasticBufferMaxBound" (16192 * 200)
+    withWaveformWhen keepwf0 wf0 (16192 * 200)
       $ let
           (dataCount, under, over, fifoOut, ack) =
             xilinxElasticBuffer @6 (clockGen @Slow) (clockGen @Fast) command wData
@@ -55,6 +57,7 @@ case_xilinxElasticBufferMaxBound = do
           , sampleN 2048 ack
           )
 
+  writeWaveformSlot wf0
   let
     -- Ignore the first 32 samples to allow the buffer to fill up
     underflowsTail = L.drop 32 underflows
@@ -75,8 +78,10 @@ case_xilinxElasticBufferMinBound = do
     wData = pure (0 :: Unsigned 8)
 
   -- underflow is in the Slow (5025ps) read domain: 2048 cycles * 201 ticks.
+  keepwf1 <- waveformsRequested
+  wf1 <- newWaveformSlot "case_xilinxElasticBufferMinBound"
   (underflows, overflows, _, _, _) <-
-    withWaveform "case_xilinxElasticBufferMinBound" (2048 * 201)
+    withWaveformWhen keepwf1 wf1 (2048 * 201)
       $ let
           (dataCount, under, over, fifoOut, ack) =
             xilinxElasticBuffer @6 (clockGen @Fast) (clockGen @Slow) command wData
@@ -88,6 +93,7 @@ case_xilinxElasticBufferMinBound = do
           , sampleN 2048 ack
           )
 
+  writeWaveformSlot wf1
   let
     -- Ignore the first 32 samples to allow the buffer to fill up
     underflowsTail = L.drop 32 underflows
@@ -108,8 +114,10 @@ case_xilinxElasticBufferEq = do
   -- Force every output (not just under/over) so all of 'xilinxElasticBuffer'\'s
   -- demanded internals — data count, fill/drain state, CDC command, acks — end
   -- up in the waveform, rather than only the ones the assertions happen to read.
+  keepwf2 <- waveformsRequested
+  wf2 <- newWaveformSlot "case_xilinxElasticBufferEq"
   (underflows, overflows, _, _, _) <-
-    withWaveform "case_xilinxElasticBufferEq" 256
+    withWaveformWhen keepwf2 wf2 256
       $ let
           (dataCount, under, over, fifoOut, ack) =
             xilinxElasticBuffer @5 (clockGen @Slow) (clockGen @Slow) command wData
@@ -121,6 +129,7 @@ case_xilinxElasticBufferEq = do
           , sampleN 256 ack
           )
 
+  writeWaveformSlot wf2
   let
     -- Ignore the first 32 samples to allow the buffer to fill up
     underflowsTail = L.drop 32 underflows

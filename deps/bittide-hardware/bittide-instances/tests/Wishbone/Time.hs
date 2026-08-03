@@ -30,7 +30,7 @@ import Test.Tasty.HUnit
 import Test.Tasty.TH
 import Clash.CircuitContext (HasCircuitContext, withoutCircuitContext)
 import Control.Exception (evaluate)
-import Tests.Waveform (withWaveformLive)
+import Clash.CircuitContext.Waveform (newWaveformSlot, withWaveformOnFailure)
 import Text.Parsec
 import Text.Parsec.String
 
@@ -59,16 +59,15 @@ case_time_rust_self_test = do
   peConfig <- peConfigSim iMemWords dMemWords "time_self_test"
   -- SINGLE run: the assertion's own lazy simulation is recorded live; the
   -- waveform (trailing 100k-cycle window) covers what was actually simulated.
-  (parsed, simOutput) <-
-    withWaveformLive "time_self_test" 100_000 (simStream peConfig) $
-      \simOutput -> do
-        parsed <- evaluate (parseTestResults simOutput)
-        pure (parsed, simOutput)
-  -- Run the test with HUnit
-  case parsed of
-    Left err -> assertFailure $ show err <> "\n" <> simOutput
-    Right results -> do
-      forM_ results $ \result -> assertResult result
+  wf0 <- newWaveformSlot "time_self_test"
+  withWaveformOnFailure wf0 100_000 (simStream peConfig) $
+    \simOutput -> do
+      parsed <- evaluate (parseTestResults simOutput)
+      -- Run the test with HUnit
+      case parsed of
+        Left err -> assertFailure $ show err <> "\n" <> simOutput
+        Right results ->
+          forM_ results $ \result -> assertResult result
  where
   assertResult (TestResult name (Just err)) = assertFailure ("Test " <> name <> " failed with error" <> err)
   assertResult (TestResult _ Nothing) = return ()
@@ -118,24 +117,23 @@ case_time_c_test = do
     simResultLazy :: (HasCircuitContext) => String
     simResultLazy = chr . fromIntegral <$> catMaybes uartStreamC
   -- SINGLE run: the assertion's own lazy simulation is recorded live.
-  (passedAll, completed, failed, simResultC) <-
-    withWaveformLive "time_c_test" 100_000 simResultLazy $ \s -> do
-      passedAll <- evaluate ("=== All tests PASSED! ===" `isInfixOf` s)
-      completed <- evaluate ("C Timer HAL test completed successfully!" `isInfixOf` s)
-      failed <- evaluate ("*** TEST FAILED:" `isInfixOf` s)
-      pure (passedAll, completed, failed, s)
-  when (not passedAll)
-    $ assertFailure
-    $ "C timer test did not report all tests PASSED\n"
-    <> simResultC
-  when (not completed)
-    $ assertFailure
-    $ "C timer test did not complete successfully\n"
-    <> simResultC
-  when failed
-    $ assertFailure
-    $ "C timer test reported a failure\n"
-    <> simResultC
+  wf1 <- newWaveformSlot "time_c_test"
+  withWaveformOnFailure wf1 100_000 simResultLazy $ \simResultC -> do
+    passedAll <- evaluate ("=== All tests PASSED! ===" `isInfixOf` simResultC)
+    completed <- evaluate ("C Timer HAL test completed successfully!" `isInfixOf` simResultC)
+    failed <- evaluate ("*** TEST FAILED:" `isInfixOf` simResultC)
+    when (not passedAll)
+      $ assertFailure
+      $ "C timer test did not report all tests PASSED\n"
+      <> simResultC
+    when (not completed)
+      $ assertFailure
+      $ "C timer test did not complete successfully\n"
+      <> simResultC
+    when failed
+      $ assertFailure
+      $ "C timer test reported a failure\n"
+      <> simResultC
 
 tests :: TestTree
 tests = $(testGroupGenerator)

@@ -23,7 +23,8 @@ import Test.Tasty.HUnit (Assertion, assertBool, testCase)
 import Test.Tasty.Hedgehog (testProperty)
 import Test.Tasty.TH (testGroupGenerator)
 import Clash.CircuitContext (HasCircuitContext, withoutCircuitContext)
-import Tests.Waveform (withWaveformC)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested, writeWaveformSlot)
+import Protocols.Waveform (withWaveformCWhen)
 
 import qualified Data.List as L
 import Hedgehog ((===))
@@ -99,20 +100,24 @@ prop_asciiDebugMux =
 {- | Waveform for a @Df@ (@clash-protocols@) circuit, sampled via @sampleC@.
 
 Same bridge as the AXI4-Stream demo in "Tests.Axi4", on a different protocol:
-'Tests.Waveform.withWaveformC' coerces the fully driven @asciiDebugMux@ to its
+'Protocols.Waveform.withWaveformC' coerces the fully driven @asciiDebugMux@ to its
 forward output signal with @toSignals@ and traces a projection of it. A single
 deterministic run in its own test case, so it writes exactly one waveform.
 -}
 case_asciiDebugMuxWaveform :: Assertion
 case_asciiDebugMuxWaveform = do
+  keepwf <- waveformsRequested
+  wf <- newWaveformSlot "case_asciiDebugMuxWaveform"
   samples <-
-    withWaveformC
-      "case_asciiDebugMuxWaveform"
+    withWaveformCWhen
+      keepwf
+      wf
       (resetCycles conf)
       nSamples
       "muxOut"
       (fmap (\m -> (fromMaybe 0 m, isJust m)))
       driven
+  writeWaveformSlot wf
   let validBytes = [b | (b, valid) <- samples, valid]
   -- The mux forwards every input byte (and adds prefixes), so the number of
   -- valid output bytes is at least the number of input bytes.

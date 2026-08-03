@@ -22,7 +22,10 @@ import Test.Tasty.HUnit
 import Test.Tasty.Hedgehog
 
 import Clash.CircuitContext (traceSignalC)
-import Tests.Waveform (withWaveform)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested)
+import Clash.CircuitContext.Waveform.Hedgehog (recordLargestCase, withWaveformCase)
+import Data.IORef (IORef, newIORef)
+import System.IO.Unsafe (unsafePerformIO)
 
 import qualified Bittide.Transceiver.WordAlign as WordAlign
 import qualified Clash.Explicit.Prelude as E
@@ -90,13 +93,17 @@ case_alignMsbFirst = do
   go offset = unpack (WordAlign.alignMsbFirst offset (pack word1) (pack word2))
 
 prop_alignDealign ::
+  -- | This test's "already recorded" flag, owned by the caller: one ref per
+  -- tasty test, so 'recordLargestCase' fires at most once for that test no
+  -- matter how often shrinking re-runs the generators.
+  IORef Bool ->
   -- | Waveform file base name (distinct per variant: two properties dumping
   -- the same file would race under tasty's parallel execution).
   String ->
   (forall n. WordAlign.AlignmentFn n) ->
   (forall n. WordAlign.AlignmentFn n) ->
   Property
-prop_alignDealign waveName alignFn dealignFn = property $ do
+prop_alignDealign fired waveName alignFn dealignFn = property $ do
   nMinusOne <- forAll $ Gen.integral (Range.linear 0 16)
   withSomeSNat nMinusOne $ \(succSNat -> SNat :: SNat n) -> do
     offset <- forAll $ genIndex @n Range.constantBounded
@@ -105,43 +112,74 @@ prop_alignDealign waveName alignFn dealignFn = property $ do
 
     withClock @XilinxSystem clockGen $ do
       -- Trivial waveform generation: wrap the two pipeline signals with
-      -- 'traceSignalC' inside 'withWaveform'. No plugin, no library changes,
-      -- no shims — just name the signals you want to see. Dumps the last run
-      -- to waveforms/prop_alignDealign.vcd.
-      output <-
-        withWaveform waveName nCycles
-          $ let
-              -- Trace the whole pipeline so a roundtrip failure is debuggable:
-              -- the stimulus ('input', 'offset') the assertion is derived from,
-              -- the intermediate 'dealigned', and the recovered 'aligned'.
-              inputSignal = traceSignalC "input" (E.fromList (input <> L.repeat 0))
-              offsetSig = traceSignalC "offset" (pure offset)
-              dealigned =
-                traceSignalC "dealigned"
-                  $ WordAlign.aligner dealignFn (pure False) offsetSig inputSignal
-              aligned =
-                traceSignalC "aligned"
-                  $ WordAlign.aligner alignFn (pure False) offsetSig dealigned
-             in E.sampleN nCycles aligned
+      -- 'traceSignalC' and name them; no plugin, no library changes, no shims.
+      --
+      -- A property runs its body once per generated case but should leave at
+      -- most ONE waveform, and the case worth keeping depends on the outcome.
+      -- If the property FAILS, 'withWaveformCase' re-runs the failing case
+      -- with recording on, so what lands is the waveform of the shrunk
+      -- counterexample — the same 3-word failure hedgehog prints, in the
+      -- cycles that produced it. That costs nothing while the property passes.
+      -- If it passes, the flag decides: 'recordLargestCase' picks the biggest
+      -- (most thorough) case and claims the caller's ref, so it fires exactly
+      -- once however often shrinking re-runs the generators. That one is
+      -- gated on CCC_WAVEFORMS, being an artifact rather than a diagnosis.
+      wanted <- waveformsRequested
+      keepwf <- if wanted then recordLargestCase fired else pure False
+      wf <- newWaveformSlot waveName
+      withWaveformCase keepwf wf nCycles
+        ( let
+            -- Trace the whole pipeline so a roundtrip failure is debuggable:
+            -- the stimulus ('input', 'offset') the assertion is derived from,
+            -- the intermediate 'dealigned', and the recovered 'aligned'.
+            inputSignal = traceSignalC "input" (E.fromList (input <> L.repeat 0))
+            offsetSig = traceSignalC "offset" (pure offset)
+            dealigned =
+              traceSignalC "dealigned"
+                $ WordAlign.aligner dealignFn (pure False) offsetSig inputSignal
+            aligned =
+              traceSignalC "aligned"
+                $ WordAlign.aligner alignFn (pure False) offsetSig dealigned
+           in
+            E.sampleN nCycles aligned
+        )
+        $ \output -> do
+          let
+            pipelineCycles = 1
+            startUpCycles = 1
 
-      let
-        pipelineCycles = 1
-        startUpCycles = 1
+            expected = L.dropEnd pipelineCycles (L.drop startUpCycles input)
+            actual = L.drop (startUpCycles + pipelineCycles) output
 
-        expected = L.dropEnd pipelineCycles (L.drop startUpCycles input)
-        actual = L.drop (startUpCycles + pipelineCycles) output
-
-      expected === actual
+          expected === actual
 
 -- | 'prop_alignDealign' with LSB-first transmission
 prop_alignDealignLsb :: Property
 prop_alignDealignLsb =
-  prop_alignDealign "prop_alignDealignLsb" WordAlign.alignLsbFirst WordAlign.dealignLsbFirst
+  prop_alignDealign
+    firedLsb
+    "prop_alignDealignLsb"
+    WordAlign.alignLsbFirst
+    WordAlign.dealignLsbFirst
+
+-- | One flag per tasty test; see 'prop_alignDealign'.
+firedLsb :: IORef Bool
+firedLsb = unsafePerformIO (newIORef False)
+{-# NOINLINE firedLsb #-}
 
 -- | 'prop_alignDealign' with MSB-first transmission
 prop_alignDealignMsb :: Property
 prop_alignDealignMsb =
-  prop_alignDealign "prop_alignDealignMsb" WordAlign.alignMsbFirst WordAlign.dealignMsbFirst
+  prop_alignDealign
+    firedMsb
+    "prop_alignDealignMsb"
+    WordAlign.alignMsbFirst
+    WordAlign.dealignMsbFirst
+
+-- | One flag per tasty test; see 'prop_alignDealign'.
+firedMsb :: IORef Bool
+firedMsb = unsafePerformIO (newIORef False)
+{-# NOINLINE firedMsb #-}
 
 -- Should fail:
 -- prop_alignDealignMsbLsb :: Property

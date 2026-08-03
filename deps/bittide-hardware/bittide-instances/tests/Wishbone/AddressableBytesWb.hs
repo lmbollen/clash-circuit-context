@@ -18,7 +18,7 @@ import Bittide.Instances.Tests.AddressableBytesWb (
  )
 import Protocols.MemoryMap (unMemmap)
 import Control.Exception (evaluate)
-import Tests.Waveform (withWaveformLive)
+import Clash.CircuitContext.Waveform (newWaveformSlot, withWaveformOnFailure)
 
 case_sim :: Assertion
 case_sim = do
@@ -26,12 +26,11 @@ case_sim = do
   peConfig <- peConfigSim
   -- SINGLE run: the assertion's own lazy simulation is recorded live; the
   -- waveform (trailing 100k-cycle window) covers what was actually simulated.
-  (ok, simResult) <-
-    withWaveformLive "addressable_bytes_wb_test" 100_000 (dutUartStreamC dumpVcd peConfig) $
-      \simResult -> do
-        ok <- evaluate ("RESULT: OK" `isInfixOf` simResult)
-        pure (ok, simResult)
-  assertBool ("Received the following from the CPU over UART:\n" <> simResult) ok
+  wf <- newWaveformSlot "addressable_bytes_wb_test"
+  withWaveformOnFailure wf 100_000 (dutUartStreamC dumpVcd peConfig) $
+    \simResult -> do
+      ok <- evaluate ("RESULT: OK" `isInfixOf` simResult)
+      assertBool ("Received the following from the CPU over UART:\n" <> simResult) ok
 
 tests :: TestTree
 tests = $(testGroupGenerator)

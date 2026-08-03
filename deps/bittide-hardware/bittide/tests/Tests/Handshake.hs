@@ -20,7 +20,8 @@ import Test.Tasty.HUnit (Assertion, assertEqual, testCase)
 import Test.Tasty.Hedgehog (testPropertyNamed)
 
 import Clash.CircuitContext (HasCircuitContext, Traceable)
-import Tests.Waveform (withWaveform)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested)
+import Clash.CircuitContext.Waveform.Hedgehog (withWaveformCase)
 
 import qualified Data.List as List
 import qualified Hedgehog.Gen as Gen
@@ -357,24 +358,26 @@ prop_noHandshake = property $ do
 
   -- Run the simulation under a circuit context and dump a hierarchical VCD of
   -- the (last) run to waveforms/prop_noHandshake.vcd.
-  (aToCoreStatus, bToCoreStatus, aFromCoreStatus, bFromCoreStatus) <-
-    withWaveform "prop_noHandshake" nCycles
-      $ let (outA, outB) = dut (sideA, sideB)
-         in ( sampleN nCycles outA.toCoreStatus
-            , sampleN nCycles outB.toCoreStatus
-            , sampleN nCycles outA.fromCoreStatus
-            , sampleN nCycles outB.fromCoreStatus
-            )
+  keepwf0 <- waveformsRequested
+  wf0 <- newWaveformSlot "prop_noHandshake"
+  withWaveformCase keepwf0 wf0 nCycles
+    ( let (outA, outB) = dut (sideA, sideB)
+       in ( sampleN nCycles outA.toCoreStatus
+          , sampleN nCycles outB.toCoreStatus
+          , sampleN nCycles outA.fromCoreStatus
+          , sampleN nCycles outB.fromCoreStatus
+          )
+    )
+    $ \(aToCoreStatus, bToCoreStatus, aFromCoreStatus, bFromCoreStatus) -> do
+      footnote ("aToCoreStatus: " <> show aToCoreStatus)
+      footnote ("bToCoreStatus: " <> show bToCoreStatus)
+      footnote ("aFromCoreStatus: " <> show aFromCoreStatus)
+      footnote ("bFromCoreStatus: " <> show bFromCoreStatus)
 
-  footnote ("aToCoreStatus: " <> show aToCoreStatus)
-  footnote ("bToCoreStatus: " <> show bToCoreStatus)
-  footnote ("aFromCoreStatus: " <> show aFromCoreStatus)
-  footnote ("bFromCoreStatus: " <> show bFromCoreStatus)
-
-  assert (List.all (== Negotiating) aToCoreStatus)
-  assert (List.all (== Negotiating) bToCoreStatus)
-  assert (List.all (== Negotiating) aFromCoreStatus)
-  assert (List.all (== Negotiating) bFromCoreStatus)
+      assert (List.all (== Negotiating) aToCoreStatus)
+      assert (List.all (== Negotiating) bToCoreStatus)
+      assert (List.all (== Negotiating) aFromCoreStatus)
+      assert (List.all (== Negotiating) bFromCoreStatus)
 
 {- | Status sequence must match @Negotiating+ Last PostHandshake+@ exactly: one or
 more 'Negotiating', then exactly one 'Last', then one or more 'PostHandshake'.
@@ -446,33 +449,35 @@ prop_handshake = property $ do
 
   -- Run the simulation under a circuit context and dump a hierarchical VCD of
   -- the (last) run to waveforms/prop_handshake.vcd.
-  (aToCoreStatus, aFromCoreStatus, bToCoreStatus, bFromCoreStatus, aToCore, bToCore) <-
-    withWaveform "prop_handshake" nCycles
-      $ let (outA, outB) = dut (sideA, sideB)
-         in ( sampleN nCycles outA.toCoreStatus
-            , sampleN nCycles outA.fromCoreStatus
-            , sampleN nCycles outB.toCoreStatus
-            , sampleN nCycles outB.fromCoreStatus
-            , sampleN nCycles outA.toCore
-            , sampleN nCycles outB.toCore
-            )
+  keepwf1 <- waveformsRequested
+  wf1 <- newWaveformSlot "prop_handshake"
+  withWaveformCase keepwf1 wf1 nCycles
+    ( let (outA, outB) = dut (sideA, sideB)
+       in ( sampleN nCycles outA.toCoreStatus
+          , sampleN nCycles outA.fromCoreStatus
+          , sampleN nCycles outB.toCoreStatus
+          , sampleN nCycles outB.fromCoreStatus
+          , sampleN nCycles outA.toCore
+          , sampleN nCycles outB.toCore
+          )
+    )
+    $ \(aToCoreStatus, aFromCoreStatus, bToCoreStatus, bFromCoreStatus, aToCore, bToCore) -> do
+      footnote ("aToCoreStatus: " <> show aToCoreStatus)
+      footnote ("aFromCoreStatus: " <> show aFromCoreStatus)
+      footnote ("bToCoreStatus: " <> show bToCoreStatus)
+      footnote ("bFromCoreStatus: " <> show bFromCoreStatus)
+      footnote ("aToCore: " <> show aToCore)
+      footnote ("bToCore: " <> show bToCore)
 
-  footnote ("aToCoreStatus: " <> show aToCoreStatus)
-  footnote ("aFromCoreStatus: " <> show aFromCoreStatus)
-  footnote ("bToCoreStatus: " <> show bToCoreStatus)
-  footnote ("bFromCoreStatus: " <> show bFromCoreStatus)
-  footnote ("aToCore: " <> show aToCore)
-  footnote ("bToCore: " <> show bToCore)
+      -- Eventual completion + monotonic status with exactly one Last cycle.
+      assert (isValidStatusSequence aToCoreStatus)
+      assert (isValidStatusSequence aFromCoreStatus)
+      assert (isValidStatusSequence bToCoreStatus)
+      assert (isValidStatusSequence bFromCoreStatus)
 
-  -- Eventual completion + monotonic status with exactly one Last cycle.
-  assert (isValidStatusSequence aToCoreStatus)
-  assert (isValidStatusSequence aFromCoreStatus)
-  assert (isValidStatusSequence bToCoreStatus)
-  assert (isValidStatusSequence bFromCoreStatus)
-
-  -- First PostHandshake word on toCore is ugnWord, rest are userDataWord.
-  checkPostHandshakeStream aToCoreStatus aToCore
-  checkPostHandshakeStream bToCoreStatus bToCore
+      -- First PostHandshake word on toCore is ugnWord, rest are userDataWord.
+      checkPostHandshakeStream aToCoreStatus aToCore
+      checkPostHandshakeStream bToCoreStatus bToCore
 
 testMetadataParsing :: Assertion
 testMetadataParsing = do

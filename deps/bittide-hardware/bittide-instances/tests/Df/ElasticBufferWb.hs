@@ -20,7 +20,7 @@ import Test.Tasty
 import Test.Tasty.HUnit
 import Test.Tasty.TH
 import Control.Exception (evaluate)
-import Tests.Waveform (withWaveformLive)
+import Clash.CircuitContext.Waveform (newWaveformSlot, withWaveformOnFailure)
 import VexRiscv (DumpVcd)
 
 -- | Simulate the UART output of the elastic buffer test
@@ -51,14 +51,13 @@ case_elastic_buffer_wb_test = do
   dumpVcd <- getDumpVcd
   peConfig <- peConfigSim
   -- SINGLE run: assertion simulation recorded live (trailing 100k window).
-  (ok, uartString) <-
-    withWaveformLive "elastic_buffer_wb_test" 100_000 (simStream dumpVcd peConfig) $
-      \uartString -> do
-        ok <- evaluate (firstTrue $ mapMaybe checkLine $ lines uartString)
-        pure (ok, uartString)
-  assertBool
-    ("Received the following from the CPU over UART:\n" <> uartString)
-    ok
+  wf <- newWaveformSlot "elastic_buffer_wb_test"
+  withWaveformOnFailure wf 100_000 (simStream dumpVcd peConfig) $
+    \uartString -> do
+      ok <- evaluate (firstTrue $ mapMaybe checkLine $ lines uartString)
+      assertBool
+        ("Received the following from the CPU over UART:\n" <> uartString)
+        ok
  where
   firstTrue (True : _) = True
   firstTrue _ = False

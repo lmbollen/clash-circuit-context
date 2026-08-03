@@ -22,7 +22,7 @@ import Test.Tasty.HUnit
 import Test.Tasty.TH
 import Clash.CircuitContext (HasCircuitContext, withoutCircuitContext)
 import Control.Exception (evaluate)
-import Tests.Waveform (withWaveformLive)
+import Clash.CircuitContext.Waveform (newWaveformSlot, withWaveformOnFailure)
 
 -- Qualified
 import qualified Data.List as L
@@ -54,12 +54,11 @@ case_time_rust_self_test = do
   -- 'L.length' forces the line's full spine, so every cycle that produces
   -- "Timeout took 50 microseconds" is simulated and recorded here rather than
   -- later, under 'assertEqual', when the recording context has already frozen.
-  result <-
-    withWaveformLive "watchdog_self_test" 100_000 (simStream peConfig) $ \s -> do
-      let firstLine = L.head (lines s)
-      _ <- evaluate (L.length firstLine)
-      pure firstLine
-  assertEqual "Measured timeout wrong " "Timeout took 50 microseconds" result
+  wf <- newWaveformSlot "watchdog_self_test"
+  withWaveformOnFailure wf 100_000 (simStream peConfig) $ \s -> do
+    let firstLine = L.head (lines s)
+    _ <- evaluate (L.length firstLine)
+    assertEqual "Measured timeout wrong " "Timeout took 50 microseconds" firstLine
 
 tests :: TestTree
 tests = $(testGroupGenerator)

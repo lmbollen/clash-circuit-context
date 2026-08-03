@@ -35,7 +35,8 @@ import Tests.Axi4.Properties
 import Tests.Axi4.Types
 import Tests.Shared
 import Clash.CircuitContext (withoutCircuitContext)
-import Tests.Waveform (withWaveformC)
+import Clash.CircuitContext.Waveform (newWaveformSlot, waveformsRequested, writeWaveformSlot)
+import Protocols.Waveform (withWaveformCWhen)
 
 import qualified Data.List as L
 import qualified Data.String.Interpolate as SI
@@ -98,7 +99,7 @@ tests =
 
 Unlike the direct @sampleN@ tests, a @clash-protocols@ circuit is sampled with
 'Protocols.Experimental.Simulate.sampleC' and there is no 'Clash.Signal.Signal'
-to hand to @traceSignalC@. 'Tests.Waveform.withWaveformC' bridges that: it
+to hand to @traceSignalC@. 'Protocols.Waveform.withWaveformC' bridges that: it
 coerces the fully driven circuit to its forward output signal with @toSignals@,
 traces a projection of it, and dumps one VCD.
 
@@ -107,14 +108,18 @@ one waveform, to a file named after the case.
 -}
 case_axi4StreamPacketFifoWaveform :: Assertion
 case_axi4StreamPacketFifoWaveform = do
+  keepwf <- waveformsRequested
+  wf <- newWaveformSlot "case_axi4StreamPacketFifoWaveform"
   samples <-
-    withWaveformC
-      "case_axi4StreamPacketFifoWaveform"
+    withWaveformCWhen
+      keepwf
+      wf
       (resetCycles conf)
       nSamples
       "axiOut"
       (fmap summarizeAxiTransfer)
       driven
+  writeWaveformSlot wf
   -- The packet FIFO passes packets through unchanged, so the four input
   -- transfers must reappear (as valid transfers) on the output.
   assertBool

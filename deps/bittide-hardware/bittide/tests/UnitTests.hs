@@ -6,12 +6,9 @@ module Main where
 
 import Prelude
 
-import Control.Exception (finally)
 
 import Test.Tasty
 import Test.Tasty.Hedgehog
-
-import Tests.Waveform (flushWaveforms)
 
 import qualified Tests.Axi4
 import qualified Tests.Axi4.Generators
@@ -83,12 +80,9 @@ setDefaultHedgehogShrinkLimit opt = opt
 
 main :: IO ()
 main =
-  -- 'flushWaveforms' writes each instrumented test's last-run VCD once, after
-  -- all tests finish. It runs via 'finally' so it still fires on the exit
-  -- exception 'defaultMain' throws to set the process exit code.
-  ( defaultMain $
-      adjustOption setDefaultHedgehogTestLimit $
-        adjustOption setDefaultHedgehogShrinkLimit $
-          tests
-  )
-    `finally` flushWaveforms
+  -- Each instrumented test owns its waveform slot and writes it when the test
+  -- ends; nothing to flush here.
+  defaultMain $
+    adjustOption setDefaultHedgehogTestLimit $
+      adjustOption setDefaultHedgehogShrinkLimit $
+        tests
