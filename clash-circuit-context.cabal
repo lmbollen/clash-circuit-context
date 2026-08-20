@@ -107,6 +107,28 @@ test-suite capture-smoke
     directory,
     hedgehog,
 
+-- Property tests of the recorder under generated stimuli, doubling as the
+-- worked example of the hedgehog infrastructure: showcase properties write
+-- waveforms the way a downstream suite would, and sequenced tasty tests then
+-- decode those files and check they show the run they claim to.
+test-suite waveform-props
+  import: common-options
+  type: exitcode-stdio-1.0
+  main-is: WaveformProps.hs
+  hs-source-dirs: tests
+  build-depends:
+    base,
+    clash-circuit-context,
+    clash-prelude,
+    containers,
+    directory,
+    filepath,
+    hedgehog,
+    tasty >=1.5,
+    tasty-hedgehog,
+    tasty-hunit,
+    text,
+
 test-suite fallback
   import: common-options
   type: exitcode-stdio-1.0
