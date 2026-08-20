@@ -233,5 +233,5 @@ main = do
   case vcd of
     Left err -> putStrLn ("VCD error: " <> err) >> exitFailure
     Right txt -> do
-      TIO.writeFile "auto-smoke.vcd" txt
-      putStrLn "auto-smoke passed"
+      TIO.writeFile "auto-instrumentation.vcd" txt
+      putStrLn "auto-instrumentation passed"

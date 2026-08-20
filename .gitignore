@@ -1,9 +1,9 @@
 dist-newstyle/
 .ghc.environment.*
 cabal.project.local*
-/manual-smoke.vcd
-/auto-smoke.vcd
-/notation-smoke.vcd
+/manual-instrumentation.vcd
+/auto-instrumentation.vcd
+/notation.vcd
 *.hi
 *.o
 .pre-commit-config.yaml

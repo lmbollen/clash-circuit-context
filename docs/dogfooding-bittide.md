@@ -380,7 +380,7 @@ local names besides the binder itself. Closed bindings are exactly the ones
 GHC generalizes — and they are constants by construction, so their trace is a
 flat line; skipping them costs almost nothing. Open bindings (everything that
 references a port, argument or sibling — all the signals worth watching) are
-monomorphic anyway and keep tracing. Regression-tested in ccc's AutoSmoke
+monomorphic anyway and keep tracing. Regression-tested in ccc's auto-instrumentation golden suite
 (`polyHelper`/`quiet`: compiles, `quiet` untraced, its two typed views traced).
 
 *Known trade-off:* a GHC-closed binding that is *actually* monomorphic (a
@@ -607,7 +607,7 @@ The audit's coverage gap 1 (`wbStorage` invisible; protocol wiring binds no
   name too, and an opt-in `-fplugin-opt=…:trace-ports` re-binds the
   lambda-bound INTERFACE ports through source-located `let` indirections —
   interface ports then trace exactly like `<-` ports. Test-driven by ccc's
-  `notation-smoke` golden suite against the REAL desugarer (flag on and
+  `notation` golden suite against the REAL desugarer (flag on and
   off), including a forward-reference feedback knot (the laziness proof:
   ccc's taps add no strictness — Tagged is a coercion, units aren't matched,
   tuples are demand-equivalent to the let-selector).

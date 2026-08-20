@@ -96,7 +96,7 @@ main = do
   case vcd of
     Left err -> putStrLn ("VCD error: " <> err)
     Right txt -> do
-      TIO.writeFile "manual-smoke.vcd" txt
+      TIO.writeFile "manual-instrumentation.vcd" txt
       putStrLn
         ( "VCD lines:    "
             <> show (P.length (Text.lines txt))
