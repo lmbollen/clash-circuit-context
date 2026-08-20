@@ -320,7 +320,12 @@ the waveform is).
 
 A worked version of all of this is in
 [`examples/Waveforms.hs`](examples/Waveforms.hs), which `check.sh` builds and
-runs.
+runs. For the hedgehog combinators inside a tasty suite, see
+[`tests/WaveformProps.hs`](tests/WaveformProps.hs): its showcase properties
+are written exactly as a downstream suite would write them, and — sequenced
+by tasty — later tests decode the waveforms those properties wrote and verify
+they show the run they claim to (the failing one down to its shrunk,
+single-cycle counterexample).
 
 ## Manual API
 

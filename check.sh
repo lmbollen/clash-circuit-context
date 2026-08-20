@@ -25,6 +25,9 @@ run timeout 600 cabal test notation-smoke -j1 "$@"
 run cabal test shockwaves-smoke -j1 "$@"
 # Capture contract: nothing is rendered or written unless the waveform is kept.
 run cabal test capture-smoke -j1 "$@"
+# Recorder properties + the hedgehog-infrastructure showcase (tasty-sequenced:
+# showcase properties write waveforms, later tests decode and verify them).
+run cabal test waveform-props -j1 "$@"
 # The README's example must actually work; it is the documentation.
 run cabal run -v0 example-waveforms "$@"
 
