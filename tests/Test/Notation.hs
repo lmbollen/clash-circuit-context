@@ -60,9 +60,9 @@ import Clash.Explicit.Prelude
 import Circuit
 import Clash.CircuitContext
 
--- The 'Traceable (BusTag b t)' orphan lives in "NotationSmokeTP" (the
+-- The 'Traceable (BusTag b t)' orphan lives in "Test.NotationTracePorts" (the
 -- trace-ports half of this suite); importing it brings the instance here.
-import NotationSmokeTP (tpTop)
+import Test.NotationTracePorts (tpTop)
 
 -- | Payload without 'BitPack': ports carrying it must fall back to identity.
 data NoPack = MkNoPack
@@ -190,7 +190,7 @@ main = do
   check "underscore port opted out" (P.not (has "_dbg"))
   check "unit (Bwd) halves record nothing" (P.not (has "_Bwd@"))
   -- Interface ports are lambda-bound by the notation — invisible WITHOUT the
-  -- trace-ports flag (this module) and visible WITH it (NotationSmokeTP).
+  -- trace-ports flag (this module) and visible WITH it (Test.NotationTracePorts).
   check
     "interface ports not traced without trace-ports"
     (P.not (P.any ("knotTop" `isInfixOf`) (P.filter ("i_Fwd" `isInfixOf`) tks)))
@@ -213,5 +213,5 @@ main = do
   case vcd of
     Left err -> putStrLn ("FAIL: no VCD: " <> err) >> exitFailure
     Right txt -> do
-      TIO.writeFile "notation-smoke.vcd" txt
-      putStrLn "notation-smoke passed"
+      TIO.writeFile "notation.vcd" txt
+      putStrLn "notation passed"

@@ -121,8 +121,8 @@ main = do
   case rendered of
     Left err -> putStrLn ("FAIL: dump failed: " <> err) >> exitFailure
     Right (vcd, meta) -> do
-      TextIO.writeFile "shockwaves-smoke.vcd" vcd
-      Json.encodeFile "shockwaves-smoke.json" meta
+      TextIO.writeFile "adt-sidecar.vcd" vcd
+      Json.encodeFile "adt-sidecar.json" meta
       let
         v = Text.unpack vcd
         j = ByteStringLazyChar8.unpack (Json.encode meta)
@@ -169,4 +169,4 @@ main = do
       check
         "a value first occurring at the drained last cycle has its LUT entry"
         ("Opcode 3" `isInfixOf` lutsJson)
-  putStrLn "shockwaves-smoke passed"
+  putStrLn "adt-sidecar passed"

@@ -1,9 +1,9 @@
 dist-newstyle/
 .ghc.environment.*
 cabal.project.local*
-/manual-smoke.vcd
-/auto-smoke.vcd
-/notation-smoke.vcd
+/manual-instrumentation.vcd
+/auto-instrumentation.vcd
+/notation.vcd
 *.hi
 *.o
 .pre-commit-config.yaml
@@ -21,5 +21,5 @@ waveforms/
 
 # Local-only nix/devenv shim that leaks into the checkout.
 /deps/bittide-hardware/devenv.sh
-/shockwaves-smoke.vcd
-/shockwaves-smoke.json
+/adt-sidecar.vcd
+/adt-sidecar.json

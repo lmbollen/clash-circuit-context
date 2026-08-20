@@ -20,7 +20,7 @@ are present — same design, one flag.
 Also hosts the 'Traceable' instance for circuit-notation's own tag newtype
 (an orphan here; clash-protocols' @Tagged@ has its instance in the library).
 -}
-module NotationSmokeTP (tpTop) where
+module Test.NotationTracePorts (tpTop) where
 
 import Clash.Explicit.Prelude
 

@@ -258,5 +258,13 @@ Initial version.
   the runs; it sits packed in the continuation, which the dump drains. Every
   lazily-captured waveform was therefore one cycle short, which is invisible
   on a 600k-cycle trace and fatal on a 3-cycle counterexample.
-* `examples/Waveforms.hs` is a runnable worked example of all of the above,
-  built and run by `check.sh` so it cannot drift from the API.
+* The test suite is structured in two levels, both run by `check.sh`.
+  `tests/Example/` is the runnable worked example of all of the above —
+  `Example.SingleRun` captures one run's waveform in the unit-test shapes,
+  `Example.Hedgehog` instruments hedgehog properties the way a downstream
+  suite would — so the documentation cannot drift from the API.
+  `tests/Test/` pins features: recorder behaviour under generated stimuli
+  (`Test.Recorder`), the capture-cost contract (`Test.Capture`), the plugin
+  and oracle golden suites, and `Test.ExampleOutput`, which tasty sequences
+  after the Example level to decode the waveforms it wrote and verify they
+  show the runs they claim to.

@@ -89,43 +89,26 @@ library
     -fexpose-all-unfoldings
     -fno-worker-wrapper
 
--- Manual autoTrace calls (no renamer rewrite) against the real runtime;
--- validates the oracle's trace/fallback decisions per type.
--- A worked example of the API, kept honest by being built and run: it is what
--- the README's "Waveforms from your test suite" section points at.
-executable example-waveforms
-  import: common-options
-  main-is: Waveforms.hs
-  hs-source-dirs: examples
-  build-depends:
-    base,
-    clash-circuit-context,
-    clash-prelude,
-    directory,
-    hedgehog,
-
-test-suite capture-smoke
+-- The waveform suite's two levels, in one tasty process because they depend
+-- on each other in one direction. Example.* is USAGE, kept honest by being
+-- run: capturing a single run's waveform, and instrumenting hedgehog
+-- properties the way a downstream suite writes them. Test.* pins FEATURES:
+-- recorder behaviour under generated stimuli, the capture-cost contract, and
+-- — sequenced by tasty after the Example level — whether the waveform files
+-- the examples wrote actually show the runs they claim to.
+test-suite waveform-tests
   import: common-options
   type: exitcode-stdio-1.0
-  main-is: CaptureSmoke.hs
+  main-is: Main.hs
   hs-source-dirs: tests
-  build-depends:
-    base,
-    clash-circuit-context,
-    clash-prelude,
-    directory,
-    filepath,
-    hedgehog,
+  other-modules:
+    Example.Hedgehog
+    Example.SingleRun
+    Test.Capture
+    Test.ExampleOutput
+    Test.Recorder
+    Test.Vcd
 
--- Property tests of the recorder under generated stimuli, doubling as the
--- worked example of the hedgehog infrastructure: showcase properties write
--- waveforms the way a downstream suite would, and sequenced tasty tests then
--- decode those files and check they show the run they claim to.
-test-suite waveform-props
-  import: common-options
-  type: exitcode-stdio-1.0
-  main-is: WaveformProps.hs
-  hs-source-dirs: tests
   build-depends:
     base,
     clash-circuit-context,
@@ -139,10 +122,12 @@ test-suite waveform-props
     tasty-hunit,
     text,
 
-test-suite fallback
+-- Manual autoTrace calls (no renamer rewrite) against the real runtime;
+-- validates the oracle's trace/fallback decisions per type.
+test-suite oracle-fallback
   import: common-options
   type: exitcode-stdio-1.0
-  main-is: Fallback.hs
+  main-is: Test/OracleFallback.hs
   hs-source-dirs: tests
   build-depends:
     base,
@@ -158,10 +143,10 @@ test-suite fallback
   ghc-options: -fplugin=Clash.CircuitContext.Plugin
 
 -- The manually instrumented smoke design (golden-test basis).
-test-suite manual-smoke
+test-suite manual-instrumentation
   import: common-options
   type: exitcode-stdio-1.0
-  main-is: ManualSmoke.hs
+  main-is: Test/ManualInstrumentation.hs
   hs-source-dirs: tests
   build-depends:
     base,
@@ -172,10 +157,10 @@ test-suite manual-smoke
 
 -- Golden test: the smoke design written naturally, instrumented entirely by
 -- the plugin (component wrap, where->let, auto trace/probe).
-test-suite auto-smoke
+test-suite auto-instrumentation
   import: common-options
   type: exitcode-stdio-1.0
-  main-is: AutoSmoke.hs
+  main-is: Test/AutoInstrumentation.hs
   hs-source-dirs: tests
   build-depends:
     base,
@@ -195,11 +180,11 @@ test-suite auto-smoke
 --
 -- Only on dogfood/deps: it needs the trace-ports patch in the vendored
 -- deps/circuit-notation, so it cannot build from a plain clone of main.
-test-suite notation-smoke
+test-suite notation
   import: common-options
   type: exitcode-stdio-1.0
-  main-is: NotationSmoke.hs
-  other-modules: NotationSmokeTP
+  main-is: Test/Notation.hs
+  other-modules: Test.NotationTracePorts
   hs-source-dirs: tests
   build-depends:
     base,
@@ -211,10 +196,10 @@ test-suite notation-smoke
 
 -- Both halves of the combined output from one simulation: this package's
 -- hierarchy and the clash-shockwaves ADT sidecar, with no manual tracing calls.
-test-suite shockwaves-smoke
+test-suite adt-sidecar
   import: common-options
   type: exitcode-stdio-1.0
-  main-is: ShockwavesSmoke.hs
+  main-is: Test/AdtSidecar.hs
   hs-source-dirs: tests
   build-depends:
     aeson,

@@ -11,27 +11,24 @@ log=$(mktemp)
 run() { echo "== $* =="; "$@" || fail=1; }
 # Same, but keeping a copy of the output for the greps below. NOT `run … | tee`:
 # a pipeline runs its left side in a SUBSHELL, so `fail=1` would be set in a
-# child and lost — which silently reported ALL CHECKS PASSED while auto-smoke
+# child and lost — which silently reported ALL CHECKS PASSED while auto-instrumentation
 # was failing. PIPESTATUS[0] is the command's own status, not tee's.
 runlog() { echo "== $* =="; "$@" 2>&1 | tee -a "$log"; [ "${PIPESTATUS[0]}" -eq 0 ] || fail=1; }
 
 runlog cabal build all -j1 "$@"
-run cabal test manual-smoke -j1 "$@"
-run cabal test fallback -j1 "$@"
-runlog cabal test auto-smoke -j1 "$@"
+run cabal test manual-instrumentation -j1 "$@"
+run cabal test oracle-fallback -j1 "$@"
+runlog cabal test auto-instrumentation -j1 "$@"
 # timeout: a strict port trace would deadlock on circuit-notation's lazy let
 # knot (silent hang under the threaded RTS) — fail loudly instead.
-run timeout 600 cabal test notation-smoke -j1 "$@"
-run cabal test shockwaves-smoke -j1 "$@"
-# Capture contract: nothing is rendered or written unless the waveform is kept.
-run cabal test capture-smoke -j1 "$@"
-# Recorder properties + the hedgehog-infrastructure showcase (tasty-sequenced:
-# showcase properties write waveforms, later tests decode and verify them).
-run cabal test waveform-props -j1 "$@"
-# The README's example must actually work; it is the documentation.
-run cabal run -v0 example-waveforms "$@"
+run timeout 600 cabal test notation -j1 "$@"
+run cabal test adt-sidecar -j1 "$@"
+# The Example level (usage, kept honest by running) and the Test level
+# (recorder properties, the capture contract, and the tasty-sequenced tests
+# that decode the waveforms the Example level wrote).
+run cabal test waveform-tests -j1 "$@"
 
-for g in manual-smoke auto-smoke notation-smoke; do
+for g in manual-instrumentation auto-instrumentation notation; do
   if diff <(grep -v '^\$date' "$g.vcd") "goldens/$g.vcd" >/dev/null; then
     echo "ok: $g.vcd matches golden"
   else
@@ -43,20 +40,20 @@ done
 #  - a never-sampled cycle renders 'z' (NOT evaluated), never a false '0';
 #  - an evaluated-but-undefined value renders 'x', with any DEFINED bits kept
 #    (a partial value like 'b0x…' proves we don't zero-out undefined bits).
-if grep -qE '^bz+ ' auto-smoke.vcd; then
+if grep -qE '^bz+ ' auto-instrumentation.vcd; then
   echo "ok: not-evaluated cycles render 'z' (distinct from undefined 'x')"
 else
-  echo "FAIL: expected a 'z' (not-evaluated) value in auto-smoke.vcd"; fail=1
+  echo "FAIL: expected a 'z' (not-evaluated) value in auto-instrumentation.vcd"; fail=1
 fi
-if grep -qE '^b[01]+x' auto-smoke.vcd; then
+if grep -qE '^b[01]+x' auto-instrumentation.vcd; then
   echo "ok: partial undefined keeps defined bits (no false zero)"
 else
-  echo "FAIL: expected a partial 'b…x' value (defined+undefined) in auto-smoke.vcd"; fail=1
+  echo "FAIL: expected a partial 'b…x' value (defined+undefined) in auto-instrumentation.vcd"; fail=1
 fi
 
-# The guarded-body warning must have fired during auto-smoke compilation
+# The guarded-body warning must have fired during auto-instrumentation compilation
 # (only checkable on a fresh build; skip silently when cached).
-if grep -q "Compiling Main.*AutoSmoke" "$log" 2>/dev/null; then
+if grep -q "Compiling Main.*AutoInstrumentation" "$log" 2>/dev/null; then
   if grep -q "skipping component wrap for an equation of 'fallthrough'" "$log"; then
     echo "ok: guarded-body warning fired"
   else
