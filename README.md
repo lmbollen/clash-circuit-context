@@ -301,14 +301,16 @@ once however often shrinking re-runs the generators; `recordCaseOfSize` picks
 a smaller, readable one instead (hedgehog's `Size` is also the knob on how big
 the waveform is).
 
-A worked version of all of this is in
-[`examples/Waveforms.hs`](examples/Waveforms.hs), which `check.sh` builds and
-runs. For the hedgehog combinators inside a tasty suite, see
-[`tests/WaveformProps.hs`](tests/WaveformProps.hs): its showcase properties
-are written exactly as a downstream suite would write them, and — sequenced
-by tasty — later tests decode the waveforms those properties wrote and verify
-they show the run they claim to (the failing one down to its shrunk,
-single-cycle counterexample).
+A worked version of all of this is the Example level of the test suite,
+which `check.sh` builds and runs:
+[`tests/Example/SingleRun.hs`](tests/Example/SingleRun.hs) captures one run's
+waveform in the unit-test shapes, and
+[`tests/Example/Hedgehog.hs`](tests/Example/Hedgehog.hs) instruments hedgehog
+properties exactly as a downstream suite would. Neither is documentation on
+trust: sequenced by tasty,
+[`tests/Test/ExampleOutput.hs`](tests/Test/ExampleOutput.hs) decodes the
+waveforms the examples wrote and verifies they show the run they claim to
+(the failing one down to its shrunk, single-cycle counterexample).
 
 ## Manual API
 
@@ -395,16 +397,17 @@ actually collects a waveform.
 ./check.sh -w ghc-9.10.3         # or any other GHC ≥ 9.6
 ```
 
-`check.sh` builds everything and runs four suites — `manual-smoke`
-(hand-instrumented reference), `fallback` (oracle decisions per type),
-`auto-smoke` (the same design written naturally, instrumented entirely by
-the plugin) and `capture-smoke` (the capture contract: nothing is rendered
-or written unless the waveform is kept) — then runs
-[`examples/Waveforms.hs`](examples/Waveforms.hs), diffs both generated VCDs
-against the goldens in `goldens/` and asserts the fall-through warning fires. VCD output is fully
+`check.sh` builds everything and runs four suites — `manual-instrumentation`
+(hand-instrumented reference), `oracle-fallback` (oracle decisions per type),
+`auto-instrumentation` (the same design written naturally, instrumented
+entirely by the plugin) and `waveform-tests` (the test suite in two levels:
+[`tests/Example/`](tests/Example/) is usage, kept honest by running, and
+[`tests/Test/`](tests/Test/) pins features — recorder properties, the capture
+contract, and the tasty-sequenced tests that decode the waveforms the Example
+level wrote) — then diffs the generated VCDs against the goldens in
+`goldens/` and asserts the fall-through warning fires. VCD output is fully
 deterministic by design, so the goldens are byte-identical across GHC 9.6
 and 9.10.
-
 ## Proof of concept: tracing a real design
 
 `main` is the plugin alone, and builds from a plain clone. Two branches carry
