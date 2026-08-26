@@ -6,7 +6,6 @@ module Main where
 
 import Prelude
 
-
 import Test.Tasty
 import Test.Tasty.Hedgehog
 
@@ -80,8 +79,6 @@ setDefaultHedgehogShrinkLimit opt = opt
 
 main :: IO ()
 main =
-  -- Each instrumented test owns its waveform slot and writes it when the test
-  -- ends; nothing to flush here.
   defaultMain $
     adjustOption setDefaultHedgehogTestLimit $
       adjustOption setDefaultHedgehogShrinkLimit $

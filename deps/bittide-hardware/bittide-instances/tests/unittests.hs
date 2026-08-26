@@ -12,7 +12,6 @@ import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.Process (cwd, proc, readCreateProcessWithExitCode, readProcess)
 import Test.Tasty
 import Test.Tasty.HUnit (assertFailure, testCase)
-
 import "extra" Data.List.Extra (trim)
 
 import qualified Df.ElasticBufferWb as ElasticBufferWb
@@ -58,14 +57,20 @@ run cmd0 args cwd = do
 
 prepareTests :: IO TestTree
 prepareTests = do
-  -- ccc waveform run: the "Build Rust crates" AllSucceed gate is dropped here.
-  -- firmware-support fails to build in this fresh clone (build.rs git/_build
-  -- memory_maps issues), but the firmware ELFs these tests read already exist.
-  -- Restore before committing:
-  --   dependentTestGroup "bittide-instances" AllSucceed [buildRustGroup, unittests]
-  _gitRoot <- getGitRoot
+  gitRoot <- getGitRoot
   return $
-    testGroup
+    dependentTestGroup
+      "bittide-instances"
+      AllSucceed
+      [ -- These 2 cargo build commands are not actually dependent on eachother, but they
+        -- cannot happen in parallel as it could cause a race condition in Cargo.
+        dependentTestGroup
+          "Build Rust crates"
+          AllSucceed
+          [ testCase "release" (run "./cargo.sh" ["build", "--release"] (Just gitRoot))
+          , testCase "debug" (run "./cargo.sh" ["build"] (Just gitRoot))
+          ]
+      , testGroup
           "Unittests"
           [ AddressableBytesWb.tests
           , Axi.tests
@@ -83,10 +88,9 @@ prepareTests = do
           , Watchdog.tests
           , WbToDf.tests
           ]
+      ]
 
 main :: IO ()
 main = do
   tests <- prepareTests
-  -- Each instrumented test owns its waveform slot and writes it when the test
-  -- ends; nothing to flush here.
   defaultMain tests

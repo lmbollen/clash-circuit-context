@@ -18,7 +18,7 @@ honest measure of what dependency instrumentation buys.
 
 | Checkout | Upstream pin | Instrumentation |
 | --- | --- | --- |
-| `bittide-hardware/` | `e80210f8` (`origin/main`) | Unchanged from `dogfood/bittide` except `cabal.project` (see below) |
+| `bittide-hardware/` | `9cb28757` (`origin/main`) | Unchanged from `dogfood/bittide` except `cabal.project` (see below) |
 | `clash-protocols/` | `e03dbd89` | `.cabal` only: `ImplicitParams`, the plugin, a `clash-circuit-context` dep |
 | `clash-protocols-memmap/` | `20bacc70` | `.cabal` + `HasCircuitContext` on `deviceWb`/register combinators + a contents tap |
 | `clash-cores/` | `5d084eff` | `.cabal` + `HasCircuitContext` on `etherboneC` |

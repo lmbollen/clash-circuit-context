@@ -359,7 +359,6 @@ test-suite unittests
     bittide-cpus,
     bittide-extra,
     bittide-instances,
-    bytestring,
     clash-bitpackc,
     clash-circuit-context,
     clash-cores,
