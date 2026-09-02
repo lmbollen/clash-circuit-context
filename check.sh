@@ -103,27 +103,26 @@ case "$ghcver" in
 {-# LANGUAGE ImplicitParams #-}
 {-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
 
--- | One binding the oracle declines, so exactly one plugin warning fires.
+-- | Two bindings the oracle declines, so plugin warnings fire and nothing
+-- else does. Deliberately free of clash-prelude imports: this is compiled
+-- through `cabal exec ghc`, whose ambient package environment is not ours to
+-- control, and a module that names only this package cannot trip over a
+-- duplicate registration of someone else's.
 module StrictProbe where
 
-import qualified Prelude as P
+import Clash.CircuitContext (HasCircuitContext)
 
-import Clash.Explicit.Prelude
-
-import Clash.CircuitContext
-
-notTraced :: (HasCircuitContext) => Int -> Signal System Int -> Signal System Int
-notTraced k inp = out
+notTraced :: (HasCircuitContext) => Int -> Int
+notTraced k = out
  where
-  out = inp + pure (P.length msg)
-  msg = P.replicate k 'x'
-{-# OPAQUE notTraced #-}
+  out = length msg
+  msg = replicate k 'x'
 HS
     # The script's own arguments are cabal's (-w <ghc>); probe's are GHC's.
     cabalargs=("$@")
     probe() {
       cabal exec ${cabalargs[@]+"${cabalargs[@]}"} -- ghc -v0 -fno-code \
-        -fforce-recomp -package clash-circuit-context -package clash-prelude \
+        -fforce-recomp -package clash-circuit-context \
         "$@" "$scratch/StrictProbe.hs" 2>&1
     }
     # Captured, not piped: under `set -o pipefail` a pipeline inherits the

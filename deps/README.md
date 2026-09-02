@@ -342,10 +342,17 @@ present.
 Requiring `Waveform` of every traced payload means tracing and typed waveforms
 always arrive together. But the requirement is decided by the same oracle as
 every other tracing constraint, so a payload *without* an instance does not fail
-to compile — **it silently stops tracing**. That is the correct behaviour for an
-instrumentation library (it must never break a build), and it is a trap for
-exactly this reason: the failure mode is a wire that is simply absent, and no
-diagnostic anywhere says so.
+to compile — **it just stops tracing**. That is the correct behaviour for an
+instrumentation library (it must never break a build), and at the time it was a
+trap for exactly this reason: the failure mode was a wire that is simply
+absent, and no diagnostic anywhere said so.
+
+That last part is no longer true, and this section is why. The oracle now
+reports every decline as a GHC warning — `-Wx-circuit-context-untraced` when it
+proved there is no instance, `-Wx-circuit-context-undecided` when it could not
+decide — so the sweep below would today be a build log rather than a coverage
+diff, and `-Werror=x-circuit-context-untraced` turns "a payload forgot
+`Waveform`" into a failing build.
 
 It caught us. Deriving `Waveform` on the types that obviously needed it left
 **366 wires (10 %) silently missing** across the 29 waveforms — `Ack` handshakes
@@ -376,9 +383,11 @@ After the sweep the diff is exact: **4,823 declarations with everything
 traceable, minus 979 notation artifacts, equals the 3,844 the branch emits.**
 Every real wire is accounted for.
 
-The residual lesson is a maintenance one. A new `BitPack` payload that forgets
-`Waveform` will silently lose its wires the same way, and only a coverage diff
-will notice. Deriving both together is the habit that prevents it.
+The residual lesson is a maintenance one, and it is the finding that motivated
+the warning categories: a new `BitPack` payload that forgets `Waveform` used to
+lose its wires the same way, with only a coverage diff to notice. Deriving both
+together is still the habit that prevents it; the warning is what tells you when
+the habit slipped.
 
 ### What you get
 

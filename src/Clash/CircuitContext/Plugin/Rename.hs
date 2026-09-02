@@ -10,7 +10,7 @@ Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
 
 The renamer-stage rewrite ('GHC.renamedResultAction'):
 
-* Top-level binders whose written signature carries 'HasCircuitContext' (resolved
+* Top-level binders whose written signature carries @HasCircuitContext@ (resolved
   synonym Name, raw @?circuitContext@, or a CONSTRAINT SYNONYM that expands to
   either — see 'ctxMentions') are instrumented in TRACE mode; 'HasProbe'
   (@?probe@) selects PROBE mode. Local signatures win over the inherited
@@ -36,7 +36,7 @@ The renamer-stage rewrite ('GHC.renamedResultAction'):
 * A top-level binder that is additionally OPAQUE (and in trace mode) is a
   COMPONENT: its body becomes @component "f" (let <where-binds> in body)@.
   The where→let move is what scopes the bindings under the pushed
-  hierarchy segment — 'HasCircuitContext'-polymorphic where-bindings would
+  hierarchy segment — @HasCircuitContext@-polymorphic where-bindings would
   otherwise discharge @?circuitContext@ from the enclosing given. Guarded equations
   are case-encoded inside the wrap when self-exhaustive (final alternative
   unguarded or @otherwise@) or when they are the last equation; only
@@ -55,7 +55,7 @@ The renamer-stage rewrite ('GHC.renamedResultAction'):
   skipped via their non-real spans; per module, don't enable the plugin.
 
 * The silent near-misses are reported as GHC warnings, in the categories
-  "Clash.CircuitContext.Plugin.Diagnostics" defines: 'HasCircuitContext'
+  "Clash.CircuitContext.Plugin.Diagnostics" defines: @HasCircuitContext@
   without @OPAQUE@ (traces, but into the caller's scope), @OPAQUE@ without a
   signature (never instrumented, because the mode is read from the
   signature), a signature carrying both constraints (probe wins, and a probed

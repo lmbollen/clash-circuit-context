@@ -12,8 +12,8 @@
 -- DELIBERATE: the suite's cabal stanza ALREADY enables the plugin, so this
 -- pragma enables it a second time and the renamer pass runs twice over this
 -- module. It used to nest every component wrap in itself (@switch.switch@);
--- 'noDoubledScopes' below is the regression test for the idempotence that
--- replaced it. Do not "clean this up".
+-- the "scope doubled" check in main is the regression test for the
+-- idempotence that replaced it. Do not "clean this up".
 {-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
 
 {- | What the plugin used to LOSE silently, and what it now SAYS.
@@ -30,11 +30,14 @@ Two halves, both exercised by this one module:
   makes its function a component; and running the renamer twice (this module
   enables the plugin twice, see the pragma above) changes nothing.
 
-* what the plugin now SAYS — compiled with
-  @-fplugin-opt=Clash.CircuitContext.Plugin:diagnostics@, so every near-miss
-  below reaches stderr at compile time. @check.sh@ greps the build log for
-  them, because a diagnostic that stops firing is exactly as silent as the
-  bug it reports.
+* what the plugin now SAYS — every near-miss below is a GHC warning at
+  compile time, and this module holds one live example of each category:
+  @x-circuit-context-uninstrumented@ (@noOpaque@, @unsigned@, @bothModes@),
+  @x-circuit-context-untraced@ (@label@, @untraceable@) and
+  @x-circuit-context-undecided@ (@held@, whose 'Awkward' payload has a
+  'Waveform' instance the oracle cannot recurse into). @check.sh@ greps the
+  build log for all three, because a diagnostic that stops firing is exactly
+  as silent as the bug it reports.
 -}
 module Main where
 

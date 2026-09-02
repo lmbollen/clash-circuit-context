@@ -63,6 +63,13 @@ Initial version.
   `CanProbe`/`Probeable`), so a payload `Waveform` cannot describe still
   probes, as before: `probe` is unchanged, `probeSW` is the describing
   variant, and the plugin picks per type.
+* Documentation: the README's limitation "constraint synonyms bundling
+  `HasCircuitContext` are not recognized" is gone, because they are; what
+  replaces it is the pair that genuinely remain — a constraint-kinded type
+  family (nothing at renamer stage can reduce one), and instance-method and
+  class-default bodies (the pass rewrites value bindings only, and now says
+  so). GHC rejects an implicit parameter in a superclass context, so a
+  synonym was the only way to alias the constraint.
 * Fixed: the ADT sidecar keyed its descriptors off the traces alone, while
   the VCD names come from the union of traces and probes. Sibling numbering
   is a function of the whole key set, so wherever a probe shared a name with

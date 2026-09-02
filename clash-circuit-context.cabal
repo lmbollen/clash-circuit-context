@@ -8,6 +8,12 @@ description:
   GHC plugin that instruments designs automatically: OPAQUE toplevel
   functions with a HasCircuitContext constraint become components, and named
   local declarations are traced/probed under their binder names.
+  .
+  Instrumentation never fails a build: a binding the plugin cannot trace
+  falls back to identity. It reports every such fallback as a GHC warning in
+  its own category, so a project silences what it has read
+  (-Wno-x-circuit-context-untraced) and promotes what it depends on
+  (-Werror=x-circuit-context-undecided).
 
 homepage: https://github.com/lmbollen/clash-circuit-context
 bug-reports: https://github.com/lmbollen/clash-circuit-context/issues

@@ -276,7 +276,7 @@ Two categories, because the reader needs to know which of these happened:
   bearing.
 
 Both fall back to identity either way; @traceSignalC@ is the escape hatch
-that takes 'Traceable' as a real constraint, so a payload it cannot describe
+that takes @Traceable@ as a real constraint, so a payload it cannot describe
 is a compile error rather than a hole.
 
 'Defer' is not reported at all: it is a round the solver will come back
@@ -286,7 +286,7 @@ reportDeclined ::
   forall m.
   (API.MonadTcPlugin m) =>
   API.CtLoc ->
-  -- | 'Traceable', 'Probeable' or 'Describable' — what was asked for
+  -- | @Traceable@, @Probeable@ or @Describable@ — what was asked for
   API.Class ->
   -- | the payload type
   API.Type ->
@@ -318,7 +318,7 @@ reportDeclined loc cls t = \case
   -- 'ctLocSpan' is the REAL span; the diagnostic machinery takes the sum.
   spn = GHC.RealSrcSpan (GHC.ctLocSpan loc) Strict.Nothing
 
-  -- A declined 'Describable' is the mildest of the three: the binding still
+  -- A declined @Describable@ is the mildest of the three: the binding still
   -- records, it just renders as bits. Say which it is.
   headline = case GHC.getOccString (GHC.getName cls) of
     "Probeable" -> "not probed: "
@@ -418,7 +418,7 @@ solvablePred getEnvs totalClasses givenPreds = go
           -- flag is a stuck family application and both 'AutoTrace'
           -- instances then look like candidates — not the unique match
           -- 'byInstance' requires. That matters because composite
-          -- 'Traceable' instances carry their fields' requirements in this
+          -- @Traceable@ instances carry their fields' requirements in this
           -- form, precisely so an untraceable field degrades on its own:
           -- a conservative NO here would make every tuple and record
           -- untraceable.

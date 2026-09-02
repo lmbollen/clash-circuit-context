@@ -34,7 +34,11 @@ Everything hangs off one implicit parameter @?circuitContext@:
   wrapper derives one from a companion counter register and binds a
   per-application @?probe@ context; writes are keyed by (name, cycle) and
   hence idempotent — safe under lazy re-ordering and speculative sparks, and
-  an expression that is never forced simply records nothing.
+  an expression that is never forced simply records nothing. 'probeSW' is
+  'probe' plus the payload type's @clash-shockwaves@ descriptor, kept
+  separate because a probe's whole job is to see state that a trace cannot,
+  and that state is routinely a type 'Clash.Shockwaves.Waveform' will not
+  accept.
 
 Tracing is optional by construction: with 'noCircuitContext' (both refs 'Nothing')
 every combinator collapses to identity.

@@ -15,14 +15,27 @@ tracing calls:
 * the HIERARCHY and values come from this package — @top@ and @stage@ are
   components because they are @OPAQUE@ and carry 'HasCircuitContext', and their
   local bindings are auto-traced by the plugin's renamer;
-* the ADT DESCRIPTION comes from @clash-shockwaves@ — every traced payload has a
-  'Waveform' instance, so registration captures its constructors, fields and bit
-  ranges, and 'adtSidecar' emits them in the schema a typed-waveform viewer
-  reads.
+* the ADT DESCRIPTION comes from @clash-shockwaves@ — a payload with a
+  'Waveform' instance has its constructors, fields and bit ranges captured at
+  registration, and 'adtSidecar' emits them in the schema a typed-waveform
+  viewer reads.
 
 The design below is deliberately ADT-shaped rather than a counter: a sum type
 (@Phase@) so constructor names have to survive, and a record over that sum
 (@Packet@) so a nested structure does.
+
+It also pins the two things a descriptor must NOT depend on:
+
+* PROBES are described. @fsm@'s state is visible only from inside a mealy
+  step, so it reaches the waveform as a probe and not a trace — which is
+  precisely the signal whose constructors a reader wants named. Beside it,
+  @ticks@ has 'BitPack' and no 'Waveform' and must still record, as bits:
+  probing and describing are separate questions, and collapsing them would
+  drop the size-polymorphic state a probe exists to see.
+
+* The sidecar is keyed on the paths the VCD actually declares, which are
+  numbered from the trace AND probe key set together. Keying it on the traces
+  alone put descriptors on names the VCD never wrote.
 -}
 module Main where
 

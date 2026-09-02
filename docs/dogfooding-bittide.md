@@ -55,7 +55,7 @@ capture_ugn 7→**40**, registerwb 2→**35**, ring_buffer 7→**46**; scopes 1�
 2. **OPAQUE-for-framing is a silent footgun.** Forget it on one component and its
    internals silently flatten into the parent — exactly the reported red flag.
    The plugin should *warn* when a `HasCircuitContext` component lacks OPAQUE
-   (F6). Also: OPAQUE is a real Clash directive (blocks inlining/specialization;
+   (F6 — since shipped, as `-Wx-circuit-context-uninstrumented`). Also: OPAQUE is a real Clash directive (blocks inlining/specialization;
    each becomes its own HDL module). Simulation + `cabal build` are green, but
    that does **not** exercise Clash HDL generation — the synthesis impact of
    OPAQUE-ing hot polymorphic cores like `processingElement` is unverified here
