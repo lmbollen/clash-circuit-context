@@ -18,14 +18,15 @@ Two cooperating actions:
 * a typechecker plugin ("Clash.CircuitContext.Plugin.Oracle") that reduces the
   'Clash.CircuitContext.Auto.CanTrace' family, deciding traceability per type.
 
-Both halves take the same options; see "Clash.CircuitContext.Plugin.Options".
+Neither half takes options. What the plugin does not instrument it reports
+as a real GHC warning, in a category you tune with @-Wno-@ \/ @-Werror=@;
+see "Clash.CircuitContext.Plugin.Diagnostics".
 -}
 module Clash.CircuitContext.Plugin (plugin) where
 
 import qualified GHC.Plugins as GHC
 import qualified GHC.TcPlugin.API as API
 
-import Clash.CircuitContext.Plugin.Options (parseOptions)
 import Clash.CircuitContext.Plugin.Oracle (oracle)
 import Clash.CircuitContext.Plugin.Rename (renamePass)
 
@@ -33,8 +34,6 @@ plugin :: GHC.Plugin
 plugin =
   GHC.defaultPlugin
     { GHC.renamedResultAction = renamePass
-    , GHC.tcPlugin = \opts -> Just (API.mkTcPlugin (oracle (fst (parseOptions opts))))
-    , -- Options change what the plugin REPORTS, never what it emits, so a
-      -- pure recompile check stays correct.
-      GHC.pluginRecompile = GHC.purePlugin
+    , GHC.tcPlugin = \_opts -> Just (API.mkTcPlugin oracle)
+    , GHC.pluginRecompile = GHC.purePlugin
     }

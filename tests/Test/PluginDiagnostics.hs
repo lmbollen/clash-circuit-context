@@ -1,8 +1,15 @@
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveAnyClass #-}
 {-# LANGUAGE DeriveGeneric #-}
+{-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# LANGUAGE TypeOperators #-}
+{-# LANGUAGE UndecidableInstances #-}
 -- DELIBERATE: the suite's cabal stanza ALREADY enables the plugin, so this
 -- pragma enables it a second time and the renamer pass runs twice over this
 -- module. It used to nest every component wrap in itself (@switch.switch@);
@@ -55,6 +62,24 @@ and says which requirement did it.
 newtype Undescribed = Undescribed Int
   deriving (Generic, NFDataX)
 
+{- | A payload whose 'BitPack' instance context is NOT ordinary class
+constraints: @1 <= n@ is GHC's @Assert@ type family, which the oracle cannot
+recurse into. It does not answer "no instance" — it gives up, which is a
+different thing to be told, and the reason
+@x-circuit-context-undecided@ is its own category.
+-}
+newtype Awkward n = Awkward (Unsigned n)
+  deriving (Generic, Show)
+  deriving newtype (NFDataX)
+
+instance (KnownNat n, 1 <= n) => BitPack (Awkward n) where
+  type BitSize (Awkward n) = n
+  pack (Awkward u) = pack u
+  unpack = Awkward . unpack
+
+unAwkward :: (KnownNat n) => Awkward n -> Int
+unAwkward (Awkward u) = fromIntegral u
+
 -- | Component via a LOCAL constraint synonym.
 viaLocalSyn :: (LocalCtx dom) => Signal dom Int -> Signal dom Int
 viaLocalSyn inp = out
@@ -81,6 +106,18 @@ idempotent by construction (a second pass would alias the alias), so the
 second pass recognises its own work instead. Both names must appear exactly
 once.
 -}
+
+{- | A size-polymorphic component whose local binding the oracle cannot
+decide: @BitPack (Awkward n)@ needs @1 <= n@, and only @KnownNat n@ is
+given here.
+-}
+sized ::
+  (LocalCtx dom, KnownNat n) => Signal dom (Awkward n) -> Signal dom (Awkward n)
+sized inp = held
+ where
+  held = inp
+{-# OPAQUE sized #-}
+
 viaTuplePat :: (LocalCtx dom) => Signal dom Int -> Signal dom Int
 viaTuplePat inp = a + b
  where
@@ -115,7 +152,11 @@ unsigned = (+ 7)
 
 top :: (HasCircuitContext) => Signal System Int -> Signal System Int
 top inp =
-  viaLocalSyn inp + viaImportedSyn 3 inp + viaTuplePat inp + noOpaque (unsigned inp)
+  viaLocalSyn inp
+    + viaImportedSyn 3 inp
+    + viaTuplePat inp
+    + noOpaque (unsigned inp)
+    + (unAwkward <$> sized (Awkward . fromIntegral <$> inp :: Signal System (Awkward 8)))
 {-# OPAQUE top #-}
 
 main :: IO ()
