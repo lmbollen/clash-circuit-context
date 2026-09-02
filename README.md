@@ -507,8 +507,10 @@ actually collects a waveform.
 entirely by the plugin), `notation` (the real circuit-notation desugarer,
 against the vendored `deps/circuit-notation`), `adt-sidecar` (the
 clash-shockwaves half of the output), `plugin-diagnostics` (constraint
-synonyms, idempotence under a deliberate double enable, and one live example
-of every warning category) and `waveform-tests` (the test suite in two levels:
+synonyms, idempotence under a deliberate double enable, one live example of
+every warning category, and [`tests/Test/Downstream.hs`](tests/Test/Downstream.hs)
+— the shapes a real consumer lost wires on, lifted from the reproducers they
+sent and inverted to assert the fix) and `waveform-tests` (the test suite in two levels:
 [`tests/Example/`](tests/Example/) is usage, kept honest by running, and
 [`tests/Test/`](tests/Test/) pins features — recorder properties, the capture
 contract, and the tasty-sequenced tests that decode the waveforms the Example

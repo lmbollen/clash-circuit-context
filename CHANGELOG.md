@@ -48,6 +48,12 @@ Initial version.
   discharge, and they run in the real compile while this walk does not.
   Blame is reported as the designer WROTE it (`1 <= n`), not as the normal
   form the oracle reduced it to.
+* Regression tests lifted from a downstream consumer's reproducers
+  (`tests/Test/Downstream.hs`), inverted to assert the fixes rather than the
+  defects. Their F1 case reproduced here exactly against the audited pin;
+  their F2 case does not reproduce on this branch at all, because the
+  `clash-shockwaves` vendored here already relaxes `Waveform (Index n)` — so
+  the shape and the mechanism are now tested separately.
 * `{-# ANN f NoCircuitScope #-}` declares that a binder carries
   `HasCircuitContext` and deliberately has no `OPAQUE` — a harness boundary
   that wants the design tree rooted at the waveform top. It silences

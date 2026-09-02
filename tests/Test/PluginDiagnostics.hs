@@ -7,8 +7,6 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE StandaloneDeriving #-}
-{-# LANGUAGE TupleSections #-}
-{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 -- DELIBERATE: the suite's cabal stanza ALREADY enables the plugin, so this
@@ -54,6 +52,7 @@ import Clash.Explicit.Prelude
 import Clash.CircuitContext
 import Clash.Shockwaves.Internal.Waveform (Waveform)
 import Test.DesignCtx (DesignCtx)
+import qualified Test.Downstream as Downstream
 
 {- | A constraint synonym declared in the module being compiled: its
 right-hand side is read from the group, since it is not in the type
@@ -65,7 +64,8 @@ type LocalCtx dom = (KnownDomain dom, HasCircuitContext)
 instance: the binding below it is dropped, and says which requirement did it.
 -}
 newtype Undescribed = Undescribed Int
-  deriving (Generic, NFDataX)
+  deriving stock (Generic)
+  deriving anyclass (NFDataX)
 
 {- | A payload whose 'Waveform' instance context is NOT ordinary class
 constraints: @1 <= n@ is GHC's @Assert@ type family, which the oracle cannot
@@ -81,31 +81,6 @@ deriving anyclass instance (KnownNat n, 1 <= n) => Waveform (Awkward n)
 
 unAwkward :: (KnownNat n) => Awkward n -> Int
 unAwkward (Awkward u) = fromIntegral u
-
-{- | A payload whose @BitSize@ is a TYPE FAMILY application rather than
-something the oracle can read off. Clash's tuple 'BitPack' instances carry
-@KnownNat (BitSize a)@ in their context, so a tuple containing this asks the
-oracle a question it can only answer by reducing the family.
-
-Helios F1: it used to answer "no instance" — reporting a guess as a proof,
-and losing the wire. The oracle reduces families now, so this traces.
--}
-type family Width a :: Nat
-
-type instance Width Bool = 4
-
-newtype Tagged = Tagged (Unsigned 4)
-  deriving (Generic, Show)
-  deriving newtype (NFDataX)
-  deriving anyclass (Waveform)
-
-instance BitPack Tagged where
-  type BitSize Tagged = Width Bool
-  pack (Tagged u) = pack u
-  unpack = Tagged . unpack
-
-thd :: (a, b, c) -> c
-thd (_, _, c) = c
 
 -- | Component via a LOCAL constraint synonym.
 viaLocalSyn :: (LocalCtx dom) => Signal dom Int -> Signal dom Int
@@ -127,20 +102,6 @@ viaImportedSyn k inp = out
   untraceable = Undescribed <$> inp
 {-# OPAQUE viaImportedSyn #-}
 
-{- | Helios F1 regression: the payload's traceability turns on
-@KnownNat (BitSize Tagged)@, a type-family application. Reported as a proved
-absence before the oracle could reduce families; @tupled@ must be in the
-recorded paths.
--}
-carriesFamily ::
-  (LocalCtx dom) =>
-  Signal dom (Tagged, Bool, Unsigned 8) ->
-  Signal dom (Tagged, Bool, Unsigned 8)
-carriesFamily inp = tupled
- where
-  tupled = inp
-{-# OPAQUE carriesFamily #-}
-
 {- | The GROUND half of Helios F2. @1 <= 8@ is the same @Assert@ family as
 @1 <= n@, and it reduces: "monomorphic is safe" became a usable heuristic
 once the oracle normalised before giving up. Contrast 'sized', where @n@ is a
@@ -151,17 +112,6 @@ grounded inp = eight
  where
   eight = inp
 {-# OPAQUE grounded #-}
-
-{- | Helios F4: a harness boundary that carries the constraint and
-deliberately has no @OPAQUE@, vouched for by the annotation. It must draw no
-warning, while 'noOpaque' — the same shape, unvouched — still does. That pair
-is the point: suppressing the category for the module would have hidden both.
--}
-{-# ANN vouchedFlat NoCircuitScope #-}
-vouchedFlat :: (HasCircuitContext) => Signal System Int -> Signal System Int
-vouchedFlat inp = rooted
- where
-  rooted = inp + 11
 
 {- | A tuple PATTERN binding under a synonym context. Each binder is renamed
 fresh and given a sibling @a = autoTrace "a" a'@ — an operation that is NOT
@@ -220,9 +170,7 @@ top inp =
     + viaTuplePat inp
     + noOpaque (unsigned inp)
     + (unAwkward <$> sized (Awkward . fromIntegral <$> inp :: Signal System (Awkward 8)))
-    + vouchedFlat inp
     + (unAwkward <$> grounded (Awkward . fromIntegral <$> inp))
-    + (fromIntegral . thd <$> carriesFamily ((Tagged 1,True,) . fromIntegral <$> inp))
 {-# OPAQUE top #-}
 
 main :: IO ()
@@ -231,9 +179,29 @@ main = do
     let xs = sampleN 8 (top (fromList [1, 1 ..]))
     _ <- evaluate (deepseqX xs xs)
     pure xs
-  let paths = P.map (P.map segmentName . splitOn '.') (Map.keys traces)
+  -- A SECOND recording, for the cases lifted from the downstream audit. Kept
+  -- separate from @top@ so a path assertion names the case it belongs to.
+  (_, downstream, _) <- withCircuitContext $ do
+    let ys =
+          sampleN
+            8
+            ( bundle
+                ( Downstream.f1Out
+                , Downstream.f2Out
+                , Downstream.runHarness
+                , Downstream.runHarnessUnvouched
+                )
+            )
+    _ <- evaluate (deepseqX ys ys)
+    pure ys
+  let
+    paths = P.map (P.map segmentName . splitOn '.') (Map.keys traces)
+    downstreamPaths =
+      P.map (P.map segmentName . splitOn '.') (Map.keys downstream)
   putStrLn "recorded paths:"
   mapM_ (putStrLn . ("  " <>) . show) paths
+  putStrLn "downstream regression paths:"
+  mapM_ (putStrLn . ("  " <>) . show) downstreamPaths
   let
     failures =
       P.concat
@@ -253,6 +221,36 @@ main = do
         , [ "an OPAQUE-less binding did not flatten into its caller: "
               <> show ["top" :: String, "out2"]
           | ["top", "out2"] `P.notElem` paths
+          ]
+        , [ "a ground Assert payload was not traced: expected " <> show p
+          | p <- [["top", "grounded", "eight"]]
+          , p `P.notElem` paths
+          ]
+        , -- The oracle gave up on 'held' (see 'Awkward'), so it records
+          -- nothing -- which is the point: the wire is gone, and the only
+          -- thing standing between that and a silent bug is the
+          -- x-circuit-context-undecided warning check.sh greps for.
+          [ "the undecided binding recorded after all: " <> show p
+          | p <- paths
+          , P.last p == "held"
+          ]
+        , -- The downstream cases, each a wire that used to go missing. The
+          -- control (@f1.direct@) is asserted beside the regression
+          -- (@f1.tup@): if both vanish the payload became untraceable, if
+          -- only @tup@ does the oracle regressed, and those want different
+          -- fixes.
+          [ "downstream regression: " <> show p <> " was not recorded"
+          | p <- [["f1", "direct"], ["f1", "tup"], ["f2", "ix"]]
+          , p `P.notElem` downstreamPaths
+          ]
+        , -- F4: both harnesses still TRACE, at the root, since the annotation
+          -- is about scoping and not about recording. It is the WARNING that
+          -- differs, which check.sh reads from the build log.
+          [ "the unscoped harnesses did not both trace at the root: "
+              <> show n
+          | let n =
+                  P.length [q | q <- downstreamPaths, q == ["harnessOut"]]
+          , n /= 2
           ]
         ]
   if P.null failures

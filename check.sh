@@ -89,10 +89,15 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
   # ...and the marker must silence exactly the binder it vouches for, while
   # the same shape without it still reports (Helios F4). Absence is the
   # assertion, so it is checked against the same fresh log.
-  if grep -qF "'vouchedFlat'" "$log"; then
+  if grep -qF "'runHarness'" "$log"; then
     echo "FAIL: {-# ANN … NoCircuitScope #-} did not silence its binder"; fail=1
-  else
+  elif grep -qF "'runHarnessUnvouched'" "$log"; then
     echo "ok: NoCircuitScope silences only the binder it vouches for"
+  else
+    # Both quiet means the marker silenced the category, or the module never
+    # built -- either way the pair proves nothing.
+    echo "FAIL: the unvouched harness did not warn, so the marker is untested"
+    fail=1
   fi
 fi
 
@@ -137,8 +142,18 @@ HS
     # FAILING compile's status, so `probe -Werror=… | grep error` reports
     # not-fatal exactly when the flag worked. Same trap as the runlog note.
     default_out=$(probe)
-    quiet_out=$(probe -Wno-x-circuit-context-untraced)
-    probe -Werror=x-circuit-context-untraced >/dev/null && strict_rc=0 || strict_rc=1
+    quiet_out=$(probe -Wno-x-circuit-context-untraced); quiet_rc=$?
+    strict_out=$(probe -Werror=x-circuit-context-untraced); strict_rc=$?
+
+    # A module that fails to type-check emits no x-circuit-context warning
+    # EITHER, so the -Wno- case below -- whose assertion is an ABSENCE -- would
+    # pass on a broken module. Check that it built before believing it went
+    # quiet. (The lesson is the downstream audit's; it cost them two retracted
+    # conclusions while writing their reproducers.)
+    if [ "$quiet_rc" -ne 0 ]; then
+      echo "FAIL: the -Wno- probe did not compile, so its silence proves nothing"
+      fail=1
+    fi
 
     case "$default_out" in
       *-Wx-circuit-context-untraced*)
@@ -152,11 +167,16 @@ HS
       *)
         echo "ok: -Wno- silences a category" ;;
     esac
-    if [ "$strict_rc" -ne 0 ]; then
-      echo "ok: -Werror= makes a declined binding fatal (strict mode)"
-    else
-      echo "FAIL: -Werror=x-circuit-context-untraced was not fatal"; fail=1
-    fi
+    # Nonzero alone is not enough: ANY compile error is nonzero. The failure
+    # has to be OUR category being promoted, so the output must say so.
+    case "$strict_rc:$strict_out" in
+      0:*)
+        echo "FAIL: -Werror=x-circuit-context-untraced was not fatal"; fail=1 ;;
+      *-Werror=x-circuit-context-untraced*)
+        echo "ok: -Werror= makes a declined binding fatal (strict mode)" ;;
+      *)
+        echo "FAIL: the -Werror probe failed for some other reason"; fail=1 ;;
+    esac
     rm -rf "$scratch"
     ;;
 esac

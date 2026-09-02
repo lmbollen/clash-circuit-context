@@ -745,6 +745,35 @@ keep, and it found two real upstream defects.
 The remaining `undecided` reports were `1 <= n` on genuinely polymorphic `n`,
 which stays honest: no normalisation decides a skolem.
 
+**Their reproducers are now regression tests** — `tests/Test/Downstream.hs`,
+inverted from "reproduce the bug" to "assert the fix", and run by
+`plugin-diagnostics`. Three things worth recording from lifting them:
+
+* **F1 reproduced here exactly**, and F4 still warns without the new marker.
+  Both were verified against `src/` checked out at the audited pin, so the
+  before/after is measured rather than argued.
+* **F2 did NOT reproduce on this branch, at either pin.** Their `Index 16`
+  case depends on `Waveform (Index n)` requiring `1 <= n`, which is true of
+  Hackage `clash-shockwaves` (their pin) and false of the copy vendored here,
+  which already relaxes it to `KnownNat n`. So the lifted F2 guards their
+  SHAPE while `grounded` in `Test.PluginDiagnostics` guards the MECHANISM on a
+  payload carrying the `Assert` regardless of which shockwaves is in scope.
+  Neither alone would have caught it.
+* **Their F1 control was not controlling anything.** `direct = pure Plain{…}`
+  is a CLOSED binding, which the plugin skips to preserve GHC's
+  generalisation of polymorphic locals — so it was never wrapped, the oracle
+  was never asked, and the absence of a warning meant nothing. The lifted
+  version depends on the input, so it records and the control discriminates.
+
+And their methodological warning, which was worth more than any single case:
+**a module with a type error emits no `x-circuit-context` warning either**, so
+any assertion of the form "no warning appeared" passes on a module that never
+compiled. It cost them two retracted conclusions. `check.sh` had exactly that
+hole in two places — the `-Wno-` probe (an absence assertion) and the
+`-Werror=` probe (which asserted only a nonzero exit, and any type error is
+nonzero) — both now check that the compile succeeded, resp. that it failed
+naming the promoted category.
+
 Worth recording from the same audit: a blanket `-Werror` promotes custom
 warning categories, so the pin bump turned every warning into an error and
 broke their CI. That is GHC's behaviour rather than ours, and it is now called

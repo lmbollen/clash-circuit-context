@@ -187,7 +187,10 @@ test-suite plugin-diagnostics
   import: common-options
   type: exitcode-stdio-1.0
   main-is: Test/PluginDiagnostics.hs
-  other-modules: Test.DesignCtx
+  other-modules:
+    Test.DesignCtx
+    Test.Downstream
+
   hs-source-dirs: tests
   build-depends:
     base,
