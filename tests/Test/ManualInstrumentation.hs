@@ -89,7 +89,7 @@ main = do
     ( "probe map:    "
         <> show
           [ (nm, w, [(c, v) | (cs, ce, v) <- P.reverse runs, c <- [cs .. ce]])
-          | (nm, (_per, w, runs)) <- Map.toList probes
+          | (nm, ProbeEntry{peWidth = w, peRuns = runs}) <- Map.toList probes
           ]
     )
   vcd <- dumpVCDC (0, 8) traces probes

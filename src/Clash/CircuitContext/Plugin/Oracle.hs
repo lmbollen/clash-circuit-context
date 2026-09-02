@@ -92,6 +92,9 @@ data OracleEnv = OracleEnv
   , autoProbeClass :: API.Class
   , traceableClass :: API.Class
   , probeableClass :: API.Class
+  , canDescribeTyCon :: API.TyCon
+  , autoDescribeClass :: API.Class
+  , describableClass :: API.Class
   , reported :: Maybe (IORef (Set.Set String))
   {- ^ Under @diagnostics@, the messages already on stderr. The same query
   arrives many times (once per constraint-solving round, per occurrence), and
@@ -146,6 +149,9 @@ initEnv opts = do
         <*> cl "AutoProbe"
         <*> cl "Traceable"
         <*> cl "Probeable"
+        <*> tc "CanDescribe"
+        <*> cl "AutoDescribe"
+        <*> cl "Describable"
         <*> if optDiagnostics opts
           then Just <$> liftIO (newIORef Set.empty)
           else pure Nothing
@@ -169,6 +175,10 @@ rewriters env =
   GHC.listToUFM
     [ (canTraceTyCon env, rewriteGround env (canTraceTyCon env) (traceableClass env))
     , (canProbeTyCon env, rewriteGround env (canProbeTyCon env) (probeableClass env))
+    ,
+      ( canDescribeTyCon env
+      , rewriteGround env (canDescribeTyCon env) (describableClass env)
+      )
     ]
 
 rewriteGround ::
@@ -250,6 +260,9 @@ solveStuck env givens wanteds = do
     | cls == autoProbeClass env
     , famTc == canProbeTyCon env =
         Just (probeableClass env)
+    | cls == autoDescribeClass env
+    , famTc == canDescribeTyCon env =
+        Just (describableClass env)
     | otherwise = Nothing
 
 --------------------------------------------------------------------------------
@@ -285,11 +298,10 @@ reportDeclined ::
 reportDeclined env loc cls t decision = case (reported env, decision) of
   (Just seen, No blame) -> do
     let
-      what = GHC.getOccString (GHC.getName cls)
       msg =
         render (GHC.ctLocSpan loc)
-          <> ": not "
-          <> (if what == "Probeable" then "probed" else "traced")
+          <> ": "
+          <> outcome (GHC.getOccString (GHC.getName cls))
           <> ": "
           <> render t
           <> "\n    blocked on: "
@@ -302,6 +314,12 @@ reportDeclined env loc cls t decision = case (reported env, decision) of
       liftIO (hPutStrLn stderr ("clash-circuit-context plugin: " <> msg))
   _ -> pure ()
  where
+  -- A declined 'Describable' is the mildest of the three: the binding still
+  -- records, it just renders as bits. Say which it is.
+  outcome "Probeable" = "not probed"
+  outcome "Describable" = "probed as raw bits (no ADT description)"
+  outcome _ = "not traced"
+
   -- Uniques suppressed: a skolem printed as @dom_ajlh[sk:1]@ is noise in a
   -- message whose reader is looking at the source line it names.
   render :: (API.Outputable a) => a -> String
@@ -323,7 +341,8 @@ reportDeclined env loc cls t decision = case (reported env, decision) of
 'solvablePred').
 -}
 totalClassesOf :: OracleEnv -> [API.Class]
-totalClassesOf env = [autoTraceClass env, autoProbeClass env]
+totalClassesOf env =
+  [autoTraceClass env, autoProbeClass env, autoDescribeClass env]
 
 fuel0 :: Int
 fuel0 = 20
@@ -345,8 +364,9 @@ data Decision
   = Yes
   | -- | with the requirement to blame
     No API.PredType
-  | -- | metavariables present, or a skolem-involving negative in a
-    -- givens-free round (see the module header)
+  | {- | metavariables present, or a skolem-involving negative in a
+    givens-free round (see the module header)
+    -}
     Undecided
 
 isYes :: Decision -> Bool
@@ -366,8 +386,9 @@ first oracle query.
 solvablePred ::
   (Monad m) =>
   m GHC.InstEnvs ->
-  -- | The flag-dispatch classes (@AutoTrace@\/@AutoProbe@), which are TOTAL:
-  -- see the note at the guard that uses this.
+  {- | The flag-dispatch classes (@AutoTrace@\/@AutoProbe@), which are TOTAL:
+  see the note at the guard that uses this.
+  -}
   [API.Class] ->
   [API.PredType] ->
   Int ->

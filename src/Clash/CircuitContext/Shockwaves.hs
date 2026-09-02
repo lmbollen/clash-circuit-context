@@ -23,10 +23,17 @@ The two libraries know different things, and neither subsumes the other:
 
 Combining them needs no coordination at dump time, because the descriptor is
 captured where the payload type is still known — at registration, into
-'teAdt' — and travels with the trace. 'adtSidecar' then keys descriptors by the
-same 'disambiguate'd paths 'dumpVCDC' writes into the VCD, so a descriptor lands
-on exactly the name the VCD declares, sibling suffixes (@name_0@, @name_1@)
-included. No name guessing, and nothing to keep in sync.
+'teAdt' \/ 'peAdt' — and travels with the recording. 'adtSidecar' then keys
+descriptors by the same 'disambiguate'd paths 'dumpVCDC' writes into the VCD,
+so a descriptor lands on exactly the name the VCD declares, sibling suffixes
+(@name_0@, @name_1@) included. No name guessing, and nothing to keep in sync.
+
+Traces AND probes, over the same key set the dump uses. Both halves of that
+matter: a probe is how an FSM state is seen at all (it is state, never a
+wire), so probes are precisely the signals whose constructors a reader most
+wants named; and sibling numbering is a function of the WHOLE key set, so
+disambiguating the traces alone puts a descriptor on @phase@ where the VCD
+declares @phase_0@ — the same trap 'dumpVCDC' documents at its @cleanOf@.
 
 > (_, traces, probes) <- withCircuitContext $ do
 >     let xs = sampleN 64 (top …)
@@ -50,6 +57,7 @@ import Data.Aeson ((.=))
 import qualified Data.Aeson as Json
 
 import Clash.CircuitContext.Core (
+  ProbeEntry (..),
   ProbeMap,
   TraceData,
   TraceEntry (..),
@@ -71,7 +79,7 @@ dumpVCDSW ::
   IO (Either String (Text, Json.Value))
 dumpVCDSW slice@(offset, nSamples) traces probes = do
   vcd <- dumpVCDC slice traces probes
-  pure (fmap (\t -> (t, adtSidecar (offset + nSamples) traces)) vcd)
+  pure (fmap (\t -> (t, adtSidecar (offset + nSamples) traces probes)) vcd)
 
 {- | The sidecar alone, in @clash-shockwaves@' schema:
 @{ signals, types, luts }@ — the same three keys its own @dumpVCD@ emits, so
@@ -83,7 +91,10 @@ values that actually occurred.
 
 Signals whose payload type has no 'Clash.Shockwaves.Waveform' instance simply
 have no descriptor and are absent from @signals@ — they still appear in the VCD
-as plain bits.
+as plain bits. For a trace that means no instance at all; for a probe it also
+covers the deliberate case, a payload 'Clash.Shockwaves.Waveform' cannot
+describe but 'Clash.CircuitContext.Core.probe' records anyway (see
+'Clash.CircuitContext.Core.probeSW').
 -}
 adtSidecar ::
   {- | One past the last cycle the paired VCD emits (for a
@@ -93,20 +104,30 @@ adtSidecar ::
   -}
   Int ->
   TraceData ->
+  ProbeMap ->
   Json.Value
-adtSidecar end traces =
+adtSidecar end traces probes =
   Json.object ["signals" .= signals, "types" .= types, "luts" .= luts]
  where
-  -- The same transform 'dumpVCDC' applies, so these ARE the VCD's names.
-  recorded = disambiguate traces
+  -- The same key set and the same transform 'dumpVCDC' applies (left-biased
+  -- union, traces first), so these ARE the VCD's names.
+  recorded =
+    disambiguate (Map.union (Map.map ofTrace traces) (Map.map ofProbe probes))
 
-  described = [(path, adt, entry) | (path, entry) <- Map.toList recorded, Just adt <- [teAdt entry]]
+  ofTrace entry = (teAdt entry, teWidth entry, dumpedValues entry)
+  ofProbe entry =
+    (peAdt entry, peWidth entry, [value | (_, _, value) <- peRuns entry])
+
+  described =
+    [ (path, adt, width, values)
+    | (path, (Just adt, width, values)) <- Map.toList recorded
+    ]
 
   signals :: SignalMap
-  signals = Map.fromList [(path, tyName) | (path, (tyName, _), _) <- described]
+  signals = Map.fromList [(path, tyName) | (path, (tyName, _), _, _) <- described]
 
   types :: TypeMap
-  types = foldl' (\acc (_, (_, tr), _) -> addTypesT tr acc) Map.empty described
+  types = foldl' (\acc (_, (_, tr), _, _) -> addTypesT tr acc) Map.empty described
 
   {- LUT entries are value-driven: a translator using the lookup-table approach
   needs one per bit pattern the VCD shows. That is the committed runs PLUS the
@@ -114,20 +135,21 @@ adtSidecar end traces =
   every signal, which is never in 'teRuns' (see 'teForced'). A pattern that
   first occurs there (for a counterexample, typically the failure cycle) needs
   its entry like any other, or the viewer decodes every cycle except the one
-  the capture exists to show. Translators that are not LUT-shaped contribute
-  nothing ('addValueT' returns no updates for them). -}
+  the capture exists to show. A probe has no such tail: it commits the cycle it
+  fires on. Translators that are not LUT-shaped contribute nothing
+  ('addValueT' returns no updates for them). -}
   luts :: LUTMap
   luts =
     foldl'
       (\acc f -> f acc)
       Map.empty
       [ update
-      | (_, (_, tr), entry) <- described
-      , value <- dumpedValues entry
-      , update <- addValueT tr (toBitList (teWidth entry) value)
+      | (_, (_, tr), width, values) <- described
+      , value <- values
+      , update <- addValueT tr (toBitList width value)
       ]
 
-  -- The values the paired VCD emits for one signal: committed runs, then the
+  -- The values the paired VCD emits for one trace: committed runs, then the
   -- drained tail of @[0, end)@. Draining forces exactly the packed cells
   -- 'dumpVCDC' forces for the same window.
   dumpedValues entry =

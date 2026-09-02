@@ -41,6 +41,18 @@ Initial version.
   wrap in itself (`switch.switch`); it is now a no-op, and a hand-written
   `component "f"` on a binder the plugin would wrap is left alone rather
   than doubled.
+* Probes carry the ADT description of their payload type too, so an FSM
+  state — which is state, never a wire, and therefore visible only as a
+  probe — renders as constructors rather than as raw bits. Decided
+  separately from probeability (`CanDescribe`/`Describable` beside
+  `CanProbe`/`Probeable`), so a payload `Waveform` cannot describe still
+  probes, as before: `probe` is unchanged, `probeSW` is the describing
+  variant, and the plugin picks per type.
+* Fixed: the ADT sidecar keyed its descriptors off the traces alone, while
+  the VCD names come from the union of traces and probes. Sibling numbering
+  is a function of the whole key set, so wherever a probe shared a name with
+  a trace the sidecar described a path the VCD did not declare (and left the
+  one it did undescribed).
 * `Traceable` derives generically for records of traceable parts (signal
   bundles): derive `Generic` and write an empty instance. Fields trace as
   `name.field` sub-scopes in the VCD hierarchy; nested records nest. The

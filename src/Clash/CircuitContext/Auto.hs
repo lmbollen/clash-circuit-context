@@ -46,6 +46,11 @@ module Clash.CircuitContext.Auto (
   Probeable (..),
   AutoProbe (..),
   autoProbe,
+
+  -- * Describing a probe
+  CanDescribe,
+  Describable (..),
+  AutoDescribe (..),
 ) where
 
 import Clash.Prelude (
@@ -74,7 +79,13 @@ import GHC.Generics (
  )
 import GHC.Stack (HasCallStack, withFrozenCallStack)
 
-import Clash.CircuitContext.Core (HasCircuitContext, HasProbe, probe, traceSignalC)
+import Clash.CircuitContext.Core (
+  HasCircuitContext,
+  HasProbe,
+  probe,
+  probeSW,
+  traceSignalC,
+ )
 import Clash.Shockwaves.Internal.Waveform (Waveform)
 
 --------------------------------------------------------------------------------
@@ -385,8 +396,18 @@ the oracle decides @CanProbe t@ by checking ITS context's solvability.
 class Probeable t where
   probeNamed :: (HasProbe) => String -> t -> t
 
-instance (BitPack t, NFDataX t) => Probeable t where
-  probeNamed = probe
+{- | The @AutoDescribe@ member is what upgrades a probe to a DESCRIBED probe
+where the payload allows it, and it constrains nothing: it is satisfiable for
+every @t@ (the ''False' instance matches anything), exactly like the
+per-field @AutoTrace@ in the composite 'Traceable' instances. So @CanProbe t@
+still means what it always meant — 'BitPack' and 'NFDataX' — and a probe of a
+type 'Waveform' cannot describe still records, as raw bits.
+-}
+instance
+  (BitPack t, NFDataX t, AutoDescribe (CanDescribe t) t) =>
+  Probeable t
+  where
+  probeNamed = probeDescribedAt @(CanDescribe t) @t
 
 class AutoProbe (flag :: Bool) t where
   autoProbeAt :: (HasProbe) => String -> t -> t
@@ -408,3 +429,40 @@ autoProbe ::
   t
 autoProbe = autoProbeAt @(CanProbe t) @t
 {-# INLINE autoProbe #-}
+
+--------------------------------------------------------------------------------
+-- Describing a probe
+--------------------------------------------------------------------------------
+
+{- | Bool-kinded oracle: reduced exclusively by the plugin, to ''True' iff
+@Describable t@ is solvable in the context of the occurrence.
+-}
+type family CanDescribe (t :: Type) :: Bool
+
+{- | A probed payload @clash-shockwaves@ can describe.
+
+Probing and describing are decided SEPARATELY because their requirements
+genuinely differ: probing wants 'BitPack' and 'NFDataX', describing wants
+'Waveform', and the state inside a mealy step is routinely a size-polymorphic
+record that satisfies the first and not the second (@Waveform (Index n)@
+wants @1 <= n@ where @BitPack@ wants only @KnownNat n@). Deciding them
+together would mean either dropping those probes or leaving every probe
+undescribed; deciding them apart means each probe gets as much as its type
+allows.
+-}
+class Describable t where
+  probeDescribed :: (HasProbe, BitPack t, NFDataX t) => String -> t -> t
+
+instance (Waveform t) => Describable t where
+  probeDescribed = probeSW
+
+-- | Flag-indexed dispatch; the flag comes from 'CanDescribe'.
+class AutoDescribe (flag :: Bool) t where
+  probeDescribedAt :: (HasProbe, BitPack t, NFDataX t) => String -> t -> t
+
+instance (Describable t) => AutoDescribe 'True t where
+  probeDescribedAt = probeDescribed
+
+-- | Recorded, but as bits: 'probe' is the version with no descriptor.
+instance AutoDescribe 'False t where
+  probeDescribedAt = probe

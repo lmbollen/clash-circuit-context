@@ -397,8 +397,16 @@ translator carries every field name — `addr`, `writeData`, `busSelect`,
 `burstTypeExtension` — so a viewer decodes the 72-bit blob into named fields
 instead of showing hex.
 
-The 24 undescribed wires are **probes**: `probe` is a different recording path
-from `traceSignalC` and carries no descriptor yet. That is the obvious next step.
+The 24 undescribed wires were **probes**, which used to carry no descriptor at
+all — the FSM states a reader most wants named, rendering as bit patterns.
+They carry one now, wherever the probed type has a `Waveform` instance. What
+stays undescribed is only what cannot be described: `probe` deliberately
+requires `BitPack` and `NFDataX` and nothing more, because the state inside a
+mealy step is routinely size-polymorphic (`Waveform (Index n)` wants `1 <= n`
+where `BitPack` wants only `KnownNat n`), and demanding a description of every
+probe would drop exactly those. So probing and describing are decided
+separately — `CanProbe` and `CanDescribe` — and each probe gets as much as its
+type allows.
 
 `luts` comes out empty, which is correct rather than broken: the generic
 `Waveform` default does not use the lookup-table approach — only

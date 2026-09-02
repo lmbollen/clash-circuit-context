@@ -160,7 +160,12 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
    something cannot be traced.
 3. **Auto-probe** — same rule for `HasProbe` signatures: bindings become
    `autoProbe "<binder>" …`, recording one value per simulated cycle from
-   inside e.g. a mealy step function.
+   inside e.g. a mealy step function. A probe carries its payload type's ADT
+   description too, wherever the type has one — probing and describing are
+   decided *separately* (`CanProbe`, `CanDescribe`), because the state inside
+   a mealy step is routinely `BitPack`-able and not describable, and deciding
+   them together would mean either dropping those probes or leaving every
+   probe as raw bits.
 4. **Innermost signature wins** — a local signature switches the mode for
    its subtree, so a `HasProbe` step function nested in a
    `HasCircuitContext` component probes rather than traces.
