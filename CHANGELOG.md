@@ -36,6 +36,25 @@ Initial version.
   `x-circuit-context-untraced` the oracle proving there is no instance.
   The fallback to identity is unchanged — instrumented code still never
   fails to compile because something cannot be traced.
+* The oracle **reduces type families** before deciding. `KnownNat (BitSize
+  SomeRecord)` is a family application, not something it could read off, and
+  it used to be reported as a proved absence — a guess filed as a fact, with
+  the wire lost. It now normalises bottom-up (arguments first, since a
+  one-step match will not fire on an unreduced argument) and answers. Ground
+  `Assert` constraints go the same way: `1 <= 8` reduces to the empty
+  constraint and traces, where before "monomorphic" was no guarantee of
+  "decidable". A requirement that still will not reduce is `GaveUp`, never
+  `NoInstance` — `KnownNat` is exactly what the typelits solver plugins
+  discharge, and they run in the real compile while this walk does not.
+  Blame is reported as the designer WROTE it (`1 <= n`), not as the normal
+  form the oracle reduced it to.
+* `{-# ANN f NoCircuitScope #-}` declares that a binder carries
+  `HasCircuitContext` and deliberately has no `OPAQUE` — a harness boundary
+  that wants the design tree rooted at the waveform top. It silences
+  `-Wx-circuit-context-uninstrumented` for that binder alone, so the
+  category stays live, and promotable to `-Werror`, for every binder nobody
+  vouched for. Recognised by the constructor's resolved `Name`, so a typo is
+  a compile error rather than a marker that quietly does not apply.
 * The oracle distinguishes a PROOF from a give-up. Six code paths used to
   answer "no": only one (no matching instance) is an answer; the rest —
   fuel exhausted, a predicate that is not a class (the `Assert` behind

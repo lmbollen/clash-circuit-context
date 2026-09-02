@@ -28,6 +28,10 @@ data AbiNames = AbiNames
   , abiComponent :: GHC.Name
   , abiHasCircuitContext :: GHC.Name
   , abiHasProbe :: GHC.Name
+  , abiNoCircuitScope :: GHC.Name
+  {- ^ The DATA constructor, which is what an @ANN@ pragma's expression
+  mentions.
+  -}
   }
 
 {- | 'Nothing' when the module being compiled does not depend (transitively)
@@ -45,6 +49,7 @@ lookupAbiNames = do
       componentN <- GHC.lookupOrig cm (GHC.mkVarOcc "component")
       hasCircuitContextN <- GHC.lookupOrig cm (GHC.mkTcOcc "HasCircuitContext")
       hasProbeN <- GHC.lookupOrig cm (GHC.mkTcOcc "HasProbe")
+      noCircuitScopeN <- GHC.lookupOrig cm (GHC.mkDataOcc "NoCircuitScope")
       pure
         ( Just
             AbiNames
@@ -53,6 +58,7 @@ lookupAbiNames = do
               , abiComponent = componentN
               , abiHasCircuitContext = hasCircuitContextN
               , abiHasProbe = hasProbeN
+              , abiNoCircuitScope = noCircuitScopeN
               }
         )
     _ -> pure Nothing

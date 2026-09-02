@@ -42,6 +42,23 @@ Four categories, because they differ in how likely each is to be a defect:
   declined binding, including all the @Int@s and @Bool@s that were never going
   to trace.
 
+Note that a blanket @-Werror@ promotes these like any other warning. That is
+GHC's behaviour and not something this plugin chooses, but it is worth
+knowing before a pin bump: a project already building with @-Werror@ will see
+a previously silent fallback become a build failure. Silence the category, or
+promote deliberately.
+
+For the one shape that is deliberate rather than a near-miss — a harness
+boundary carrying @HasCircuitContext@ with no @OPAQUE@, so the design tree
+roots at the waveform top — annotate the binder rather than silencing the
+category for the module:
+
+> {\-\# ANN runSystem NoCircuitScope \#-\}
+
+See 'Clash.CircuitContext.Core.CircuitContextAnnotation'. That keeps
+@-Wx-circuit-context-uninstrumented@ live, and promotable, for everything
+else.
+
 On GHC 9.6 custom warning categories do not exist, so these are plain
 warnings: still real diagnostics that @-Werror@ promotes wholesale, but not
 individually silenceable. Per-category control starts at GHC 9.8.
