@@ -196,6 +196,25 @@ a device scope writes their own `{-# OPAQUE myDevice #-}` wrapper around `device
 So `deviceWb` is left inlinable and only the (synthesis-neutral) `traceSignalC` is
 added.
 
+**Correction (2026-09-02) — that claim was half wrong when it was written, and
+is now true.** `deviceWb` writes `HasCircuitContext` literally, so `OPAQUE`
+would have scoped it. `registerWbDf` does not: it takes
+`RegisterWbConstraints a dom wordSize aw`, and the constraint reaches it
+through that synonym. The renamer decides what is a component from what is
+*written*, and it ran before synonyms were expanded — so `OPAQUE` on
+`registerWbDf` (or on any of the twelve-plus combinators in
+`Protocols.MemoryMap.Registers.WishboneStandard` that share the synonym)
+would have produced no `$scope` at all, with a clean compile and nothing said.
+The wires would still have traced, one level up, which is exactly what makes
+that failure expensive to notice.
+
+The renamer follows constraint synonyms now, imported ones included — reading
+the right-hand side out of the interface, where the implicit parameter is
+already expanded. `RegisterWbConstraints` is the case that motivated it: a
+shared alias bundling `HasCircuitContext` with the eight boring constraints
+beside it is exactly what a well-factored library writes, and it was the one
+shape the plugin could not see.
+
 ## Cycle-2 Df instrumentation was reverted (and why)
 
 Adding `HasCircuitContext` to the low-level `Df.fifo`/`registerFwd`/`registerBwd`
