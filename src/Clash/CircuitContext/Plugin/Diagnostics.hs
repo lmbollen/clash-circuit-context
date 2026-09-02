@@ -26,7 +26,7 @@ Four categories, because they differ in how likely each is to be a defect:
   unambiguously asked for. Nothing benign lands here.
 
 [@x-circuit-context-uninstrumented@] A signature asks for instrumentation
-  somewhere the plugin does not reach, or does not scope: 'HasCircuitContext'
+  somewhere the plugin does not reach, or does not scope: @HasCircuitContext@
   without @OPAQUE@, @OPAQUE@ without a signature, both constraints at once,
   an instance or class-default body. Often intended (a small helper flattening
   into its caller), which is why it is its own category.

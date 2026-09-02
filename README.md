@@ -127,20 +127,21 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
    `let` under the wrap (required: `where`-bindings would otherwise be
    elaborated against the *caller's* context and escape the new scope).
 2. **Auto-trace** — inside any function whose signature carries
-   `HasCircuitContext` (the synonym, a raw `?circuitContext`, or your own
-   constraint synonym that expands to either — `type Ctx dom =
+   `HasCircuitContext` — the synonym, a raw `?circuitContext`, or your own
+   constraint synonym that expands to either (`type Ctx dom =
    (HiddenClockResetEnable dom, HasCircuitContext)` works, declared in the
-   module or imported), every
-   named traceable binding becomes `autoTrace "<binder>" …`. This covers
+   module or imported) — every named traceable binding becomes
+   `autoTrace "<binder>" …`. This covers
    zero-argument `let`/`where` bindings *and* the binders of local
    **pattern** bindings — `(a, b) = unbundle …`, `Out{x, y} = f …` — the
    usual Clash idiom for multi-output circuits: each pattern binder `x` is
    traced via an injected `x = autoTrace "x" x'` sibling, so the rest of
    the code is untouched. Untraceable types (no `BitPack`, unknown domain,
-   missing evidence for a polymorphic type) fall back to identity —
-   silently, by design, decided by a typechecker-plugin oracle
-   (`CanTrace`), so instrumented code never fails to compile because
-   something cannot be traced.
+   missing evidence for a polymorphic type) fall back to identity — by
+   design, decided by a typechecker-plugin oracle (`CanTrace`), so
+   instrumented code never fails to compile because something cannot be
+   traced. Every such fallback is reported as a warning; see
+   [When something isn't traced](#when-something-isnt-traced).
 3. **Auto-probe** — same rule for `HasProbe` signatures: bindings become
    `autoProbe "<binder>" …`, recording one value per simulated cycle from
    inside e.g. a mealy step function.
@@ -159,7 +160,9 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
 * A `HasCircuitContext` function *without* an `OPAQUE` pragma is not a
   component: its auto-traced bindings register under the **caller's**
   scope, because the implicit-parameter dictionary flows from the call
-  site. This is often exactly what you want for small helpers.
+  site. This is often exactly what you want for small helpers — which is
+  why it is a warning you can turn off
+  (`-Wno-x-circuit-context-uninstrumented`) rather than an error.
 * Traceable today: `Signal dom a` with `(KnownDomain dom, BitPack a,
   NFDataX a)`, and `Vec n` thereof (traced element-wise as `name_0`,
   `name_1`, …). No `Typeable` is required — that field of a trace only
@@ -196,13 +199,13 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
   `fmap acc`-style replication) cannot be design-ordered — name those by
   structural position with `imapComponents`.
 
-### When something silently isn't traced
+### When something isn't traced
 
-The silent fallback is what makes project-wide enablement safe, and it is
-also what makes a missing wire look exactly like a wire nobody asked for. So
-the fallback stays and the silence does not: every decision that costs a wire
-or a scope is a **real GHC warning**, in a custom category you tune with the
-flags you already use.
+The fallback to identity is what makes project-wide enablement safe, and it
+is also what makes a missing wire look exactly like a wire nobody asked for.
+So the fallback stays and the silence does not: every decision that costs a
+wire or a scope is a **real GHC warning**, in a custom category you tune with
+the flags you already use.
 
 ```
 tests/Test/PluginDiagnostics.hs:114:3: warning: [-Wx-circuit-context-undecided]
@@ -426,10 +429,14 @@ actually collects a waveform.
   `Clash.Signal.Trace` internals used are identical across these versions.
   The `cabal.project` here pins the 1.11 upstream commit this package is
   developed against (1.11 is not yet on Hackage).
-* Constraint synonyms bundling `HasCircuitContext` with other constraints
-  are not recognized at renamer stage; write the constraint (or the raw
-  implicit parameter) literally in the signature.
-* Instance-method and class-default bodies are not instrumented.
+* Instance-method and class-default bodies are not instrumented: the
+  renamer pass rewrites value bindings only. A signature there carrying the
+  constraint is reported (`-Wx-circuit-context-uninstrumented`) rather than
+  quietly ignored.
+* A constraint synonym is followed, but a constraint-kinded *type family*
+  is not — nothing at renamer stage can reduce one. Superclasses need no
+  handling: GHC rejects an implicit parameter in a superclass context, so a
+  synonym is the only way to alias `HasCircuitContext`.
 * Constraint plumbing is at the type level: `HasCircuitContext` propagates
   to a function's callers. Supply the context once, at a boundary — a test
   does it with `withCircuitContext`; a synthesis entry point (or any caller
@@ -439,7 +446,11 @@ actually collects a waveform.
   (see below).
 * The traceability oracle is a conservative approximation: an exotic
   instance context it cannot decide falls back to *not tracing* (never a
-  compile error). Golden-test your trace key sets if you depend on them.
+  compile error). It says so — `-Wx-circuit-context-undecided`, kept apart
+  from the proved `-Wx-circuit-context-untraced` precisely because a wire
+  lost to the approximation is as likely to be a limitation here as a fact
+  about your types. Promote it with `-Werror=` on a design whose waveform
+  you depend on, or golden-test your trace key sets.
 
 ## Building and testing
 
@@ -452,14 +463,18 @@ actually collects a waveform.
 (hand-instrumented reference), `oracle-fallback` (oracle decisions per type),
 `auto-instrumentation` (the same design written naturally, instrumented
 entirely by the plugin), `plugin-diagnostics` (constraint synonyms,
-idempotence under a deliberate double enable, and the `diagnostics` output)
-and `waveform-tests` (the test suite in two levels:
+idempotence under a deliberate double enable, and one live example of every
+warning category) and `waveform-tests` (the test suite in two levels:
 [`tests/Example/`](tests/Example/) is usage, kept honest by running, and
 [`tests/Test/`](tests/Test/) pins features — recorder properties, the capture
 contract, and the tasty-sequenced tests that decode the waveforms the Example
 level wrote) — then diffs the generated VCDs against the goldens in
-`goldens/` and asserts that the fall-through warning and the diagnostics
-fired. VCD output is fully deterministic by design, so the goldens are
+`goldens/`, asserts every warning category fired during the build, and
+compiles a one-binding module three ways to check that a decline warns by
+default, disappears under `-Wno-`, and is fatal under `-Werror=`. That last
+one is a claim about the compiler's behaviour rather than this package's,
+which is why it is checked rather than described.
+VCD output is fully deterministic by design, so the goldens are
 byte-identical across GHC 9.6, 9.10 and 9.12.
 ## Proof of concept: tracing a real design
 

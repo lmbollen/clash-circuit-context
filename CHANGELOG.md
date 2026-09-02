@@ -56,6 +56,13 @@ Initial version.
   wrap in itself (`switch.switch`); it is now a no-op, and a hand-written
   `component "f"` on a binder the plugin would wrap is left alone rather
   than doubled.
+* Documentation: the README's limitation "constraint synonyms bundling
+  `HasCircuitContext` are not recognized" is gone, because they are; what
+  replaces it is the pair that genuinely remain — a constraint-kinded type
+  family (nothing at renamer stage can reduce one), and instance-method and
+  class-default bodies (the pass rewrites value bindings only, and now says
+  so). GHC rejects an implicit parameter in a superclass context, so a
+  synonym was the only way to alias the constraint.
 * `Traceable` derives generically for records of traceable parts (signal
   bundles): derive `Generic` and write an empty instance. Fields trace as
   `name.field` sub-scopes in the VCD hierarchy; nested records nest. The
