@@ -23,6 +23,9 @@ runlog cabal test auto-instrumentation -j1 "$@"
 # knot (silent hang under the threaded RTS) — fail loudly instead.
 run timeout 600 cabal test notation -j1 "$@"
 run cabal test adt-sidecar -j1 "$@"
+# Constraint synonyms, idempotence under a double plugin enable, and the
+# compile-time diagnostics (grepped from the build log below).
+runlog cabal test plugin-diagnostics -j1 "$@"
 # The Example level (usage, kept honest by running) and the Test level
 # (recorder properties, the capture contract, and the tasty-sequenced tests
 # that decode the waveforms the Example level wrote).
@@ -59,6 +62,26 @@ if grep -q "Compiling Main.*AutoInstrumentation" "$log" 2>/dev/null; then
   else
     echo "FAIL: expected plugin warning missing"; fail=1
   fi
+fi
+
+# The diagnostics (-fplugin-opt=…:diagnostics) must have fired while compiling
+# Test/PluginDiagnostics.hs. A diagnostic that stops firing is exactly as silent
+# as the bug it reports, so it is checked like any other output. Same fresh-build
+# caveat as above.
+if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
+  for want in \
+    "'noOpaque' has HasCircuitContext but no OPAQUE" \
+    "'unsigned' is OPAQUE but has no type signature" \
+    "'bothModes' has both HasProbe and HasCircuitContext" \
+    "not traced: Signal dom Undescribed" \
+    "blocked on: BitPack Undescribed"
+  do
+    if grep -qF "$want" "$log"; then
+      echo "ok: diagnostic fired: $want"
+    else
+      echo "FAIL: expected diagnostic missing: $want"; fail=1
+    fi
+  done
 fi
 
 rm -f "$log"

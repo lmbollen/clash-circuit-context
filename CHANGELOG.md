@@ -22,6 +22,25 @@ Initial version.
   binder is traced via an injected sibling binding. Traceability is
   decided by a typechecker-plugin oracle (`CanTrace`/`CanProbe`), so
   untraceable types fall back to identity without errors.
+* Plugin options (`-fplugin-opt=Clash.CircuitContext.Plugin:<opt>`).
+  `diagnostics` reports, on stderr, every decision that silently costs a
+  wire or a scope: bindings whose payload type the oracle declined (with
+  the requirement it got stuck on), `HasCircuitContext` without `OPAQUE`,
+  `OPAQUE` without a type signature, and signatures carrying both
+  `HasProbe` and `HasCircuitContext`. Off by default — the silent fallback
+  is what makes package-wide enablement safe. An unrecognised option is
+  reported rather than ignored.
+* The renamer half sees through **constraint synonyms**: a signature
+  written against `type Ctx dom = (HiddenClockResetEnable dom,
+  HasCircuitContext)` now makes its `OPAQUE` function a component, whether
+  the synonym is declared in the module or imported. It used to keep
+  tracing but silently lose its `$scope`, because the renamer runs before
+  synonyms are expanded.
+* The renamer half is **idempotent**. Enabling the plugin twice
+  (package-wide plus an `OPTIONS_GHC` pragma) used to nest every component
+  wrap in itself (`switch.switch`); it is now a no-op, and a hand-written
+  `component "f"` on a binder the plugin would wrap is left alone rather
+  than doubled.
 * `Traceable` derives generically for records of traceable parts (signal
   bundles): derive `Generic` and write an empty instance. Fields trace as
   `name.field` sub-scopes in the VCD hierarchy; nested records nest. The

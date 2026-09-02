@@ -135,7 +135,8 @@ top
 ## What the plugin does
 
 Enable it per module (`{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}`)
-or project-wide (`ghc-options: -fplugin=Clash.CircuitContext.Plugin`).
+or project-wide (`ghc-options: -fplugin=Clash.CircuitContext.Plugin`). Doing
+both is harmless: the renamer pass then runs twice, and it is idempotent.
 
 1. **Component wrap** — a toplevel function with an `OPAQUE` pragma *and* a
    written `HasCircuitContext` constraint has its body wrapped in
@@ -143,7 +144,10 @@ or project-wide (`ghc-options: -fplugin=Clash.CircuitContext.Plugin`).
    `let` under the wrap (required: `where`-bindings would otherwise be
    elaborated against the *caller's* context and escape the new scope).
 2. **Auto-trace** — inside any function whose signature carries
-   `HasCircuitContext` (the synonym or a raw `?circuitContext`), every
+   `HasCircuitContext` (the synonym, a raw `?circuitContext`, or your own
+   constraint synonym that expands to either — `type Ctx dom =
+   (HiddenClockResetEnable dom, HasCircuitContext)` works, declared in the
+   module or imported), every
    named traceable binding becomes `autoTrace "<binder>" …`. This covers
    zero-argument `let`/`where` bindings *and* the binders of local
    **pattern** bindings — `(a, b) = unbundle …`, `Out{x, y} = f …` — the
@@ -208,6 +212,37 @@ or project-wide (`ghc-options: -fplugin=Clash.CircuitContext.Plugin`).
   `name_0`, `name_1`, …. Instances born at the *same* call site (e.g.
   `fmap acc`-style replication) cannot be design-ordered — name those by
   structural position with `imapComponents`.
+
+### When something silently isn't traced
+
+The silent fallback is what makes project-wide enablement safe, and it is
+also what makes a missing wire look exactly like a wire nobody asked for.
+Build once with
+
+```
+cabal build --ghc-options='-fplugin-opt=Clash.CircuitContext.Plugin:diagnostics'
+```
+
+and every such decision says so on stderr, with the source span, the type,
+and the requirement it got stuck on:
+
+```
+clash-circuit-context plugin: Switch.hs:73:3-35: not traced: Signal dom (Maybe (Packet dimX dimY))
+    blocked on: Waveform (Packet dimX dimY)
+clash-circuit-context plugin: Switch.hs:(31,1)-(38,16): 'switchStep' has HasCircuitContext but no OPAQUE pragma, so its bindings trace in the CALLER's scope. Add {-# OPAQUE switchStep #-} to give it a $scope of its own.
+```
+
+It reports the near-misses on the plugin's own side too — `OPAQUE` without a
+type signature (the mode is read from the signature, so there is nothing to
+read), and a signature carrying both `HasProbe` and `HasCircuitContext`
+(probe wins, and a probed binder never becomes a component).
+
+Deliberately verbose: it lists every untraced binding, not only the
+surprising ones, because which one is surprising is what you know and the
+plugin does not. It is a debugging flag, not a warning to leave on — the
+fix for a payload you *need* is usually to name it with an explicit
+`traceSignalC`, which takes `Traceable` as a real constraint and so turns a
+missing wire into a compile error.
 
 ### Opting out
 
@@ -414,17 +449,20 @@ actually collects a waveform.
 ./check.sh -w ghc-9.10.3         # or any other GHC ≥ 9.6
 ```
 
-`check.sh` builds everything and runs six suites — `manual-instrumentation`
+`check.sh` builds everything and runs seven suites — `manual-instrumentation`
 (hand-instrumented reference), `oracle-fallback` (oracle decisions per type),
 `auto-instrumentation` (the same design written naturally, instrumented
 entirely by the plugin), `notation` (the real circuit-notation desugarer,
 against the vendored `deps/circuit-notation`), `adt-sidecar` (the
-clash-shockwaves half of the output) and `waveform-tests` (the test suite in
-two levels: [`tests/Example/`](tests/Example/) is usage, kept honest by
-running, and [`tests/Test/`](tests/Test/) pins features — recorder
-properties, the capture contract, and the tasty-sequenced tests that decode
-the waveforms the Example level wrote) — then diffs the generated VCDs
-against the goldens in `goldens/` and asserts the fall-through warning fires.
+clash-shockwaves half of the output), `plugin-diagnostics` (constraint
+synonyms, idempotence under a deliberate double enable, and the `diagnostics`
+output) and `waveform-tests` (the test suite in two levels:
+[`tests/Example/`](tests/Example/) is usage, kept honest by running, and
+[`tests/Test/`](tests/Test/) pins features — recorder properties, the capture
+contract, and the tasty-sequenced tests that decode the waveforms the Example
+level wrote) — then diffs the generated VCDs against the goldens in
+`goldens/` and asserts that the fall-through warning and the diagnostics
+fired.
 VCD output is fully deterministic by design, so the goldens are
 byte-identical across GHC 9.6 and 9.10.
 

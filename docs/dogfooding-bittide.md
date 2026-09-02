@@ -322,18 +322,40 @@ bindings. The opt-out works but is silent/surprising.
 *Proposal:* plugin should not descend into multi-argument local functions in
 probe mode (or detect multi-write-per-cycle and warn).
 
-### F6 — The `OPAQUE` marker is easy to forget, and its absence is silent 🔜 PROPOSED
+### F6 — The `OPAQUE` marker is easy to forget, and its absence is silent ✅ FIXED
 A component needs both `HasCircuitContext` *and* `{-# OPAQUE #-}`. With the
 constraint but no `OPAQUE`, the plugin still traces the local bindings but does
 **not** create a `$scope` for the function — the signals silently flatten into
 the parent. `OPAQUE` is also required for correct per-instance identity (heap
 identity relies on the call not being floated/shared).
 
-*Proposal (needs care):* emit a plugin warning when a `HasCircuitContext`
-top-level binding lacks `OPAQUE` ("…will trace but won't be its own VCD scope;
-add `{-# OPAQUE f #-}`"). Auto-injecting the pragma is possible but risks a
-silent instance-identity bug if the injection is a no-op at that stage, so a
-warning is the safer first step.
+*Fix (shipped):* `-fplugin-opt=Clash.CircuitContext.Plugin:diagnostics` reports
+it, along with the other near-misses whose symptom is a missing scope or wire:
+`OPAQUE` without a type signature, a signature carrying both `HasProbe` and
+`HasCircuitContext`, and (from the oracle half) every binding whose payload
+type was declined, with the requirement it got stuck on. Off by default —
+the silent fallback is what makes package-wide enablement safe, so the
+reporting is a build flag, not a warning. Auto-injecting `OPAQUE` was not
+done: it risks a silent instance-identity bug if the injection is a no-op at
+that stage.
+
+Two neighbouring silent failures went with it, both found from the Helios
+dogfooding rather than bittide's:
+
+* a `HasCircuitContext` behind the designer's own constraint synonym
+  (`type SwitchCtx dom = (HiddenClockResetEnable dom, HasCircuitContext)`) was
+  invisible to the renamer, which runs before synonyms are expanded — the
+  function kept tracing but silently lost its `$scope`. Both kinds of synonym
+  are now followed: a module-local one from the group being compiled, an
+  imported one from its interface.
+* enabling the plugin twice (package-wide *and* an `OPTIONS_GHC` pragma) ran
+  the renamer twice and nested every component wrap in itself
+  (`switch.switch`). The pass is now idempotent, which also means hand-written
+  `component "f"` in a binder the plugin would wrap is left alone instead of
+  doubled.
+
+Pinned by the `plugin-diagnostics` suite, which enables the plugin twice on
+purpose and greps its own build log for the diagnostics.
 
 ### F7 — Waveform lifecycle helpers are re-implemented per project ✅ FIXED
 `withWaveform`/`withWaveformC`, the one-file-per-name discipline, "keep the last
@@ -701,8 +723,9 @@ The audit's coverage gap 1 (`wbStorage` invisible; protocol wiring binds no
    threading `HasCircuitContext` through its signature. Would make shared-core
    peripherals (things inside `processingElement`) traceable without repo-wide
    `withoutCircuitContext` churn. Biggest open lever.
-5. **Plugin warning for `HasCircuitContext` without `OPAQUE`** (F6) — cheap,
-   prevents a silent-flatten surprise.
+5. **Plugin warning for `HasCircuitContext` without `OPAQUE`** (F6) — ✅
+   shipped, as the opt-in `diagnostics` option, together with constraint-synonym
+   recognition and renamer idempotence.
 6. **Probe-mode: stop descending into multi-arg local helpers** (F5) — removes a
    correctness+perf footgun.
 7. **`Clash.CircuitContext.Waveform` test helpers** (F7) — ✅ shipped, with
