@@ -156,8 +156,12 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
    **pattern** bindings — `(a, b) = unbundle …`, `Out{x, y} = f …` — the
    usual Clash idiom for multi-output circuits: each pattern binder `x` is
    traced via an injected `x = autoTrace "x" x'` sibling, so the rest of
-   the code is untouched. Untraceable types (no `BitPack`, unknown domain,
-   missing evidence for a polymorphic type) fall back to identity — by
+   the code is untouched. A *closed* binding — one with no free local
+   variables — is traced only if it carries its own type signature; without
+   one it is skipped, because GHC generalises it and the injected constraint
+   cannot be quantified in an inferred type. Untraceable types (no `BitPack`,
+   unknown domain, missing evidence for a polymorphic type) fall back to
+   identity — by
    design, decided by a typechecker-plugin oracle (`CanTrace`), so
    instrumented code never fails to compile because something cannot be
    traced. Every such fallback is reported as a warning; see
@@ -469,6 +473,9 @@ actually collects a waveform.
   used are identical across these versions. The `cabal.project` here pins
   the 1.11 upstream commit this package is developed against (1.11 is not
   yet on Hackage).
+* An **unsigned closed** local binding is skipped before the oracle is
+  consulted, so it produces neither a wire nor a warning — the one path that
+  is silent in both channels. Give it a type signature to have it traced.
 * Instance-method and class-default bodies are not instrumented: the
   renamer pass rewrites value bindings only. A signature there carrying the
   constraint is reported (`-Wx-circuit-context-uninstrumented`) rather than

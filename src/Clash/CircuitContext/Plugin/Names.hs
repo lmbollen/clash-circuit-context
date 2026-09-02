@@ -32,6 +32,11 @@ data AbiNames = AbiNames
   {- ^ The DATA constructor, which is what an @ANN@ pragma's expression
   mentions.
   -}
+  , abiExplicitRecorders :: [GHC.Name]
+  {- ^ The recording combinators a designer writes BY HAND. A binding whose
+  right-hand side already applies one of these under the binder's own name
+  does not get an injected one on top; see @alreadyInjected@.
+  -}
   }
 
 {- | 'Nothing' when the module being compiled does not depend (transitively)
@@ -50,6 +55,8 @@ lookupAbiNames = do
       hasCircuitContextN <- GHC.lookupOrig cm (GHC.mkTcOcc "HasCircuitContext")
       hasProbeN <- GHC.lookupOrig cm (GHC.mkTcOcc "HasProbe")
       noCircuitScopeN <- GHC.lookupOrig cm (GHC.mkDataOcc "NoCircuitScope")
+      explicitNs <-
+        mapM (GHC.lookupOrig cm . GHC.mkVarOcc) ["traceSignalC", "probe", "probeSW"]
       pure
         ( Just
             AbiNames
@@ -59,6 +66,7 @@ lookupAbiNames = do
               , abiHasCircuitContext = hasCircuitContextN
               , abiHasProbe = hasProbeN
               , abiNoCircuitScope = noCircuitScopeN
+              , abiExplicitRecorders = explicitNs
               }
         )
     _ -> pure Nothing

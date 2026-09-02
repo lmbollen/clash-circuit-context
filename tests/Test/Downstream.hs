@@ -47,10 +47,15 @@ module Test.Downstream (
   -- * F4: a boundary that means to have no scope
   runHarness,
   runHarnessUnvouched,
+
+  -- * F6: the closed-binding silence, and double registration
+  signedClosed,
+  handWritten,
 ) where
 
 import qualified Clash.Explicit.Prelude as E
 import Clash.Prelude
+import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (Proxy))
 
 import Clash.CircuitContext (
@@ -217,3 +222,79 @@ runHarnessUnvouched = harnessOut
  where
   harnessOut = E.register clockGen resetGen enableGen 0 driven
   driven = pure 9
+
+--------------------------------------------------------------------------------
+-- F6: the closed-binding silence, and double registration
+--------------------------------------------------------------------------------
+
+{- | A CLOSED local binding — one with no free local variables — used to be
+skipped before the oracle was ever consulted, so it produced neither a wire
+nor a warning. That is the blind spot the audit turned up: the warnings are
+not a complete inventory of untraced bindings, which is why their one genuine
+missing wire was found by diffing a VCD rather than by reading a build log.
+
+The skip exists because GHC generalises closed bindings even under
+@MonoLocalBinds@, and the injected constraint carries a @CanTrace@ family
+application that GHC will not quantify over in an INFERRED type — the binder
+gets monomorphised at its first use and a second use at another type becomes a
+baffling error.
+
+Their proposal, adopted here: __an explicit type signature already pins the
+type__, so the hazard is absent exactly where the author was explicit. A closed
+binding that carries its own signature is wrapped; an unsigned one is still
+skipped. It asks for ordinary Haskell rather than another marker, and it
+converts silence into a wire precisely where somebody was deliberate enough to
+expect one.
+
+@signedClosed.constant@ must be recorded. @signedClosed.polymorphic@ must NOT
+be — and, more importantly, the module must COMPILE: that binding is the F9
+hazard itself, closed and used at two different types, and it is the case that
+decides whether a signature really is enough.
+-}
+signedClosed :: (HasCircuitContext) => Signal System Int -> Signal System Int
+signedClosed inp = out
+ where
+  out =
+    inp
+      + (fromIntegral <$> constant)
+      + (maybe 0 fromEnum <$> asBool)
+      + (fromMaybe 0 <$> asInt)
+
+  -- Closed, monomorphic signature: traced now.
+  constant :: Signal System (Unsigned 8)
+  constant = pure 7
+
+  -- Closed, POLYMORPHIC signature, used at two types below. Wrapped, and the
+  -- oracle declines it (no @BitPack a@ for a skolem), so it falls back to
+  -- identity rather than monomorphising the binder. If a signature were NOT
+  -- enough, this module would not build.
+  polymorphic :: Signal System (Maybe a)
+  polymorphic = pure Nothing
+
+  asBool = polymorphic :: Signal System (Maybe Bool)
+  asInt = polymorphic :: Signal System (Maybe Int)
+{-# OPAQUE signedClosed #-}
+
+{- | Hand-written recording combinators are not doubled.
+
+Once the oracle started deciding payloads it used to decline, four explicit
+@traceSignalC@ calls in the consumer's design became redundant and each began
+recording its signal TWICE — rendered @name_0@\/@name_1@ — so they were
+deleted. They need not have been: a binding whose right-hand side already
+applies a recorder under the binder's own name does not get another injected
+on top.
+
+The name has to match. @renamed@ below writes a DIFFERENT name, which is two
+signals the author asked for, and both are kept — the same reason their
+@switch@ kept its @traceSignalC "out"@, which names a function's result rather
+than a where-binding.
+
+Recorded: @handWritten.out@ exactly once, plus @handWritten.inner@ and
+@handWritten.renamed@.
+-}
+handWritten :: (HasCircuitContext) => Signal System Int -> Signal System Int
+handWritten inp = out + renamed
+ where
+  out = traceSignalC "out" (inp + 1)
+  renamed = traceSignalC "inner" (inp + 2)
+{-# OPAQUE handWritten #-}

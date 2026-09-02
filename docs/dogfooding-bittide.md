@@ -779,6 +779,40 @@ warning categories, so the pin bump turned every warning into an error and
 broke their CI. That is GHC's behaviour rather than ours, and it is now called
 out in the README and in "Clash.CircuitContext.Plugin.Diagnostics".
 
+### F13 — the closed-binding silence, and double registration (2026-09-02) ✅ FIXED
+
+Both from the same consumer, after they bumped to the fixes above.
+
+**Closed bindings were silent in both channels.** A local binding with no free
+local variables is skipped before the oracle is consulted, so it yields neither
+a wire nor a warning — which is why their one genuine missing wire was found by
+diffing a VCD rather than by reading a build log. It also means "N warnings
+account for every missing wire" was never a safe reading.
+
+Their proposal, adopted: wrap a closed binding that carries **its own type
+signature**. The stated reason for the skip is that GHC generalises closed
+bindings and will not quantify the injected `CanTrace` application in an
+INFERRED type; an explicit signature pins the type, so the hazard is absent
+exactly where the author was explicit. Verified on the F9 hazard itself — a
+closed, *polymorphic*-signature binding used at two types compiles, is wrapped,
+and is declined by the oracle rather than monomorphising the binder. Unsigned
+closed bindings keep being skipped and are now documented as the remaining
+silent path.
+
+**Explicit calls started doubling wires.** Once the oracle began deciding
+payloads it used to decline, four hand-written `traceSignalC` calls in their
+design became redundant and each recorded its signal twice (`name_0`/`name_1`);
+they deleted them. They need not have: a binding whose right-hand side already
+applies `traceSignalC`/`probe`/`probeSW` under the binder's own name no longer
+gets one injected on top. A different name still gets both — their `switch`
+keeps its `traceSignalC "out"`, which names a function's result rather than a
+where-binding.
+
+Their measured outcome across the whole series, for the record: 244 wires
+against 217 before, 243 of them ADT-described against 189, and one undescribed.
+The 27 new wires are the entire NoC packet path, most of which their triage had
+filed as "absent, and correctly so".
+
 ## Roadmap (priority order)
 
 1. **`withoutCircuitContext`** — ✅ shipped (F1).

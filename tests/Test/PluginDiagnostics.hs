@@ -190,6 +190,8 @@ main = do
                 , Downstream.f2Out
                 , Downstream.runHarness
                 , Downstream.runHarnessUnvouched
+                , Downstream.signedClosed (pure 1)
+                , Downstream.handWritten (pure 1)
                 )
             )
     _ <- evaluate (deepseqX ys ys)
@@ -241,6 +243,24 @@ main = do
           -- fixes.
           [ "downstream regression: " <> show p <> " was not recorded"
           | p <- [["f1", "direct"], ["f1", "tup"], ["f2", "ix"]]
+          , p `P.notElem` downstreamPaths
+          ]
+        , [ "a signed closed binding was not traced: " <> show p
+          | p <- [["signedClosed", "constant"]]
+          , p `P.notElem` downstreamPaths
+          ]
+        , [ "an unsigned-payload closed binding recorded after all: " <> show p
+          | p <- downstreamPaths
+          , P.last p == "polymorphic"
+          ]
+        , [ "hand-written traceSignalC was doubled: " <> show n <> " copies"
+          | let n =
+                  P.length
+                    [q | q <- downstreamPaths, q == ["handWritten", "out"]]
+          , n /= 1
+          ]
+        , [ "a differently-named hand-written trace was dropped: " <> show p
+          | p <- [["handWritten", "inner"], ["handWritten", "renamed"]]
           , p `P.notElem` downstreamPaths
           ]
         , -- F4: both harnesses still TRACE, at the root, since the annotation

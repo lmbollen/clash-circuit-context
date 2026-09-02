@@ -520,7 +520,8 @@ rewriteInside ctx mode0 = goM mode0
   onVB :: Mode -> HsValBindsLR GhcRn GhcRn -> GHC.TcM (HsValBindsLR GhcRn GhcRn)
   onVB m (XValBindsLR (NValBinds groups sigs)) = do
     localModes <- modesFromSigs ctx sigs
-    groups' <- mapM (onGroup m localModes) groups
+    let localSigned = [n | L _ (TypeSig _ ns _) <- sigs, L _ n <- ns]
+    groups' <- mapM (onGroup m localModes localSigned) groups
     pure (XValBindsLR (NValBinds groups' sigs))
   onVB _ vb = pure vb
 
@@ -531,16 +532,17 @@ rewriteInside ctx mode0 = goM mode0
   onGroup ::
     Mode ->
     [(GHC.Name, Mode)] ->
+    [GHC.Name] ->
     (GHC.RecFlag, LHsBinds GhcRn) ->
     GHC.TcM (GHC.RecFlag, LHsBinds GhcRn)
-  onGroup m localModes (r, bs) = do
+  onGroup m localModes localSigned (r, bs) = do
     let
       binds = GHC.bagToList bs
       -- Binders this pass has ALREADY aliased (a previous run of it, when the
       -- plugin is enabled twice): renaming them again would bury the traced
       -- name under a second alias.
       aliased = mapMaybe (aliasedBinder abi) binds
-    results <- mapM (onLocalBind m localModes aliased) binds
+    results <- mapM (onLocalBind m localModes localSigned aliased) binds
     let
       r' = if all (null . snd) results then r else GHC.Recursive
       binds' = concatMap (\(b0, extras) -> b0 : extras) results
@@ -550,17 +552,42 @@ rewriteInside ctx mode0 = goM mode0
     Mode ->
     [(GHC.Name, Mode)] ->
     [GHC.Name] ->
+    [GHC.Name] ->
     LHsBind GhcRn ->
     GHC.TcM (LHsBind GhcRn, [LHsBind GhcRn])
-  onLocalBind inherited localModes aliased (L l b) = case b of
+  onLocalBind inherited localModes localSigned aliased (L l b) = case b of
     FunBind{fun_id = L _ nm} -> do
       let m = fromMaybe inherited (lookup nm localModes)
       ms <- goM m (fun_matches b)
-      pure (L l (wrapFunBind abi m nm (locA l) b{fun_matches = ms}), [])
+      pure
+        ( L
+            l
+            ( wrapFunBind
+                abi
+                m
+                (signedOrOpen nm localSigned)
+                nm
+                (locA l)
+                b{fun_matches = ms}
+            )
+        , []
+        )
     PatBind{pat_lhs = L _ (VarPat _ (L _ nm))} -> do
       let m = fromMaybe inherited (lookup nm localModes)
       rhs <- goM m (pat_rhs b)
-      pure (L l (wrapPatBind abi m nm (locA l) b{pat_rhs = rhs}), [])
+      pure
+        ( L
+            l
+            ( wrapPatBind
+                abi
+                m
+                (signedOrOpen nm localSigned)
+                nm
+                (locA l)
+                b{pat_rhs = rhs}
+            )
+        , []
+        )
     -- General pattern binding (tuple, record, bang, …): rename each wanted
     -- binder fresh inside the pattern and emit a sibling
     -- @x = autoTrace "x" x'@ per binder. The pattern keeps its shape, so
@@ -667,12 +694,29 @@ mkTraceLocalBind abi m spn nmOld nmFresh =
   body = mkApp2 injector spn (GHC.getOccString nmOld) (mkVarE spn nmFresh)
 {- FOURMOLU_ENABLE -}
 
+{- | Does the closed-binding skip apply here?
+
+'True' — wrap it — when the binding is OPEN, or when it is closed but carries
+its own type signature. See 'closedBind' for why closed bindings are skipped
+and why a signature lifts the skip.
+-}
+signedOrOpen :: GHC.Name -> [GHC.Name] -> GHC.NameSet -> Bool
+signedOrOpen nm localSigned fvs =
+  not (closedBind nm fvs) || nm `elem` localSigned
+
 -- | Wrap a zero-argument local function binding's right-hand sides.
 wrapFunBind ::
-  AbiNames -> Mode -> GHC.Name -> GHC.SrcSpan -> HsBind GhcRn -> HsBind GhcRn
-wrapFunBind abi m nm spn b@FunBind{fun_ext = fvs, fun_matches = MG ext (L la ms)}
+  AbiNames ->
+  Mode ->
+  -- | Result of 'signedOrOpen' for this binder
+  (GHC.NameSet -> Bool) ->
+  GHC.Name ->
+  GHC.SrcSpan ->
+  HsBind GhcRn ->
+  HsBind GhcRn
+wrapFunBind abi m wanted nm spn b@FunBind{fun_ext = fvs, fun_matches = MG ext (L la ms)}
   | wantedBinder nm spn
-  , not (closedBind nm fvs)
+  , wanted fvs
   , all zeroPat ms =
       b{fun_matches = MG ext (L la (map (fmap wrapMatch) ms))}
  where
@@ -681,15 +725,21 @@ wrapFunBind abi m nm spn b@FunBind{fun_ext = fvs, fun_matches = MG ext (L la ms)
   wrapMatch (Match mx mc [] grhss) =
     Match mx mc [] (wrapGRHSs abi m nm spn grhss)
   wrapMatch other = other
-wrapFunBind _ _ _ _ b = b
+wrapFunBind _ _ _ _ _ b = b
 
 wrapPatBind ::
-  AbiNames -> Mode -> GHC.Name -> GHC.SrcSpan -> HsBind GhcRn -> HsBind GhcRn
-wrapPatBind abi m nm spn b@PatBind{pat_ext = fvs, pat_rhs = grhss}
+  AbiNames ->
+  Mode ->
+  (GHC.NameSet -> Bool) ->
+  GHC.Name ->
+  GHC.SrcSpan ->
+  HsBind GhcRn ->
+  HsBind GhcRn
+wrapPatBind abi m wanted nm spn b@PatBind{pat_ext = fvs, pat_rhs = grhss}
   | wantedBinder nm spn
-  , not (closedBind nm fvs) =
+  , wanted fvs =
       b{pat_rhs = wrapGRHSs abi m nm spn grhss}
-wrapPatBind _ _ _ _ b = b
+wrapPatBind _ _ _ _ _ b = b
 
 {- | Is this a binder the designer wrote and did not opt out of?
 
@@ -754,11 +804,21 @@ wrapGRHSs abi m nm spn (GRHSs x grhss localBinds) =
     TraceMode -> abiAutoTrace abi
     ProbeMode -> abiAutoProbe abi
   wrapG (GRHS gx guards body)
-    | alreadyInjected [abiAutoTrace abi, abiAutoProbe abi] occ body =
+    | alreadyInjected recorders occ body =
         GRHS gx guards body
     | otherwise = GRHS gx guards (mkApp2 injector spn occ body)
   wrapG g = g
   occ = GHC.getOccString nm
+
+  {- The plugin's own injectors, PLUS the ones a designer writes by hand.
+  @x = traceSignalC "x" e@ already registers @x@; injecting an @autoTrace "x"@
+  around it registers the same signal a second time, and the dump renders the
+  pair as @x_0@\/@x_1@. A consumer hit exactly that on four signals after the
+  oracle started deciding payloads it used to decline, and had to delete the
+  explicit calls. The name must match, so @x = traceSignalC "inner" e@ still
+  gets its own @x@ — two names there are two signals the author asked for. -}
+  recorders =
+    abiAutoTrace abi : abiAutoProbe abi : abiExplicitRecorders abi
 
 --------------------------------------------------------------------------------
 -- Idempotence

@@ -48,6 +48,18 @@ Initial version.
   discharge, and they run in the real compile while this walk does not.
   Blame is reported as the designer WROTE it (`1 <= n`), not as the normal
   form the oracle reduced it to.
+* A closed local binding that carries **its own type signature** is now
+  traced. Closed bindings are skipped because GHC generalises them and will
+  not quantify the injected `CanTrace` application in an *inferred* type — a
+  signature already pins the type, so the hazard is absent exactly where the
+  author was explicit. Unsigned closed bindings are still skipped, and are
+  the one remaining path that is silent in both channels: no wire and no
+  warning, because the oracle is never asked.
+* A binding whose right-hand side already applies `traceSignalC`, `probe` or
+  `probeSW` under the binder's own name does not get an injected recorder on
+  top. It used to record the signal twice, rendered `name_0`/`name_1`. A
+  different name still gets both, since that is two signals the author asked
+  for.
 * Regression tests lifted from a downstream consumer's reproducers
   (`tests/Test/Downstream.hs`), inverted to assert the fixes rather than the
   defects. Their F1 case reproduced here exactly against the audited pin;
