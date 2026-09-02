@@ -718,6 +718,38 @@ The audit's coverage gap 1 (`wbStorage` invisible; protocol wiring binds no
   exists only for genuinely unused holes — there is currently NO per-port
   opt-out for used ports (a future ccc knob if tap cost ever bites).
 
+### F12 — downstream audit of the warning categories (2026-09-02) ✅ FIXED
+
+A consumer moved its pin to the categories commit and triaged all 41 resulting
+warnings. 35 were accurate; the audit is the best evidence the split earns its
+keep, and it found two real upstream defects.
+
+* **The oracle reported satisfiable constraints as proved-absent.** Three
+  warnings named `KnownNat (BitSize <composite>)` in the *untraced* (proved)
+  category. That constraint is a type-family application; the oracle walks the
+  instance environment and never runs the typelits solver plugins the design
+  compiles with, so it could neither discharge nor rule it out — and filed the
+  decline as a fact. Reproduced here as a 3-tuple payload whose member has a
+  family-defined `BitSize` (Clash's tuple `BitPack` instances carry
+  `KnownNat (BitSize a)`), then FIXED at the root: the oracle reduces families
+  now, so the wire traces rather than being relabelled.
+* **Ground `Assert` constraints were undecidable.** `1 <= 4096` and `1 <= 16`
+  were reported *undecided* — "monomorphic is safe" was not a usable
+  heuristic. The same normalisation decides them.
+* **No way to declare that a function intentionally has no scope.** Three
+  harness boundaries carried `HasCircuitContext` without `OPAQUE` on purpose,
+  and the only remedy was suppressing the category — which also masks the
+  mistake it exists to catch. `{-# ANN f NoCircuitScope #-}` marks the
+  binder instead; the category stays promotable everywhere else.
+
+The remaining `undecided` reports were `1 <= n` on genuinely polymorphic `n`,
+which stays honest: no normalisation decides a skolem.
+
+Worth recording from the same audit: a blanket `-Werror` promotes custom
+warning categories, so the pin bump turned every warning into an error and
+broke their CI. That is GHC's behaviour rather than ours, and it is now called
+out in the README and in "Clash.CircuitContext.Plugin.Diagnostics".
+
 ## Roadmap (priority order)
 
 1. **`withoutCircuitContext`** — ✅ shipped (F1).

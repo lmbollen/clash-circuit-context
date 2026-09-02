@@ -1,5 +1,6 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE MagicHash #-}
@@ -69,6 +70,7 @@ module Clash.CircuitContext.Core (
 
   -- * Hierarchy
   HierSeg (..),
+  CircuitContextAnnotation (..),
   component,
   imapComponents,
   qualifyName,
@@ -99,6 +101,8 @@ module Clash.CircuitContext.Core (
   mooreBProbed,
   probeFmap,
 ) where
+
+import Data.Data (Data)
 
 import Clash.Explicit.Mealy (mealy)
 import Clash.Explicit.Moore (moore)
@@ -546,6 +550,32 @@ newRecorders window = do
     pure (TraceEntry per w forced (wrunsToRuns runs) rest adt)
   freezeProbe (per, w, adt, accRef) =
     (\runs -> ProbeEntry per w (wrunsToRuns runs) adt) <$> readIORef accRef
+
+{- | Declarations of intent the plugin reads from an @ANN@ pragma.
+
+@ANN@ rather than a new pragma or a marker constraint because a Clash design
+already annotates this way (@{\-\# ANN topEntity (Synthesize …) \#-\}@), and
+because a mistyped constructor is a compile error — which is the point: a
+marker that silently fails to register would reintroduce exactly the silence
+these annotations exist to remove.
+
+> {\-\# ANN runSystem NoCircuitScope \#-\}
+> runSystem :: HasCircuitContext => … -- deliberately no OPAQUE
+-}
+data CircuitContextAnnotation
+  = {- | This binder carries 'HasCircuitContext' and has no @OPAQUE@ pragma
+    ON PURPOSE, so stop reporting it.
+
+    The shape is a real one: a test harness or simulation driver takes the
+    constraint in order to pass it down, and wants the design tree rooted
+    at the waveform's top rather than nested under a driver's scope. It is
+    indistinguishable, to the plugin, from the mistake of forgetting the
+    pragma — so the difference has to be written down. Suppressing
+    @-Wx-circuit-context-uninstrumented@ for the module would hide the
+    mistake too; this hides only the binder you vouched for.
+    -}
+    NoCircuitScope
+  deriving (Data, Eq, Show)
 
 {- | @component "fifo" circuit@: everything traced or probed inside
 @circuit@ is qualified by @…fifo.@.

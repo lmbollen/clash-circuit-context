@@ -60,6 +60,7 @@ import qualified GHC.Builtin.Types as GHC
 import qualified GHC.Builtin.Types.Literals as GHC (typeNatTyCons)
 import qualified GHC.Core.InstEnv as GHC
 import qualified GHC.Core.Predicate as GHC
+import qualified GHC.Core.Reduction as GHC (reductionReducedType)
 import qualified GHC.Core.TyCo.FVs as GHC
 import qualified GHC.Core.TyCon as GHC
 import qualified GHC.Core.Type as GHC
@@ -183,7 +184,13 @@ rewriteGround ::
 rewriteGround env fam cls _givens [t]
   | GHC.noFreeVarsOfType t = do
       decision <-
-        solvablePred API.getInstEnvs (totalClassesOf env) [] fuel0 (GHC.mkClassPred cls [t])
+        solvablePred
+          API.getInstEnvs
+          reduceFamily
+          (totalClassesOf env)
+          []
+          fuel0
+          (GHC.mkClassPred cls [t])
       case decision of
         Defer -> pure API.TcPluginNoRewrite
         _ -> do
@@ -234,6 +241,7 @@ solveStuck env givens wanteds = do
             decision <-
               solvablePred
                 API.getInstEnvs
+                reduceFamily
                 (totalClassesOf env)
                 givenPreds
                 fuel0
@@ -329,6 +337,14 @@ reportDeclined loc cls t = \case
 -- Solvability approximation
 --------------------------------------------------------------------------------
 
+{- | One type-family reduction step, as 'solvablePred' wants it: the reduced
+type, or 'Nothing' where no equation matches.
+-}
+reduceFamily ::
+  (API.MonadTcPlugin m) => API.TyCon -> [API.Type] -> m (Maybe API.Type)
+reduceFamily tc args =
+  fmap GHC.reductionReducedType <$> API.matchFam tc args
+
 {- | The flag-dispatch classes, whose constraints are total (see the guard in
 'solvablePred').
 -}
@@ -393,6 +409,13 @@ first oracle query.
 solvablePred ::
   (Monad m) =>
   m GHC.InstEnvs ->
+  {- | One-step type-family reduction. The oracle walks the instance
+  environment itself and never runs the typechecker's solver, so without this
+  a family application it cannot see through — @BitSize SomeRecord@, the
+  @Assert@ behind @1 <= 4096@ — looks like a type nothing can be known about.
+  Reducing first is the difference between declining a wire and tracing it.
+  -}
+  (API.TyCon -> [API.Type] -> m (Maybe API.Type)) ->
   {- | The flag-dispatch classes (@AutoTrace@\/@AutoProbe@), which are TOTAL:
   see the note at the guard that uses this.
   -}
@@ -401,7 +424,7 @@ solvablePred ::
   Int ->
   API.PredType ->
   m Decision
-solvablePred getEnvs totalClasses givenPreds = go
+solvablePred getEnvs reduceFam totalClasses givenPreds = go
  where
   go fuel pred0
     | fuel <= 0 = pure (gaveUp pred0)
@@ -431,9 +454,20 @@ solvablePred getEnvs totalClasses givenPreds = go
           | GHC.getName cls == GHC.typeableClassName ->
               pure (litOr (GHC.noFreeVarsOfType pred0) pred0)
           | otherwise -> byInstance fuel cls args pred0
-        -- Not a class constraint at all: an equality, or a type family such
-        -- as the @Assert@ behind @1 <= n@. Nothing here is a proof.
-        _ -> pure (gaveUp pred0)
+        -- Not a class constraint: an equality, or a type family such as the
+        -- @Assert@ behind @1 <= n@. Reduce it and look again — @1 <= 4096@
+        -- normalises to the empty constraint, which is a real Yes — and only
+        -- give up when it will not budge. Nothing on this path is ever a
+        -- proof of failure: not understanding a constraint says nothing about
+        -- whether it holds.
+        _ -> do
+          reduced <- normalise fuel pred0
+          if GHC.eqType reduced pred0
+            then pure (gaveUp pred0)
+            else
+              if emptyConstraint reduced
+                then pure Yes
+                else reblame pred0 <$> go (fuel - 1) reduced
 
   litOr True _ = Yes
   litOr False pred0 = gaveUp pred0
@@ -452,13 +486,57 @@ solvablePred getEnvs totalClasses givenPreds = go
     , isNatArithTyCon tc
     , not (null tcArgs) =
         conj <$> traverse (go (fuel - 1) . mkKN) tcArgs
-    -- A bare skolem with no matching given: there is genuinely no evidence
-    -- for it, which IS an answer (the solver plugins predicted above cannot
-    -- conjure one either).
-    | otherwise = pure (noInstance (mkKN n))
+    -- A bare type variable with no matching given: there is genuinely no
+    -- evidence for it, and no solver plugin can conjure one. THIS is the
+    -- proof.
+    | isJust (GHC.getTyVar_maybe n) = pure (noInstance (mkKN n))
+    -- Anything else — @BitSize SomeRecord@, a family this oracle has never
+    -- heard of — gets reduced and re-asked. If it still will not budge, the
+    -- honest answer is that we do not know: @KnownNat@ is exactly the class
+    -- the typelits solver plugins discharge, and they run in the real
+    -- compile while this walk does not. Calling that "no instance" was
+    -- reporting a guess as a fact (Helios F1: @KnownNat (BitSize
+    -- ManticoreStatus)@ is satisfiable, and was declined as proved-absent).
+    | otherwise = do
+        reduced <- normalise fuel n
+        if GHC.eqType reduced n
+          then pure (gaveUp (mkKN n))
+          else reblame (mkKN n) <$> knownNat (fuel - 1) cls reduced
    where
     n = GHC.expandTypeSynonyms n0
     mkKN t = GHC.mkClassPred cls [t]
+
+  {- Bottom-up type-family normalisation, fuel-bounded. 'API.matchFam' takes
+  ONE step and matches only against already-reduced arguments, so
+  @Assert (1 <=? 4096) msg@ needs its argument reduced before the @Assert@
+  equation applies at all — which is why this recurses into the arguments
+  first rather than just calling matchFam at the root. -}
+  normalise fuel ty
+    | fuel <= 0 = pure ty
+    | Just (tc, args) <- GHC.splitTyConApp_maybe ty = do
+        args' <- traverse (normalise (fuel - 1)) args
+        if GHC.isTypeFamilyTyCon tc
+          then do
+            step <- reduceFam tc args'
+            case step of
+              Just ty' -> normalise (fuel - 1) ty'
+              Nothing -> pure (GHC.mkTyConApp tc args')
+          else pure (GHC.mkTyConApp tc args')
+    | otherwise = pure ty
+
+  {- Report the requirement the DESIGNER wrote, not the normal form this
+  oracle reduced it to. Normalising is an internal step; blaming
+  @Assert (OrdCond (CmpNat 1 n) 'True 'True 'False) (TypeError …)@ when the
+  signature says @1 <= n@ hands the reader a type they never typed. -}
+  reblame orig = \case
+    GaveUp _ -> gaveUp orig
+    NoInstance _ -> noInstance orig
+    other -> other
+
+  -- @() :: Constraint@, what a discharged @Assert@ reduces to.
+  emptyConstraint ty = case GHC.splitTyConApp_maybe ty of
+    Just (tc, []) -> GHC.isCTupleTyConName (GHC.getName tc)
+    _ -> False
 
   byInstance fuel cls args pred0 = do
     ienvs <- getEnvs

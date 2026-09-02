@@ -86,6 +86,14 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
       echo "FAIL: expected diagnostic missing: $want"; fail=1
     fi
   done
+  # ...and the marker must silence exactly the binder it vouches for, while
+  # the same shape without it still reports (Helios F4). Absence is the
+  # assertion, so it is checked against the same fresh log.
+  if grep -qF "'vouchedFlat'" "$log"; then
+    echo "FAIL: {-# ANN … NoCircuitScope #-} did not silence its binder"; fail=1
+  else
+    echo "ok: NoCircuitScope silences only the binder it vouches for"
+  fi
 fi
 
 # The categories are real GHC warnings, so "strict mode" is -Werror= and

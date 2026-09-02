@@ -145,6 +145,7 @@ rewriteGroup ctx grp = case hs_valds grp of
         , isOpaqueSpec (GHC.inl_inline prag)
         ]
       signed = [n | L _ (TypeSig _ ns _) <- sigs, L _ n <- ns]
+      vouched = noScopeAnnotated (ctxAbi ctx) grp
     results <-
       mapM
         ( \(r, bs) ->
@@ -154,7 +155,7 @@ rewriteGroup ctx grp = case hs_valds grp of
     let
       groups' = [(r, GHC.listToBag (map fst prs)) | (r, prs) <- results]
       skipped = concat [concatMap snd prs | (_, prs) <- results]
-      notes = diagnose modes opaques signed both groups
+      notes = diagnose modes opaques signed both vouched groups
     pure (grp{hs_valds = XValBindsLR (NValBinds groups' sigs)}, skipped <> notes)
   _ -> pure (grp, [])
 
@@ -333,9 +334,11 @@ diagnose ::
   [GHC.Name] ->
   -- | binders whose signature wrote both constraints
   [GHC.Name] ->
+  -- | binders annotated @NoCircuitScope@
+  [GHC.Name] ->
   [(GHC.RecFlag, LHsBinds GhcRn)] ->
   [Note]
-diagnose modes opaques signed both groups = concatMap check binders
+diagnose modes opaques signed both vouched groups = concatMap check binders
  where
   binders =
     [ (nm, locA l, scopesSomething (fun_matches b))
@@ -354,6 +357,8 @@ diagnose modes opaques signed both groups = concatMap check binders
         ]
     | lookup nm modes == Just TraceMode
     , nm `notElem` opaques
+    , -- The author vouched for this one: {-# ANN f NoCircuitScope #-}.
+    nm `notElem` vouched
     , -- With no where/let bindings there is nothing that WOULD have been
     -- scoped, so the missing pragma costs nothing and saying so is noise.
     hasBindings
@@ -388,6 +393,38 @@ scopesSomething (MG _ (L _ ms)) = any nonEmpty ms
   nonEmpty _ = False
   isEmpty (EmptyLocalBinds _) = True
   isEmpty _ = False
+
+{- | Binders the author annotated @{\-\# ANN f NoCircuitScope \#-\}@: a
+'HasCircuitContext' function that deliberately has no @OPAQUE@ pragma.
+
+Read here rather than typechecked, so nothing has to run: an @ANN@'s
+expression is already renamed at this point, and the marker is recognised by
+the DataCon's resolved 'GHC.Name' — the same by-Name discipline the rest of
+the ABI uses, and the reason a typo is a compile error rather than a marker
+that quietly does not apply.
+
+Traversed generically because 'AnnDecl' gained and lost a @SourceText@ field
+across the supported GHCs, while 'AnnProvenance' did not: one annotation
+declaration holds exactly one provenance and one expression, so pulling the
+two out of the same node cannot mismatch them.
+-}
+noScopeAnnotated :: AbiNames -> HsGroup GhcRn -> [GHC.Name]
+noScopeAnnotated abi grp =
+  [ nm
+  | annDecl <- hs_annds grp
+  , any mentionsMarker (SYB.listify isExpr annDecl)
+  , ValueAnnProvenance (L _ nm) <- SYB.listify isProvenance annDecl
+  ]
+ where
+  isExpr :: HsExpr GhcRn -> Bool
+  isExpr _ = True
+
+  isProvenance :: AnnProvenance GhcRn -> Bool
+  isProvenance _ = True
+
+  mentionsMarker :: HsExpr GhcRn -> Bool
+  mentionsMarker (HsVar _ (L _ n)) = n == abiNoCircuitScope abi
+  mentionsMarker _ = False
 
 {- | Signatures on class methods and class defaults that ask for
 instrumentation the pass never performs.

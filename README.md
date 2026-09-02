@@ -256,6 +256,26 @@ Which means "strict mode" is not a plugin option, it is `-Werror`:
 -Werror=x-circuit-context-untraced  -- a curated design: any lost wire fails CI
 ```
 
+A blanket `-Werror` promotes these like any other warning — GHC's behaviour,
+not this plugin's, but worth knowing before a pin bump: a project already
+building with `-Werror` sees previously silent fallbacks become build
+failures on the first build after enabling them.
+
+For the one shape that is *deliberate* rather than a near-miss — a test
+harness or simulation driver that carries `HasCircuitContext` with no
+`OPAQUE`, so the design tree roots at the waveform top instead of under a
+driver's scope — say so on the binder instead of silencing the category:
+
+```haskell
+{-# ANN runSystem NoCircuitScope #-}
+runSystem :: HasCircuitContext => …   -- deliberately no OPAQUE
+```
+
+That keeps `-Wx-circuit-context-uninstrumented` live, and promotable to
+`-Werror`, for every binder you did *not* vouch for. A mistyped constructor
+is a compile error, which is the point: a marker that silently failed to
+register would reintroduce the silence these warnings exist to remove.
+
 Nothing here ever fails a build on its own, so promoting is a decision you
 make per project. The fallback itself is unchanged either way: instrumented
 code never fails to compile because something cannot be traced, and
@@ -464,9 +484,11 @@ actually collects a waveform.
   `withoutCircuitContext` (see [Opting out](#opting-out)). This is a
   compile-time concern only; it does not affect the generated hardware
   (see below).
-* The traceability oracle is a conservative approximation: an exotic
-  instance context it cannot decide falls back to *not tracing* (never a
-  compile error). It says so — `-Wx-circuit-context-undecided`, kept apart
+* The traceability oracle is a conservative approximation. It reduces type
+  families before deciding — so `KnownNat (BitSize SomeRecord)` and a ground
+  `1 <= 8` are answered rather than declined — but an instance context it
+  still cannot decide falls back to *not tracing* (never a compile error).
+  It says so — `-Wx-circuit-context-undecided`, kept apart
   from the proved `-Wx-circuit-context-untraced` precisely because a wire
   lost to the approximation is as likely to be a limitation here as a fact
   about your types. Promote it with `-Werror=` on a design whose waveform

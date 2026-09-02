@@ -7,6 +7,8 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TupleSections #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 -- DELIBERATE: the suite's cabal stanza ALREADY enables the plugin, so this
@@ -80,6 +82,31 @@ deriving anyclass instance (KnownNat n, 1 <= n) => Waveform (Awkward n)
 unAwkward :: (KnownNat n) => Awkward n -> Int
 unAwkward (Awkward u) = fromIntegral u
 
+{- | A payload whose @BitSize@ is a TYPE FAMILY application rather than
+something the oracle can read off. Clash's tuple 'BitPack' instances carry
+@KnownNat (BitSize a)@ in their context, so a tuple containing this asks the
+oracle a question it can only answer by reducing the family.
+
+Helios F1: it used to answer "no instance" — reporting a guess as a proof,
+and losing the wire. The oracle reduces families now, so this traces.
+-}
+type family Width a :: Nat
+
+type instance Width Bool = 4
+
+newtype Tagged = Tagged (Unsigned 4)
+  deriving (Generic, Show)
+  deriving newtype (NFDataX)
+  deriving anyclass (Waveform)
+
+instance BitPack Tagged where
+  type BitSize Tagged = Width Bool
+  pack (Tagged u) = pack u
+  unpack = Tagged . unpack
+
+thd :: (a, b, c) -> c
+thd (_, _, c) = c
+
 -- | Component via a LOCAL constraint synonym.
 viaLocalSyn :: (LocalCtx dom) => Signal dom Int -> Signal dom Int
 viaLocalSyn inp = out
@@ -99,6 +126,42 @@ viaImportedSyn k inp = out
   _forced = untraceable
   untraceable = Undescribed <$> inp
 {-# OPAQUE viaImportedSyn #-}
+
+{- | Helios F1 regression: the payload's traceability turns on
+@KnownNat (BitSize Tagged)@, a type-family application. Reported as a proved
+absence before the oracle could reduce families; @tupled@ must be in the
+recorded paths.
+-}
+carriesFamily ::
+  (LocalCtx dom) =>
+  Signal dom (Tagged, Bool, Unsigned 8) ->
+  Signal dom (Tagged, Bool, Unsigned 8)
+carriesFamily inp = tupled
+ where
+  tupled = inp
+{-# OPAQUE carriesFamily #-}
+
+{- | The GROUND half of Helios F2. @1 <= 8@ is the same @Assert@ family as
+@1 <= n@, and it reduces: "monomorphic is safe" became a usable heuristic
+once the oracle normalised before giving up. Contrast 'sized', where @n@ is a
+skolem and the honest answer is still undecided.
+-}
+grounded :: (LocalCtx dom) => Signal dom (Awkward 8) -> Signal dom (Awkward 8)
+grounded inp = eight
+ where
+  eight = inp
+{-# OPAQUE grounded #-}
+
+{- | Helios F4: a harness boundary that carries the constraint and
+deliberately has no @OPAQUE@, vouched for by the annotation. It must draw no
+warning, while 'noOpaque' — the same shape, unvouched — still does. That pair
+is the point: suppressing the category for the module would have hidden both.
+-}
+{-# ANN vouchedFlat NoCircuitScope #-}
+vouchedFlat :: (HasCircuitContext) => Signal System Int -> Signal System Int
+vouchedFlat inp = rooted
+ where
+  rooted = inp + 11
 
 {- | A tuple PATTERN binding under a synonym context. Each binder is renamed
 fresh and given a sibling @a = autoTrace "a" a'@ — an operation that is NOT
@@ -157,6 +220,9 @@ top inp =
     + viaTuplePat inp
     + noOpaque (unsigned inp)
     + (unAwkward <$> sized (Awkward . fromIntegral <$> inp :: Signal System (Awkward 8)))
+    + vouchedFlat inp
+    + (unAwkward <$> grounded (Awkward . fromIntegral <$> inp))
+    + (fromIntegral . thd <$> carriesFamily ((Tagged 1,True,) . fromIntegral <$> inp))
 {-# OPAQUE top #-}
 
 main :: IO ()
