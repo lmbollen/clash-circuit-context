@@ -353,7 +353,11 @@ dogfooding rather than bittide's:
   invisible to the renamer, which runs before synonyms are expanded — the
   function kept tracing but silently lost its `$scope`. Both kinds of synonym
   are now followed: a module-local one from the group being compiled, an
-  imported one from its interface.
+  imported one from its interface. The real-world case was already in
+  `deps/`: `clash-protocols-memmap`'s `RegisterWbConstraints` bundles the
+  constraint with eight others for twelve-plus register combinators, and none
+  of them could have become a component before this
+  (see [`dep-instrumentation-assessment.md`](dep-instrumentation-assessment.md)).
 * enabling the plugin twice (package-wide *and* an `OPTIONS_GHC` pragma) ran
   the renamer twice and nested every component wrap in itself
   (`switch.switch`). The pass is now idempotent, which also means hand-written
