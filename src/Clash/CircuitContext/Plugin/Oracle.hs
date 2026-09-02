@@ -1,5 +1,6 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE LambdaCase #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {- |
 Copyright  :  (C) 2026, QBayLogic B.V.
@@ -36,19 +37,23 @@ the rule above) when nothing applies.
 
 A conservative no is the mechanism that lets an untraceable payload degrade
 to identity instead of failing the build — and also the reason a wire can go
-missing with nothing said about it. So the 'No' carries the requirement it
-got stuck on ('Decision'), and
-@-fplugin-opt=Clash.CircuitContext.Plugin:diagnostics@ reports both: the type
-that will not be traced, and what would have to hold for it to be.
+missing with nothing said about it. Two things separate those:
+
+* 'Decision' distinguishes a PROOF ('NoInstance': the instance environment
+  has no match) from the oracle GIVING UP ('GaveUp': fuel exhausted, a
+  constraint that is not a class, an ambiguous instance match). Both fall
+  back to identity — they must — but only the first is an answer. The second
+  is this approximation admitting it may be wrong, which is a different thing
+  to tell a reader, and a different thing to promote to an error.
+* both carry the requirement they stopped at, so the message names what would
+  have to hold.
+
+They report in separate warning categories; see
+"Clash.CircuitContext.Plugin.Diagnostics".
 -}
 module Clash.CircuitContext.Plugin.Oracle (oracle) where
 
-import Control.Monad (when)
-import Control.Monad.IO.Class (MonadIO, liftIO)
-import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.Maybe (isJust)
-import qualified Data.Set as Set
-import System.IO (hPutStrLn, stderr)
 
 import qualified GHC.Builtin.Names as GHC
 import qualified GHC.Builtin.Types as GHC
@@ -58,6 +63,7 @@ import qualified GHC.Core.Predicate as GHC
 import qualified GHC.Core.TyCo.FVs as GHC
 import qualified GHC.Core.TyCon as GHC
 import qualified GHC.Core.Type as GHC
+import qualified GHC.Data.Strict as Strict
 import qualified GHC.Iface.Load as GHC (loadSysInterface)
 import qualified GHC.Plugins as GHC (
   getOccString,
@@ -66,7 +72,6 @@ import qualified GHC.Plugins as GHC (
   moduleNameString,
   nameModule,
   nameModule_maybe,
-  ppr,
   text,
  )
 import qualified GHC.Tc.Types.Constraint as GHC (ctLocSpan)
@@ -75,15 +80,10 @@ import qualified GHC.Tc.Utils.TcType as GHC
 import qualified GHC.TcPlugin.API as API
 import qualified GHC.TcPlugin.API.Internal as APIInternal (unsafeLiftTcM)
 import qualified GHC.Types.Name as GHC (getName)
+import qualified GHC.Types.SrcLoc as GHC (SrcSpan (RealSrcSpan))
 import qualified GHC.Types.Unique.FM as GHC
-import qualified GHC.Utils.Outputable as GHC (
-  SDocContext (sdocStyle, sdocSuppressUniques),
-  defaultSDocContext,
-  defaultUserStyle,
-  renderWithContext,
- )
 
-import Clash.CircuitContext.Plugin.Options (Options (..))
+import qualified Clash.CircuitContext.Plugin.Diagnostics as Diag
 
 data OracleEnv = OracleEnv
   { canTraceTyCon :: API.TyCon
@@ -95,25 +95,20 @@ data OracleEnv = OracleEnv
   , canDescribeTyCon :: API.TyCon
   , autoDescribeClass :: API.Class
   , describableClass :: API.Class
-  , reported :: Maybe (IORef (Set.Set String))
-  {- ^ Under @diagnostics@, the messages already on stderr. The same query
-  arrives many times (once per constraint-solving round, per occurrence), and
-  a decision repeated is not news.
-  -}
   }
 
-oracle :: Options -> API.TcPlugin
-oracle opts =
+oracle :: API.TcPlugin
+oracle =
   API.TcPlugin
-    { API.tcPluginInit = initEnv opts
+    { API.tcPluginInit = initEnv
     , API.tcPluginSolve = solveStuck
     , API.tcPluginRewrite = rewriters
     , API.tcPluginPostTc = \_ -> pure ()
     , API.tcPluginShutdown = \_ -> pure ()
     }
 
-initEnv :: Options -> API.TcPluginM 'API.Init OracleEnv
-initEnv opts = do
+initEnv :: API.TcPluginM 'API.Init OracleEnv
+initEnv = do
   let modName = API.mkModuleName "Clash.CircuitContext.Auto"
   pkgQual <- API.resolveImport modName Nothing
   found <- API.findImportedModule modName pkgQual
@@ -152,9 +147,6 @@ initEnv opts = do
         <*> tc "CanDescribe"
         <*> cl "AutoDescribe"
         <*> cl "Describable"
-        <*> if optDiagnostics opts
-          then Just <$> liftIO (newIORef Set.empty)
-          else pure Nothing
     _ ->
       error
         "Clash.CircuitContext.Plugin: Clash.CircuitContext.Auto not found (missing clash-circuit-context dependency?)"
@@ -193,10 +185,10 @@ rewriteGround env fam cls _givens [t]
       decision <-
         solvablePred API.getInstEnvs (totalClassesOf env) [] fuel0 (GHC.mkClassPred cls [t])
       case decision of
-        Undecided -> pure API.TcPluginNoRewrite
+        Defer -> pure API.TcPluginNoRewrite
         _ -> do
           loc <- API.rewriteEnvCtLoc <$> API.askRewriteEnv
-          reportDeclined env loc cls t decision
+          reportDeclined loc cls t decision
           pure $
             API.TcPluginRewriteTo
               ( API.mkTyFamAppReduction
@@ -247,9 +239,9 @@ solveStuck env givens wanteds = do
                 fuel0
                 (GHC.mkClassPred target [t])
             case decision of
-              Undecided -> pure Nothing
+              Defer -> pure Nothing
               _ -> do
-                reportDeclined env (API.ctLoc ct) target t decision
+                reportDeclined (API.ctLoc ct) target t decision
                 pure (Just (ct, cls, t, isYes decision))
       _ -> pure Nothing
 
@@ -272,66 +264,66 @@ solveStuck env givens wanteds = do
 {- | Report a binding that will NOT be traced (resp. probed), and the
 requirement that stopped it.
 
-Only under @diagnostics@, and only for definite decisions: an 'Undecided' is
-a round the solver will come back from, not an answer. This is the counter to
-the silent-skip contract — @traceSignalC@ takes 'Traceable' as a real
-constraint and so fails to compile on a payload it cannot describe, but an
-AUTO-traced binding degrades to identity, which is exactly what makes a wire
-go missing with nothing said. Every message names the type and what would
-have to hold for it, so the output reads as a list of what to write an
-instance for (or to name with an explicit 'traceSignalC').
+Two categories, because the reader needs to know which of these happened:
 
-Deliberately verbose: it lists every untraced binding, not only the
-surprising ones. Which binding is surprising is what the reader knows and
-this plugin does not.
+* @x-circuit-context-untraced@ — the instance environment has no match. A
+  real answer, and the common one: most local bindings in a design are
+  @Int@s and @Bool@s that were never going to trace.
+* @x-circuit-context-undecided@ — the oracle could not decide and fell back
+  to not tracing. This one may be a limitation of the approximation rather
+  than a fact about the type, so it is the one worth promoting to an error
+  (@-Werror=x-circuit-context-undecided@) on a design whose waveform is load
+  bearing.
+
+Both fall back to identity either way; @traceSignalC@ is the escape hatch
+that takes 'Traceable' as a real constraint, so a payload it cannot describe
+is a compile error rather than a hole.
+
+'Defer' is not reported at all: it is a round the solver will come back
+from, not an answer.
 -}
 reportDeclined ::
-  (API.MonadTcPlugin m, MonadIO m) =>
-  OracleEnv ->
+  forall m.
+  (API.MonadTcPlugin m) =>
   API.CtLoc ->
-  -- | 'Traceable' or 'Probeable' — the requirement that was asked for
+  -- | 'Traceable', 'Probeable' or 'Describable' — what was asked for
   API.Class ->
   -- | the payload type
   API.Type ->
   Decision ->
   m ()
-reportDeclined env loc cls t decision = case (reported env, decision) of
-  (Just seen, No blame) -> do
-    let
-      msg =
-        render (GHC.ctLocSpan loc)
-          <> ": "
-          <> outcome (GHC.getOccString (GHC.getName cls))
-          <> ": "
-          <> render t
-          <> "\n    blocked on: "
-          <> render blame
-    fresh <-
-      liftIO $
-        atomicModifyIORef' seen $ \s ->
-          (Set.insert msg s, not (Set.member msg s))
-    when fresh $
-      liftIO (hPutStrLn stderr ("clash-circuit-context plugin: " <> msg))
+reportDeclined loc cls t = \case
+  NoInstance blame ->
+    say
+      Diag.Untraced
+      [ headline <> Diag.renderPlain t
+      , "no instance for: " <> Diag.renderPlain blame
+      ]
+  GaveUp blame ->
+    say
+      Diag.Undecided
+      [ headline <> Diag.renderPlain t
+      , "the oracle could not decide: " <> Diag.renderPlain blame
+      , "This may be a limit of the approximation rather than a fact about"
+          <> " the type."
+      , "Name the binding with traceSignalC, which takes Traceable as a real"
+          <> " constraint, to find out which."
+      ]
   _ -> pure ()
  where
+  say :: Diag.Category -> [String] -> m ()
+  say cat body =
+    APIInternal.unsafeLiftTcM (Diag.report spn cat body)
+
+  -- 'ctLocSpan' is the REAL span; the diagnostic machinery takes the sum.
+  spn = GHC.RealSrcSpan (GHC.ctLocSpan loc) Strict.Nothing
+
   -- A declined 'Describable' is the mildest of the three: the binding still
   -- records, it just renders as bits. Say which it is.
-  outcome "Probeable" = "not probed"
-  outcome "Describable" = "probed as raw bits (no ADT description)"
-  outcome _ = "not traced"
-
-  -- Uniques suppressed: a skolem printed as @dom_ajlh[sk:1]@ is noise in a
-  -- message whose reader is looking at the source line it names.
-  render :: (API.Outputable a) => a -> String
-  render =
-    GHC.renderWithContext
-      GHC.defaultSDocContext
-        { GHC.sdocSuppressUniques = True
-        , -- User style, not the default DUMP style: a dump prints a skolem's
-          -- typechecker details (@dom[sk:1]@) beside it.
-          GHC.sdocStyle = GHC.defaultUserStyle
-        }
-      . GHC.ppr
+  headline = case GHC.getOccString (GHC.getName cls) of
+    "Probeable" -> "not probed: "
+    "Describable" -> "probed as raw bits (no ADT description): "
+    _ -> "not traced: "
 
 --------------------------------------------------------------------------------
 -- Solvability approximation
@@ -353,21 +345,36 @@ boolTy False = GHC.mkTyConTy GHC.promotedFalseDataCon
 
 {- | The oracle's answer about one requirement.
 
-'No' carries the requirement it got stuck on, which is the whole difference
-between "this will not be traced" and a message a reader can act on: for
-@Signal dom (Maybe (Packet dimX dimY))@ the blame is @Waveform (Packet dimX
-dimY)@ (write the instance), for a size-polymorphic payload it is the
-@KnownNat@ or @1 <= n@ the oracle cannot discharge (name it with an explicit
-'Clash.CircuitContext.Core.traceSignalC' instead).
+Both negative answers carry the requirement they stopped at, which is the
+difference between "this will not be traced" and a message a reader can act
+on: for @Signal dom (Maybe (Packet dimX dimY))@ the blame is @Waveform
+(Packet dimX dimY)@ (write the instance), for a size-polymorphic payload it
+is the @KnownNat@ or @1 <= n@ the oracle cannot discharge (name it with an
+explicit 'Clash.CircuitContext.Core.traceSignalC' instead).
+
+They are kept APART because they mean different things. 'NoInstance' is a
+proof; 'GaveUp' is this approximation reaching its limit, and a wire lost to
+it is a bug in the oracle as often as it is a fact about the design.
 -}
 data Decision
   = Yes
-  | -- | with the requirement to blame
-    No API.PredType
-  | {- | metavariables present, or a skolem-involving negative in a
-    givens-free round (see the module header)
+  | {- | PROVED unsolvable — the instance environment has no match for this
+    requirement. An answer.
     -}
-    Undecided
+    NoInstance API.PredType
+  | {- | The oracle GAVE UP on this requirement: fuel exhausted, a predicate
+    that is not a class (a type family such as the @Assert@ behind
+    @1 <= n@), an ambiguous instance match, a literal-only class at a
+    non-literal. Falls back the same way a 'NoInstance' does, but it is not
+    an answer, and saying so is the difference between a limitation the
+    reader can work around and one that hides.
+    -}
+    GaveUp API.PredType
+  | {- | Not an answer at all: metavariables present, or a skolem-involving
+    negative in a givens-free round (see the module header). The solver
+    will ask again.
+    -}
+    Defer
 
 isYes :: Decision -> Bool
 isYes Yes = True
@@ -397,8 +404,8 @@ solvablePred ::
 solvablePred getEnvs totalClasses givenPreds = go
  where
   go fuel pred0
-    | fuel <= 0 = pure (No pred0)
-    | hasMetas pred0 = pure Undecided
+    | fuel <= 0 = pure (gaveUp pred0)
+    | hasMetas pred0 = pure Defer
     | any (GHC.eqType pred0) givenPreds = pure Yes
     | otherwise = case GHC.classifyPredType pred0 of
         GHC.ClassPred cls args
@@ -424,10 +431,12 @@ solvablePred getEnvs totalClasses givenPreds = go
           | GHC.getName cls == GHC.typeableClassName ->
               pure (litOr (GHC.noFreeVarsOfType pred0) pred0)
           | otherwise -> byInstance fuel cls args pred0
-        _ -> pure (negativeOrDefer pred0)
+        -- Not a class constraint at all: an equality, or a type family such
+        -- as the @Assert@ behind @1 <= n@. Nothing here is a proof.
+        _ -> pure (gaveUp pred0)
 
   litOr True _ = Yes
-  litOr False pred0 = negativeOrDefer pred0
+  litOr False pred0 = gaveUp pred0
 
   -- @KnownNat n@: a literal is known; a given is known (caught by the
   -- eqType check above on recursion); and an application of a type-level
@@ -443,7 +452,10 @@ solvablePred getEnvs totalClasses givenPreds = go
     , isNatArithTyCon tc
     , not (null tcArgs) =
         conj <$> traverse (go (fuel - 1) . mkKN) tcArgs
-    | otherwise = pure (negativeOrDefer (mkKN n))
+    -- A bare skolem with no matching given: there is genuinely no evidence
+    -- for it, which IS an answer (the solver plugins predicted above cannot
+    -- conjure one either).
+    | otherwise = pure (noInstance (mkKN n))
    where
     n = GHC.expandTypeSynonyms n0
     mkKN t = GHC.mkClassPred cls [t]
@@ -459,22 +471,30 @@ solvablePred getEnvs totalClasses givenPreds = go
               subst = GHC.zipTvSubst tvs tys
               theta' = GHC.substTheta subst theta
             conj <$> traverse (go (fuel - 1)) theta'
-        | [] <- matches -> pure (negativeOrDefer pred0)
-        | otherwise -> pure (negativeOrDefer pred0) -- ambiguous match
+        | [] <- matches -> pure (noInstance pred0)
+        -- Instances exist; the oracle could not pick one. Reporting this as
+        -- "no instance" would be a lie the reader cannot check.
+        | otherwise -> pure (gaveUp pred0)
 
-  -- All must hold; one definite no wins over undecided, and the FIRST no is
-  -- the one reported: it is the requirement written leftmost in the
-  -- instance context, which is where a reader looks first.
+  -- All must hold. A proof of failure outranks a give-up (the conjunction
+  -- definitely fails, and the proof is the better blame), and both outrank a
+  -- defer. The FIRST of a kind is the one reported: it is the requirement
+  -- written leftmost in the instance context, which is where a reader looks
+  -- first.
   conj ds
-    | (blame : _) <- [p | No p <- ds] = No blame
+    | (blame : _) <- [p | NoInstance p <- ds] = NoInstance blame
+    | (blame : _) <- [p | GaveUp p <- ds] = GaveUp blame
     | all isYes ds = Yes
-    | otherwise = Undecided
+    | otherwise = Defer
 
   -- A negative involving skolems is only trustworthy when givens were
   -- actually present (simplifyInfer rounds have none).
-  negativeOrDefer pred0
-    | hasSkolems pred0, null givenPreds = Undecided
-    | otherwise = No pred0
+  noInstance = negativeOr NoInstance
+  gaveUp = negativeOr GaveUp
+
+  negativeOr mk pred0
+    | hasSkolems pred0, null givenPreds = Defer
+    | otherwise = mk pred0
 
 {- | Type-level Nat arithmetic whose result is 'GHC.TypeNats.KnownNat' when
 its operands are: GHC's built-in @+ - * ^ Div Mod Log2@ families (compared

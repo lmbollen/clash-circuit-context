@@ -43,9 +43,9 @@ library
     Clash.CircuitContext.Auto
     Clash.CircuitContext.Core
     Clash.CircuitContext.Plugin
+    Clash.CircuitContext.Plugin.Diagnostics
     Clash.CircuitContext.Plugin.Names
     Clash.CircuitContext.Plugin.Oracle
-    Clash.CircuitContext.Plugin.Options
     Clash.CircuitContext.Plugin.Rename
     Clash.CircuitContext.Shockwaves
     Clash.CircuitContext.Waveform
@@ -174,8 +174,9 @@ test-suite auto-instrumentation
 
 -- What the plugin used to lose silently (a constraint synonym hiding
 -- HasCircuitContext, a component wrap nested in itself when the plugin is
--- enabled twice) and what it now reports. Compiled WITH the diagnostics
--- option, so the near-misses reach the build log for check.sh to grep.
+-- enabled twice) and what it now reports. The reports are ordinary GHC
+-- warnings in custom categories, so they reach the build log with no flags
+-- at all for check.sh to grep.
 test-suite plugin-diagnostics
   import: common-options
   type: exitcode-stdio-1.0
@@ -186,11 +187,10 @@ test-suite plugin-diagnostics
     base,
     clash-circuit-context,
     clash-prelude,
+    clash-shockwaves,
     containers,
 
-  ghc-options:
-    -fplugin=Clash.CircuitContext.Plugin
-    -fplugin-opt=Clash.CircuitContext.Plugin:diagnostics
+  ghc-options: -fplugin=Clash.CircuitContext.Plugin
 
 -- Golden test against the REAL circuit-notation desugarer (not a hand-written
 -- imitation of its output): `circuit` blocks desugared by the actual

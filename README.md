@@ -221,33 +221,49 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
 ### When something silently isn't traced
 
 The silent fallback is what makes project-wide enablement safe, and it is
-also what makes a missing wire look exactly like a wire nobody asked for.
-Build once with
+also what makes a missing wire look exactly like a wire nobody asked for. So
+the fallback stays and the silence does not: every decision that costs a wire
+or a scope is a **real GHC warning**, in a custom category you tune with the
+flags you already use.
 
 ```
-cabal build --ghc-options='-fplugin-opt=Clash.CircuitContext.Plugin:diagnostics'
+tests/Test/PluginDiagnostics.hs:114:3: warning: [-Wx-circuit-context-undecided]
+    not traced: Signal dom (Awkward n)
+    the oracle could not decide: 1 <= n
+    This may be a limit of the approximation rather than a fact about the type.
+    Name the binding with traceSignalC, which takes Traceable as a real
+    constraint, to find out which.
+    |
+114 |   held = inp
+    |   ^^^^^^^^^^
 ```
 
-and every such decision says so on stderr, with the source span, the type,
-and the requirement it got stuck on:
+Four categories, because they differ in how likely each is to be a defect:
+
+| Flag | Fires when |
+| --- | --- |
+| `-Wx-circuit-context` | The plugin could not honour something the source unambiguously asked for. Nothing benign lands here. |
+| `-Wx-circuit-context-uninstrumented` | A signature asks for instrumentation somewhere the pass does not reach or does not scope: `HasCircuitContext` without `OPAQUE`, `OPAQUE` without a signature, both constraints at once, a class or instance method body. |
+| `-Wx-circuit-context-undecided` | The oracle could not decide, and fell back to not tracing. **The one that matters**: this is the approximation admitting it may be wrong, not a fact about your types. |
+| `-Wx-circuit-context-untraced` | The oracle found no instance. A real answer, and the verbose one — it fires for every `Int` and `Bool` that was never going to trace. |
+
+Which means "strict mode" is not a plugin option, it is `-Werror`:
 
 ```
-clash-circuit-context plugin: Switch.hs:73:3-35: not traced: Signal dom (Maybe (Packet dimX dimY))
-    blocked on: Waveform (Packet dimX dimY)
-clash-circuit-context plugin: Switch.hs:(31,1)-(38,16): 'switchStep' has HasCircuitContext but no OPAQUE pragma, so its bindings trace in the CALLER's scope. Add {-# OPAQUE switchStep #-} to give it a $scope of its own.
+-Wno-x-circuit-context-untraced     -- I know, stop telling me
+-Werror=x-circuit-context-undecided -- a guess must not cost me a wire
+-Werror=x-circuit-context-untraced  -- a curated design: any lost wire fails CI
 ```
 
-It reports the near-misses on the plugin's own side too — `OPAQUE` without a
-type signature (the mode is read from the signature, so there is nothing to
-read), and a signature carrying both `HasProbe` and `HasCircuitContext`
-(probe wins, and a probed binder never becomes a component).
+Nothing here ever fails a build on its own, so promoting is a decision you
+make per project. The fallback itself is unchanged either way: instrumented
+code never fails to compile because something cannot be traced, and
+`traceSignalC` remains the way to demand tracing at compile time, since it
+takes `Traceable` as a real constraint.
 
-Deliberately verbose: it lists every untraced binding, not only the
-surprising ones, because which one is surprising is what you know and the
-plugin does not. It is a debugging flag, not a warning to leave on — the
-fix for a payload you *need* is usually to name it with an explicit
-`traceSignalC`, which takes `Traceable` as a real constraint and so turns a
-missing wire into a compile error.
+Custom warning categories are a GHC 9.8 feature. On 9.6 these are still real
+warnings — a blanket `-Werror` promotes them — but they cannot be silenced or
+promoted individually.
 
 ### Opting out
 

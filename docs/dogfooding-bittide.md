@@ -329,15 +329,21 @@ constraint but no `OPAQUE`, the plugin still traces the local bindings but does
 the parent. `OPAQUE` is also required for correct per-instance identity (heap
 identity relies on the call not being floated/shared).
 
-*Fix (shipped):* `-fplugin-opt=Clash.CircuitContext.Plugin:diagnostics` reports
-it, along with the other near-misses whose symptom is a missing scope or wire:
-`OPAQUE` without a type signature, a signature carrying both `HasProbe` and
-`HasCircuitContext`, and (from the oracle half) every binding whose payload
-type was declined, with the requirement it got stuck on. Off by default —
-the silent fallback is what makes package-wide enablement safe, so the
-reporting is a build flag, not a warning. Auto-injecting `OPAQUE` was not
-done: it risks a silent instance-identity bug if the injection is a no-op at
-that stage.
+*Fix (shipped):* it is a warning, in the category
+`x-circuit-context-uninstrumented`, alongside the other near-misses whose
+symptom is a missing scope: `OPAQUE` without a type signature, a signature
+carrying both `HasProbe` and `HasCircuitContext`, and a class or instance
+method body (which the pass never reaches). The oracle half reports in two
+further categories — `x-circuit-context-undecided` when it could not decide,
+`x-circuit-context-untraced` when it proved there is no instance — because
+only the second is an answer, and a wire lost to the first is as likely to be
+a limit of the approximation as a fact about the design.
+
+On by default and tuned with GHC's own machinery
+(`-Wno-x-circuit-context-untraced`, `-Werror=x-circuit-context-undecided`),
+so "strict mode" needs no plugin option of its own. Auto-injecting `OPAQUE`
+was not done: it risks a silent instance-identity bug if the injection is a
+no-op at that stage.
 
 Two neighbouring silent failures went with it, both found from the Helios
 dogfooding rather than bittide's:
@@ -724,8 +730,8 @@ The audit's coverage gap 1 (`wbStorage` invisible; protocol wiring binds no
    peripherals (things inside `processingElement`) traceable without repo-wide
    `withoutCircuitContext` churn. Biggest open lever.
 5. **Plugin warning for `HasCircuitContext` without `OPAQUE`** (F6) — ✅
-   shipped, as the opt-in `diagnostics` option, together with constraint-synonym
-   recognition and renamer idempotence.
+   shipped, as one of four custom warning categories, together with
+   constraint-synonym recognition and renamer idempotence.
 6. **Probe-mode: stop descending into multi-arg local helpers** (F5) — removes a
    correctness+perf footgun.
 7. **`Clash.CircuitContext.Waveform` test helpers** (F7) — ✅ shipped, with

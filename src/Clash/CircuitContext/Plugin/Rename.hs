@@ -54,24 +54,21 @@ The renamer-stage rewrite ('GHC.renamedResultAction'):
 * Opt-outs: binder names starting with @_@; compiler-generated bindings are
   skipped via their non-real spans; per module, don't enable the plugin.
 
-* Under @-fplugin-opt=Clash.CircuitContext.Plugin:diagnostics@ the silent
-  near-misses are reported: 'HasCircuitContext' without @OPAQUE@ (traces, but
-  into the caller's scope), @OPAQUE@ without a signature (never instrumented,
-  because the mode is read from the signature), and a signature carrying both
-  constraints (probe wins, and a probed function never becomes a component).
+* The silent near-misses are reported as GHC warnings, in the categories
+  "Clash.CircuitContext.Plugin.Diagnostics" defines: 'HasCircuitContext'
+  without @OPAQUE@ (traces, but into the caller's scope), @OPAQUE@ without a
+  signature (never instrumented, because the mode is read from the
+  signature), a signature carrying both constraints (probe wins, and a probed
+  function never becomes a component), and a class or instance method (this
+  pass rewrites value bindings only, so it never reaches the body).
 
 Supports GHC 9.6 and 9.10 (CPP at the few AST churn points).
 -}
 module Clash.CircuitContext.Plugin.Rename (renamePass) where
 
-import Control.Monad (when)
 import qualified Data.Generics as SYB
-import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import Data.List (isPrefixOf)
 import Data.Maybe (fromMaybe, mapMaybe)
-import qualified Data.Set as Set
-import System.IO (hPutStrLn, stderr)
-import System.IO.Unsafe (unsafePerformIO)
 
 import qualified GHC.Builtin.Names as GHC (ipClassName, otherwiseIdName)
 import qualified GHC.Data.Bag as GHC
@@ -84,74 +81,50 @@ import GHC.Types.Basic (Origin)
 import GHC.Types.SrcLoc (GenLocated (..), unLoc)
 import GHC.Types.Unique.Supply (MonadUnique (getUniqueM))
 
+import qualified Clash.CircuitContext.Plugin.Diagnostics as Diag
 import Clash.CircuitContext.Plugin.Names (AbiNames (..), lookupAbiNames)
-import Clash.CircuitContext.Plugin.Options (Options (..), parseOptions)
 
 data Mode = TraceMode | ProbeMode
   deriving (Eq)
 
 {- | Everything the rewrite reads but never changes: the injection ABI, the
 module's own constraint synonyms (needed to see through one in a signature —
-the renamer runs before synonyms are expanded), the options, and the module
-itself (to tell a local name, which must be resolved from the group, from an
-imported one, which is resolved from its interface).
+the renamer runs before synonyms are expanded), and the module itself (to
+tell a local name, which must be resolved from the group, from an imported
+one, which is resolved from its interface).
 -}
 data Ctx = Ctx
   { ctxAbi :: AbiNames
   , ctxSyns :: [(GHC.Name, LHsType GhcRn)]
-  , ctxOpts :: Options
   , ctxMod :: GHC.Module
   }
+
+{- | One thing to say, and where. Rendered by
+"Clash.CircuitContext.Plugin.Diagnostics", which decides the warning flag it
+answers to.
+-}
+type Note = (GHC.SrcSpan, Diag.Category, [String])
 
 renamePass ::
   [GHC.CommandLineOption] ->
   GHC.TcGblEnv ->
   HsGroup GhcRn ->
   GHC.TcM (GHC.TcGblEnv, HsGroup GhcRn)
-renamePass rawOpts env grp =
+renamePass _opts env grp =
   lookupAbiNames >>= \case
     Nothing -> pure (env, grp)
     Just abi -> do
       let
-        (opts, unknown) = parseOptions rawOpts
         ctx =
           Ctx
             { ctxAbi = abi
             , ctxSyns = localSynonyms grp
-            , ctxOpts = opts
             , ctxMod = GHC.tcg_mod env
             }
-      (grp', warnings) <- rewriteGroup ctx grp
-      -- A mistyped option that silently did nothing is the same failure mode
-      -- 'diagnostics' exists to remove, so say so unconditionally.
-      let
-        messages =
-          [ "unknown plugin option '" <> o <> "' (known: diagnostics)"
-          | o <- unknown
-          ]
-            <> warnings
-      GHC.liftIO (mapM_ sayOnce messages)
+      (grp', notes) <- rewriteGroup ctx grp
+      methods <- methodNotes ctx grp
+      mapM_ (\(spn, cat, body) -> Diag.report spn cat body) (notes <> methods)
       pure (env, grp')
-
-{- | Put one message on stderr, at most once per process.
-
-The pass runs twice when the plugin is enabled twice (package-wide plus an
-@OPTIONS_GHC@ pragma) — harmless since it became idempotent, but it would
-otherwise say everything twice, which reads exactly like the doubled scopes
-that used to be the real bug. Messages carry their own source span, so
-"the same message" is the same site.
--}
-sayOnce :: String -> IO ()
-sayOnce msg = do
-  fresh <-
-    atomicModifyIORef' saidAlready $ \said ->
-      (Set.insert msg said, not (Set.member msg said))
-  when fresh $
-    hPutStrLn stderr ("clash-circuit-context plugin: " <> msg)
-
-saidAlready :: IORef (Set.Set String)
-saidAlready = unsafePerformIO (newIORef Set.empty)
-{-# NOINLINE saidAlready #-}
 
 -- | The module's own type synonyms, by name, for 'ctxMentions'.
 localSynonyms :: HsGroup GhcRn -> [(GHC.Name, LHsType GhcRn)]
@@ -161,7 +134,7 @@ localSynonyms grp =
   , L _ SynDecl{tcdLName = L _ n, tcdRhs = rhs} <- group_tyclds tyclGroup
   ]
 
-rewriteGroup :: Ctx -> HsGroup GhcRn -> GHC.TcM (HsGroup GhcRn, [String])
+rewriteGroup :: Ctx -> HsGroup GhcRn -> GHC.TcM (HsGroup GhcRn, [Note])
 rewriteGroup ctx grp = case hs_valds grp of
   XValBindsLR (NValBinds groups sigs) -> do
     (modes, both) <- classifySigs ctx sigs
@@ -180,9 +153,9 @@ rewriteGroup ctx grp = case hs_valds grp of
         groups
     let
       groups' = [(r, GHC.listToBag (map fst prs)) | (r, prs) <- results]
-      warnings = concat [concatMap snd prs | (_, prs) <- results]
-      notes = diagnose ctx modes opaques signed both groups
-    pure (grp{hs_valds = XValBindsLR (NValBinds groups' sigs)}, warnings <> notes)
+      skipped = concat [concatMap snd prs | (_, prs) <- results]
+      notes = diagnose modes opaques signed both groups
+    pure (grp{hs_valds = XValBindsLR (NValBinds groups' sigs)}, skipped <> notes)
   _ -> pure (grp, [])
 
 isOpaqueSpec :: GHC.InlineSpec -> Bool
@@ -223,7 +196,13 @@ both? Only the spine counts: a nested-rank occurrence (like 'component'\'s own
 @(HasCircuitContext => r)@ argument) does not bring the parameter into scope.
 -}
 sigModes :: Ctx -> LHsSigWcType GhcRn -> GHC.TcM (Bool, Bool)
-sigModes ctx (HsWC _ (L _ (HsSig _ _ body))) = do
+sigModes ctx (HsWC _ body) = sigModesT ctx body
+
+{- | 'sigModes' on the wildcard-free signature type a class-method signature
+carries.
+-}
+sigModesT :: Ctx -> LHsSigType GhcRn -> GHC.TcM (Bool, Bool)
+sigModesT ctx (L _ (HsSig _ _ body)) = do
   isProbe <- anyM (ctxMentions ctx probeIP) elems
   isTrace <- anyM (ctxMentions ctx circuitContextIP) elems
   pure (isProbe, isTrace)
@@ -336,16 +315,17 @@ anyM p = go
 -- Diagnostics
 --------------------------------------------------------------------------------
 
-{- | The near-misses, reported only under
-@-fplugin-opt=Clash.CircuitContext.Plugin:diagnostics@.
+{- | The near-misses: clean compiles that cost a scope or a wire.
 
-Each is a clean compile that costs a scope or a wire, so none of them can be
-a warning by default — a package-wide plugin must stay silent on the modules
-it does not instrument. Every message names the binder and its span, so the
-list reads as a work queue.
+All in the @x-circuit-context-uninstrumented@ category, because they share a
+property — each is often exactly what the author meant. A small helper
+flattening into its caller is the normal case, not a mistake, which is why
+this category is the one a project is most likely to silence
+(@-Wno-x-circuit-context-uninstrumented@) once it has read the list.
+
+The span goes to the diagnostic, so the messages do not repeat it.
 -}
 diagnose ::
-  Ctx ->
   [(GHC.Name, Mode)] ->
   -- | OPAQUE binders
   [GHC.Name] ->
@@ -354,48 +334,111 @@ diagnose ::
   -- | binders whose signature wrote both constraints
   [GHC.Name] ->
   [(GHC.RecFlag, LHsBinds GhcRn)] ->
-  [String]
-diagnose ctx modes opaques signed both groups
-  | not (optDiagnostics (ctxOpts ctx)) = []
-  | otherwise = concatMap check binders
+  [Note]
+diagnose modes opaques signed both groups = concatMap check binders
  where
   binders =
-    [ (nm, locA l)
+    [ (nm, locA l, scopesSomething (fun_matches b))
     | (_, bs) <- groups
-    , L l FunBind{fun_id = L _ nm} <- GHC.bagToList bs
+    , L l b@FunBind{fun_id = L _ nm} <- GHC.bagToList bs
     ]
   -- Nothing in an uninstrumented module is a near-miss: the plugin is
   -- package-wide and most modules are not designs.
   instrumented = not (null modes)
 
-  check (nm, spn) =
-    [ at spn nm $
-        "has HasCircuitContext but no OPAQUE pragma, so its bindings trace in"
-          <> " the CALLER's scope. Add {-# OPAQUE "
-          <> GHC.getOccString nm
-          <> " #-} to give it a $scope of its own."
+  check (nm, spn, hasBindings) =
+    [ note spn $
+        [ "'" <> occ <> "' has HasCircuitContext but no OPAQUE pragma."
+        , "Its bindings trace in the CALLER's scope, not a scope of its own."
+        , "Add {-# OPAQUE " <> occ <> " #-} if you wanted one."
+        ]
     | lookup nm modes == Just TraceMode
     , nm `notElem` opaques
+    , -- With no where/let bindings there is nothing that WOULD have been
+    -- scoped, so the missing pragma costs nothing and saying so is noise.
+    hasBindings
     ]
-      <> [ at spn nm $
-             "is OPAQUE but has no type signature, so it is not instrumented at"
-               <> " all: the mode is read from the signature."
+      <> [ note spn $
+             [ "'" <> occ <> "' is OPAQUE but has no type signature."
+             , "The mode is read from the signature, so this is not"
+                 <> " instrumented at all."
+             ]
          | instrumented
          , nm `elem` opaques
          , nm `notElem` signed
          ]
-      <> [ at spn nm $
-             "has both HasProbe and HasCircuitContext. Probe mode wins, and a"
-               <> " probed binder never becomes a component."
+      <> [ note spn $
+             [ "'" <> occ <> "' has both HasProbe and HasCircuitContext."
+             , "Probe mode wins, and a probed binder never becomes a component."
+             ]
          | nm `elem` both
          ]
+   where
+    occ = GHC.getOccString nm
 
-  at spn nm msg =
-    GHC.showSDocUnsafe (GHC.ppr spn)
-      <> ": '"
-      <> GHC.getOccString nm
-      <> "' "
-      <> msg
+  note spn body = (spn, Diag.Uninstrumented, body)
+
+{- | Does this binder have @where@\/@let@ bindings that a component wrap
+would have scoped?
+-}
+scopesSomething :: MatchGroup GhcRn (LHsExpr GhcRn) -> Bool
+scopesSomething (MG _ (L _ ms)) = any nonEmpty ms
+ where
+  nonEmpty (L _ (Match _ _ _ (GRHSs _ _ lbs))) = not (isEmpty lbs)
+  nonEmpty _ = False
+  isEmpty (EmptyLocalBinds _) = True
+  isEmpty _ = False
+
+{- | Signatures on class methods and class defaults that ask for
+instrumentation the pass never performs.
+
+The rewrite walks value bindings ('hs_valds') only, so a class-default or
+instance-method body is never reached — its local bindings are not
+auto-traced and it never becomes a component. The CONSTRAINT still does its
+job (the body can call instrumented code); what silently does not happen is
+the instrumentation of the body itself.
+-}
+methodNotes :: Ctx -> HsGroup GhcRn -> GHC.TcM [Note]
+methodNotes ctx grp =
+  concat
+    <$> mapM
+      ( \(nm, spn, sigTy) -> do
+          (isProbe, isTrace) <- sigModesT ctx sigTy
+          pure
+            [ ( spn
+              , Diag.Uninstrumented
+              ,
+                [ "'"
+                    <> GHC.getOccString nm
+                    <> "' is a class method or a class default."
+                , "This pass instruments value bindings only, so the body is"
+                    <> " not reached:"
+                , "its local bindings are not auto-traced and it never becomes"
+                    <> " a component."
+                , "Move the body to a top-level binding to instrument it."
+                ]
+              )
+            | isProbe || isTrace
+            ]
+      )
+      methodSigs
+ where
+  -- Generic rather than constructor-by-constructor: class-method and
+  -- instance-method signatures do not share a Sig constructor across the
+  -- supported GHCs, and both live somewhere under a TyClGroup.
+  methodSigs =
+    [ (nm, locA l, sigTy)
+    | L l sig <- SYB.listify isLSig (hs_tyclds grp)
+    , (nm, sigTy) <- named sig
+    ]
+
+  isLSig :: LSig GhcRn -> Bool
+  isLSig _ = True
+
+  named = \case
+    TypeSig _ ns (HsWC _ body) -> [(n, body) | L _ n <- ns]
+    ClassOpSig _ _ ns body -> [(n, body) | L _ n <- ns]
+    _ -> []
 
 --------------------------------------------------------------------------------
 -- Top-level rewrite
@@ -406,7 +449,7 @@ onTopBind ::
   [(GHC.Name, Mode)] ->
   [GHC.Name] ->
   LHsBind GhcRn ->
-  GHC.TcM (LHsBind GhcRn, [String])
+  GHC.TcM (LHsBind GhcRn, [Note])
 onTopBind ctx modes opaques lb@(L l b) = case b of
   FunBind{fun_id = L _ nm}
     | Just mode <- lookup nm modes -> do
@@ -762,7 +805,7 @@ componentWrapMG ::
   AbiNames ->
   GHC.Name ->
   MatchGroup GhcRn (LHsExpr GhcRn) ->
-  (MatchGroup GhcRn (LHsExpr GhcRn), [String])
+  (MatchGroup GhcRn (LHsExpr GhcRn), [Note])
 componentWrapMG abi nm (MG ext (L la ms)) =
   (MG ext (L la (map fst results)), concatMap snd results)
  where
@@ -800,10 +843,16 @@ componentWrapMG abi nm (MG ext (L la ms)) =
     | otherwise =
         ( Match mx mc pats (GRHSs gx galts localBinds)
         ,
-          [ "skipping component wrap for an equation of '"
-              <> occ
-              <> "' (its guards can fall through to a later equation); its"
-              <> " bindings still trace at the enclosing scope"
+          [
+            ( spn
+            , Diag.Unhonoured
+            ,
+              [ "skipping component wrap for an equation of '" <> occ <> "'."
+              , "Its guards can fall through to a later equation, which the"
+                  <> " wrap would turn into a crash."
+              , "Its bindings still trace, at the enclosing scope."
+              ]
+            )
           ]
         )
 

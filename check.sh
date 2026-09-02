@@ -64,17 +64,21 @@ if grep -q "Compiling Main.*AutoInstrumentation" "$log" 2>/dev/null; then
   fi
 fi
 
-# The diagnostics (-fplugin-opt=…:diagnostics) must have fired while compiling
-# Test/PluginDiagnostics.hs. A diagnostic that stops firing is exactly as silent
-# as the bug it reports, so it is checked like any other output. Same fresh-build
-# caveat as above.
+# Every warning category must have fired while compiling
+# Test/PluginDiagnostics.hs, tagged with the flag that controls it. A
+# diagnostic that stops firing is exactly as silent as the bug it reports, so
+# it is checked like any other output. Same fresh-build caveat as above.
 if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
   for want in \
+    "[-Wx-circuit-context-uninstrumented]" \
+    "[-Wx-circuit-context-undecided]" \
+    "[-Wx-circuit-context-untraced]" \
     "'noOpaque' has HasCircuitContext but no OPAQUE" \
     "'unsigned' is OPAQUE but has no type signature" \
     "'bothModes' has both HasProbe and HasCircuitContext" \
     "not traced: Signal dom Undescribed" \
-    "blocked on: BitPack Undescribed"
+    "no instance for: BitPack Undescribed" \
+    "the oracle could not decide: 1 <= n"
   do
     if grep -qF "$want" "$log"; then
       echo "ok: diagnostic fired: $want"
@@ -83,6 +87,72 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     fi
   done
 fi
+
+# The categories are real GHC warnings, so "strict mode" is -Werror= and
+# "quiet" is -Wno-. That is a claim about the compiler's behaviour, not ours,
+# which is exactly why it is checked rather than described. Custom warning
+# categories are GHC >= 9.8; below that the plugin still warns, just not per
+# category, so there is nothing to check.
+ghcver=$(cabal exec "$@" -- ghc --numeric-version 2>/dev/null | tail -1)
+case "$ghcver" in
+  9.6.*)
+    echo "skip: per-category warning control needs GHC >= 9.8 (have $ghcver)" ;;
+  *)
+    scratch=$(mktemp -d)
+    cat > "$scratch/StrictProbe.hs" <<'HS'
+{-# LANGUAGE ImplicitParams #-}
+{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
+
+-- | One binding the oracle declines, so exactly one plugin warning fires.
+module StrictProbe where
+
+import qualified Prelude as P
+
+import Clash.Explicit.Prelude
+
+import Clash.CircuitContext
+
+notTraced :: (HasCircuitContext) => Int -> Signal System Int -> Signal System Int
+notTraced k inp = out
+ where
+  out = inp + pure (P.length msg)
+  msg = P.replicate k 'x'
+{-# OPAQUE notTraced #-}
+HS
+    # The script's own arguments are cabal's (-w <ghc>); probe's are GHC's.
+    cabalargs=("$@")
+    probe() {
+      cabal exec ${cabalargs[@]+"${cabalargs[@]}"} -- ghc -v0 -fno-code \
+        -fforce-recomp -package clash-circuit-context -package clash-prelude \
+        "$@" "$scratch/StrictProbe.hs" 2>&1
+    }
+    # Captured, not piped: under `set -o pipefail` a pipeline inherits the
+    # FAILING compile's status, so `probe -Werror=… | grep error` reports
+    # not-fatal exactly when the flag worked. Same trap as the runlog note.
+    default_out=$(probe)
+    quiet_out=$(probe -Wno-x-circuit-context-untraced)
+    probe -Werror=x-circuit-context-untraced >/dev/null && strict_rc=0 || strict_rc=1
+
+    case "$default_out" in
+      *-Wx-circuit-context-untraced*)
+        echo "ok: a declined binding warns by default" ;;
+      *)
+        echo "FAIL: no default warning for a declined binding"; fail=1 ;;
+    esac
+    case "$quiet_out" in
+      *-Wx-circuit-context-untraced*)
+        echo "FAIL: -Wno-x-circuit-context-untraced did not silence it"; fail=1 ;;
+      *)
+        echo "ok: -Wno- silences a category" ;;
+    esac
+    if [ "$strict_rc" -ne 0 ]; then
+      echo "ok: -Werror= makes a declined binding fatal (strict mode)"
+    else
+      echo "FAIL: -Werror=x-circuit-context-untraced was not fatal"; fail=1
+    fi
+    rm -rf "$scratch"
+    ;;
+esac
 
 rm -f "$log"
 [ "$fail" -eq 0 ] && echo "ALL CHECKS PASSED" || echo "CHECKS FAILED"

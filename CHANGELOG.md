@@ -22,14 +22,29 @@ Initial version.
   binder is traced via an injected sibling binding. Traceability is
   decided by a typechecker-plugin oracle (`CanTrace`/`CanProbe`), so
   untraceable types fall back to identity without errors.
-* Plugin options (`-fplugin-opt=Clash.CircuitContext.Plugin:<opt>`).
-  `diagnostics` reports, on stderr, every decision that silently costs a
-  wire or a scope: bindings whose payload type the oracle declined (with
-  the requirement it got stuck on), `HasCircuitContext` without `OPAQUE`,
-  `OPAQUE` without a type signature, and signatures carrying both
-  `HasProbe` and `HasCircuitContext`. Off by default — the silent fallback
-  is what makes package-wide enablement safe. An unrecognised option is
-  reported rather than ignored.
+* Every decision that costs a wire or a scope is a **GHC warning**, in one
+  of four custom categories, so it is tuned with the flags a project
+  already uses — `-Wno-x-circuit-context-untraced` to silence,
+  `-Werror=x-circuit-context-undecided` to make it fatal. There is no
+  "strict mode" option because `-Werror=` is one.
+  `x-circuit-context` is the plugin failing to honour something
+  unambiguous; `x-circuit-context-uninstrumented` a signature asking for
+  instrumentation somewhere the pass does not reach or does not scope
+  (`HasCircuitContext` without `OPAQUE`, `OPAQUE` without a signature,
+  both constraints at once, a class or instance method body);
+  `x-circuit-context-undecided` the oracle admitting it could not decide;
+  `x-circuit-context-untraced` the oracle proving there is no instance.
+  The fallback to identity is unchanged — instrumented code still never
+  fails to compile because something cannot be traced.
+* The oracle distinguishes a PROOF from a give-up. Six code paths used to
+  answer "no": only one (no matching instance) is an answer; the rest —
+  fuel exhausted, a predicate that is not a class (the `Assert` behind
+  `1 <= n`), an ambiguous instance match, a literal-only class at a
+  non-literal — are the approximation reaching its limit, and a wire lost
+  to one of those is as likely to be a plugin bug as a fact about the
+  design. They now say which they are, and can be promoted separately.
+  Custom warning categories need GHC 9.8; on 9.6 these are plain warnings,
+  promoted by a blanket `-Werror` but not individually controllable.
 * The renamer half sees through **constraint synonyms**: a signature
   written against `type Ctx dom = (HiddenClockResetEnable dom,
   HasCircuitContext)` now makes its `OPAQUE` function a component, whether
