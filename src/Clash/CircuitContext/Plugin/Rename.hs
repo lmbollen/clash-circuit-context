@@ -149,11 +149,13 @@ rewriteGroup ctx grp = case hs_valds grp of
         , isOpaqueSpec (GHC.inl_inline prag)
         ]
       signed = [n | L _ (TypeSig _ ns _) <- sigs, L _ n <- ns]
+      sigTypes = [(n, ty) | L _ (TypeSig _ ns ty) <- sigs, L _ n <- ns]
       vouched = noScopeAnnotated (ctxAbi ctx) grp
     results <-
       mapM
         ( \(r, bs) ->
-            (,) r <$> mapM (onTopBind ctx modes opaques) (bindsToList bs)
+            (,) r
+              <$> mapM (onTopBind ctx modes opaques sigTypes) (bindsToList bs)
         )
         groups
     let
@@ -489,9 +491,10 @@ onTopBind ::
   Ctx ->
   [(GHC.Name, Mode)] ->
   [GHC.Name] ->
+  [(GHC.Name, LHsSigWcType GhcRn)] ->
   LHsBind GhcRn ->
   GHC.TcM (LHsBind GhcRn, [Note])
-onTopBind ctx modes opaques lb@(L l b) = case b of
+onTopBind ctx modes opaques sigTypes lb@(L l b) = case b of
   FunBind{fun_id = L _ nm}
     | Just mode <- lookup nm modes -> do
         mg1 <- rewriteInside ctx mode (fun_matches b)
@@ -499,7 +502,11 @@ onTopBind ctx modes opaques lb@(L l b) = case b of
           (mg2, ws)
             | mode == TraceMode
             , nm `elem` opaques =
-                componentWrapMG (ctxAbi ctx) nm mg1
+                componentWrapMG
+                  (ctxAbi ctx)
+                  nm
+                  (\n -> maybe False (higherRankAfter n) (lookup nm sigTypes))
+                  mg1
             | otherwise = (mg1, [])
         pure (L l b{fun_matches = mg2}, ws)
   _ -> pure (lb, [])
@@ -524,10 +531,36 @@ rewriteInside ctx mode0 = goM mode0
   onVB :: Mode -> HsValBindsLR GhcRn GhcRn -> GHC.TcM (HsValBindsLR GhcRn GhcRn)
   onVB m (XValBindsLR (NValBinds groups sigs)) = do
     localModes <- modesFromSigs ctx sigs
-    let localSigned = [n | L _ (TypeSig _ ns _) <- sigs, L _ n <- ns]
-    groups' <- mapM (onGroup m localModes localSigned) groups
+    let
+      localSigned = [n | L _ (TypeSig _ ns _) <- sigs, L _ n <- ns]
+      rankN =
+        [ (n, locA l)
+        | L _ (TypeSig _ ns ty) <- sigs
+        , higherRankAfter 0 ty
+        , L l n <- ns
+        , wantedBinder n (locA l)
+        ]
+      -- A higher-rank binder is not wrapped at all, so it no longer counts
+      -- as signed; 'wrappable' below keeps it out of the open case too.
+      localSigned' = filter (`notElem` map fst rankN) localSigned
+    mapM_ (uncurry reportRankN) rankN
+    groups' <- mapM (onGroup m localModes localSigned' (map fst rankN)) groups
     pure (XValBindsLR (NValBinds groups' sigs))
   onVB _ vb = pure vb
+
+  wrappable :: GHC.Name -> [GHC.Name] -> [GHC.Name] -> GHC.NameSet -> Bool
+  wrappable nm localSigned rankN fvs =
+    nm `notElem` rankN && signedOrOpen nm localSigned fvs
+
+  reportRankN nm spn =
+    Diag.report
+      spn
+      Diag.Untraced
+      [ "'" <> GHC.getOccString nm <> "' is not traced: its signature is"
+          <> " higher-rank."
+      , "A forall or constraint nested inside the type cannot be passed"
+          <> " through a recorder, which would have to be instantiated at it."
+      ]
 
   -- A bind that expands (pattern binders renamed + sibling trace binds)
   -- makes the group recursive: the extra binds reference binders of their
@@ -537,16 +570,17 @@ rewriteInside ctx mode0 = goM mode0
     Mode ->
     [(GHC.Name, Mode)] ->
     [GHC.Name] ->
+    [GHC.Name] ->
     (GHC.RecFlag, LHsBinds GhcRn) ->
     GHC.TcM (GHC.RecFlag, LHsBinds GhcRn)
-  onGroup m localModes localSigned (r, bs) = do
+  onGroup m localModes localSigned rankN (r, bs) = do
     let
       binds = bindsToList bs
       -- Binders this pass has ALREADY aliased (a previous run of it, when the
       -- plugin is enabled twice): renaming them again would bury the traced
       -- name under a second alias.
       aliased = mapMaybe (aliasedBinder abi) binds
-    results <- mapM (onLocalBind m localModes localSigned aliased) binds
+    results <- mapM (onLocalBind m localModes localSigned rankN aliased) binds
     let
       r' = if all (null . snd) results then r else GHC.Recursive
       binds' = concatMap (\(b0, extras) -> b0 : extras) results
@@ -557,9 +591,10 @@ rewriteInside ctx mode0 = goM mode0
     [(GHC.Name, Mode)] ->
     [GHC.Name] ->
     [GHC.Name] ->
+    [GHC.Name] ->
     LHsBind GhcRn ->
     GHC.TcM (LHsBind GhcRn, [LHsBind GhcRn])
-  onLocalBind inherited localModes localSigned aliased (L l b) = case b of
+  onLocalBind inherited localModes localSigned rankN aliased (L l b) = case b of
     FunBind{fun_id = L _ nm} -> do
       let m = fromMaybe inherited (lookup nm localModes)
       ms <- goM m (fun_matches b)
@@ -569,7 +604,7 @@ rewriteInside ctx mode0 = goM mode0
             ( wrapFunBind
                 abi
                 m
-                (signedOrOpen nm localSigned)
+                (wrappable nm localSigned rankN)
                 nm
                 (locA l)
                 b{fun_matches = ms}
@@ -585,7 +620,7 @@ rewriteInside ctx mode0 = goM mode0
             ( wrapPatBind
                 abi
                 m
-                (signedOrOpen nm localSigned)
+                (wrappable nm localSigned rankN)
                 nm
                 (locA l)
                 b{pat_rhs = rhs}
@@ -707,6 +742,36 @@ and why a signature lifts the skip.
 signedOrOpen :: GHC.Name -> [GHC.Name] -> GHC.NameSet -> Bool
 signedOrOpen nm localSigned fvs =
   not (closedBind nm fvs) || nm `elem` localSigned
+
+{- | Once an equation's @n@ patterns have consumed their arguments, does what
+remains of this signature have a @forall@ or a constraint BELOW its spine, as
+in @(HiddenReset dom => r) -> r@?
+
+Such a right-hand side cannot be wrapped: the recorders and 'component' are
+all @... -> a -> a@, and GHC will not instantiate @a@ at a type containing a
+polytype (that would be impredicative). The spine's own foralls and
+constraints are fine — the right-hand side is checked against the skolemised
+type, so the wrapper only ever sees its body. GHC never infers a higher-rank
+type, so a signature is the only way to get one.
+
+Arrows hidden behind a type synonym are not peeled; a signature written that
+way is judged as if its patterns consumed nothing.
+-}
+higherRankAfter :: Int -> LHsSigWcType GhcRn -> Bool
+higherRankAfter n0 (HsWC _ (L _ (HsSig _ _ body))) =
+  SYB.everything (||) (SYB.mkQ False nested) (peel n0 body)
+ where
+  peel n (L _ t) = case t of
+    HsForAllTy _ _ inner -> peel n inner
+    HsQualTy _ _ inner -> peel n inner
+    HsParTy _ inner -> peel n inner
+    HsFunTy _ _ _ res | n > 0 -> peel (n - 1) res
+    _ -> t
+  nested :: HsType GhcRn -> Bool
+  nested = \case
+    HsForAllTy{} -> True
+    HsQualTy{} -> True
+    _ -> False
 
 -- | Wrap a zero-argument local function binding's right-hand sides.
 wrapFunBind ::
@@ -904,9 +969,12 @@ An equation already wrapped in @component "f"@ is left alone; see
 componentWrapMG ::
   AbiNames ->
   GHC.Name ->
+  -- | Is the right-hand side's type higher-rank, given the equation's
+  -- pattern count? See 'higherRankAfter'.
+  (Int -> Bool) ->
   MatchGroup GhcRn (LHsExpr GhcRn) ->
   (MatchGroup GhcRn (LHsExpr GhcRn), [Note])
-componentWrapMG abi nm (MG ext (L la ms)) =
+componentWrapMG abi nm rhsHigherRank (MG ext (L la ms)) =
   (MG ext (L la (map fst results)), concatMap snd results)
  where
   results = zipWith wrapLM ms isLasts
@@ -916,6 +984,22 @@ componentWrapMG abi nm (MG ext (L la ms)) =
     let (m', ws) = wrapMatch (locA lm) isLast m in (L lm m', ws)
 
   wrapMatch spn isLast m0@(Match mx mc pats (GRHSs gx galts localBinds))
+    -- 'component' cannot be instantiated at a higher-rank type.
+    | rhsHigherRank (length (matchPats m0)) =
+        ( m0
+        ,
+          [
+            ( spn
+            , Diag.Unhonoured
+            ,
+              [ "skipping component wrap for an equation of '" <> occ <> "'."
+              , "Its right-hand side has a higher-rank type, which the wrap"
+                  <> " cannot be instantiated at."
+              , "Its bindings still trace, at the enclosing scope."
+              ]
+            )
+          ]
+        )
     -- Single unguarded right-hand side.
     | [L lg (GRHS ggx [] body)] <- galts =
         if alreadyInjected [abiComponent abi] occ body

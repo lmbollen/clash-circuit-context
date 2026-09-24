@@ -78,7 +78,9 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     "'bothModes' has both HasProbe and HasCircuitContext" \
     "not traced: Signal dom Undescribed" \
     "no instance for: BitPack Undescribed" \
-    "the oracle could not decide: 1 <= n"
+    "the oracle could not decide: 1 <= n" \
+    "'withComponentRst'' is not traced: its signature is higher-rank" \
+    "Its right-hand side has a higher-rank type"
   do
     if grep -qF "$want" "$log"; then
       echo "ok: diagnostic fired: $want"

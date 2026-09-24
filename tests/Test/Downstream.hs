@@ -4,6 +4,7 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE NoImplicitPrelude #-}
@@ -51,6 +52,11 @@ module Test.Downstream (
   -- * F6: the closed-binding silence, and double registration
   signedClosed,
   handWritten,
+
+  -- * Higher-rank signatures
+  rankN,
+  topRankN,
+  rankNArg,
 ) where
 
 import qualified Clash.Explicit.Prelude as E
@@ -298,3 +304,56 @@ handWritten inp = out + renamed
   out = traceSignalC "out" (inp + 1)
   renamed = traceSignalC "inner" (inp + 2)
 {-# OPAQUE handWritten #-}
+
+{- | A local binding whose SIGNATURE is higher-rank: its argument is itself
+constrained, @(HiddenReset dom => r)@.
+
+Such a binding cannot be wrapped at all. @autoTrace :: String -> a -> a@
+would need @a := (HiddenReset dom => r) -> r@, a type with a polytype
+inside it, and GHC does not instantiate a type variable at one (that would be
+impredicative). Wrapping it turned a module that compiled without the
+plugin into one that did not, with an error about a unification variable the
+author never wrote. It is left alone, with an @x-circuit-context-untraced@
+warning; there is nothing to trace in a function anyway.
+
+GHC never INFERS a higher-rank type, so only a signed binding can have one:
+before signed closed bindings were wrapped (F6 above), this shape was
+skipped for being closed.
+
+The module compiling is most of the assertion. @rankN.out@ must still be
+recorded: skipping one binding must not cost its siblings their wires.
+-}
+rankN :: (HasCircuitContext) => Signal System Int -> Signal System Int
+rankN inp = out
+ where
+  out =
+    withClock
+      clockGen
+      (withEnable enableGen (topRankN (withComponentRst' (register 0 inp))))
+
+  withComponentRst' :: (KnownDomain dom) => (HiddenReset dom => r) -> r
+  withComponentRst' = withReset (unsafeFromActiveHigh (pure False))
+{-# OPAQUE rankN #-}
+
+{- | The same shape at the top level. @component "topRankN"@ is @... -> r -> r@
+and hits the same impredicativity, so this equation is not wrapped: it is
+reported under @x-circuit-context@, like the guard fall-through skip, since an
+OPAQUE @HasCircuitContext@ function asked for a component unambiguously.
+-}
+topRankN :: (HasCircuitContext, KnownDomain dom) => (HiddenReset dom => r) -> r
+topRankN = withReset (unsafeFromActiveHigh (pure False))
+{-# OPAQUE topRankN #-}
+
+{- | The control: here the higher-rank argument is consumed by a PATTERN, so
+the right-hand side is an ordinary @Signal@ and the component wrap applies.
+@rankNArg.out@ must be recorded, under a scope of its own.
+-}
+rankNArg ::
+  (HasCircuitContext) =>
+  (forall a. Signal System a -> Signal System a) ->
+  Signal System Int ->
+  Signal System Int
+rankNArg f inp = out
+ where
+  out = f inp
+{-# OPAQUE rankNArg #-}

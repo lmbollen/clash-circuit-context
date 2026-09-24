@@ -192,6 +192,8 @@ main = do
                 , Downstream.runHarnessUnvouched
                 , Downstream.signedClosed (pure 1)
                 , Downstream.handWritten (pure 1)
+                , Downstream.rankN (pure 1)
+                , Downstream.rankNArg id (pure 1)
                 )
             )
     _ <- evaluate (deepseqX ys ys)
@@ -261,6 +263,10 @@ main = do
           ]
         , [ "a differently-named hand-written trace was dropped: " <> show p
           | p <- [["handWritten", "inner"], ["handWritten", "renamed"]]
+          , p `P.notElem` downstreamPaths
+          ]
+        , [ "a higher-rank binding's sibling was not traced: " <> show p
+          | p <- [["rankN", "out"], ["rankNArg", "out"]]
           , p `P.notElem` downstreamPaths
           ]
         , -- F4: both harnesses still TRACE, at the root, since the annotation
