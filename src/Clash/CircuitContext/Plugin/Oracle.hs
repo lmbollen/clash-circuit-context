@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE ScopedTypeVariables #-}
@@ -75,7 +76,13 @@ import qualified GHC.Plugins as GHC (
   nameModule_maybe,
   text,
  )
+{- FOURMOLU_DISABLE -}
+#if __GLASGOW_HASKELL__ >= 912
+import qualified GHC.Tc.Types.CtLoc as GHC (ctLocSpan)
+#else
 import qualified GHC.Tc.Types.Constraint as GHC (ctLocSpan)
+#endif
+{- FOURMOLU_ENABLE -}
 import qualified GHC.Tc.Utils.Monad as GHC (initIfaceTcRn)
 import qualified GHC.Tc.Utils.TcType as GHC
 import qualified GHC.TcPlugin.API as API

@@ -120,7 +120,7 @@ Initial version.
   NFDataX a)` — no `Typeable`. Registration stores an empty `TypeRep`
   encoding (unused by `dumpVCDC`), so size-polymorphic payloads
   (`Unsigned n`, `BitVector n`) trace inside polymorphic components.
-* Supported GHCs: 9.6, 9.10; clash-prelude `>=1.9 && <1.12` (the trace
+* Supported GHCs: 9.6, 9.10, 9.12; clash-prelude `>=1.9 && <1.12` (the trace
   internals used are identical across these versions).
 * Instrumentation is transparent to HDL generation. All recording
   combinators are gated on `Clash.Magic.clashSimulation`, so Clash reduces

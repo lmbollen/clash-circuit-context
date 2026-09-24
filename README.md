@@ -72,8 +72,8 @@ still enable it per module with
 `{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}` — but do not do
 both, or the plugin runs twice.
 
-Requires GHC 9.6 or 9.10 and `clash-prelude >= 1.9 && < 1.12`. Nothing else,
-and in particular no patched `clash-prelude`.
+Requires GHC 9.6, 9.10 or 9.12 and `clash-prelude >= 1.9 && < 1.12`. Nothing
+else, and in particular no patched `clash-prelude`.
 
 Then instrument a function with the two annotations above, and see
 [Waveforms from your test suite](#waveforms-from-your-test-suite) for getting
@@ -468,11 +468,11 @@ actually collects a waveform.
 
 ## Limitations
 
-* GHC 9.6 and 9.10 are supported (`tested-with: 9.6.7, 9.10.3`), with
-  `clash-prelude >= 1.9 && < 1.12` — the `Clash.Signal.Trace` internals
-  used are identical across these versions. The `cabal.project` here pins
-  the 1.11 upstream commit this package is developed against (1.11 is not
-  yet on Hackage).
+* GHC 9.6, 9.10 and 9.12 are supported (`tested-with: 9.6.7, 9.10.3,
+  9.12.4`), with `clash-prelude >= 1.9 && < 1.12` — the
+  `Clash.Signal.Trace` internals used are identical across these versions.
+  The `cabal.project` here pins the 1.11 upstream commit this package is
+  developed against (1.11 is not yet on Hackage).
 * An **unsigned closed** local binding is skipped before the oracle is
   consulted, so it produces neither a wire nor a warning — the one path that
   is silent in both channels. Give it a type signature to have it traced.

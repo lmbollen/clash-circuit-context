@@ -71,7 +71,11 @@ import Data.List (isPrefixOf)
 import Data.Maybe (fromMaybe, mapMaybe)
 
 import qualified GHC.Builtin.Names as GHC (ipClassName, otherwiseIdName)
+{- FOURMOLU_DISABLE -}
+#if __GLASGOW_HASKELL__ < 912
 import qualified GHC.Data.Bag as GHC
+#endif
+{- FOURMOLU_ENABLE -}
 import GHC.Hs
 import qualified GHC.Plugins as GHC
 import qualified GHC.Tc.Types as GHC
@@ -149,11 +153,11 @@ rewriteGroup ctx grp = case hs_valds grp of
     results <-
       mapM
         ( \(r, bs) ->
-            (,) r <$> mapM (onTopBind ctx modes opaques) (GHC.bagToList bs)
+            (,) r <$> mapM (onTopBind ctx modes opaques) (bindsToList bs)
         )
         groups
     let
-      groups' = [(r, GHC.listToBag (map fst prs)) | (r, prs) <- results]
+      groups' = [(r, bindsFromList (map fst prs)) | (r, prs) <- results]
       skipped = concat [concatMap snd prs | (_, prs) <- results]
       notes = diagnose modes opaques signed both vouched groups
     pure (grp{hs_valds = XValBindsLR (NValBinds groups' sigs)}, skipped <> notes)
@@ -343,7 +347,7 @@ diagnose modes opaques signed both vouched groups = concatMap check binders
   binders =
     [ (nm, locA l, scopesSomething (fun_matches b))
     | (_, bs) <- groups
-    , L l b@FunBind{fun_id = L _ nm} <- GHC.bagToList bs
+    , L l b@FunBind{fun_id = L _ nm} <- bindsToList bs
     ]
   -- Nothing in an uninstrumented module is a near-miss: the plugin is
   -- package-wide and most modules are not designs.
@@ -537,7 +541,7 @@ rewriteInside ctx mode0 = goM mode0
     GHC.TcM (GHC.RecFlag, LHsBinds GhcRn)
   onGroup m localModes localSigned (r, bs) = do
     let
-      binds = GHC.bagToList bs
+      binds = bindsToList bs
       -- Binders this pass has ALREADY aliased (a previous run of it, when the
       -- plugin is enabled twice): renaming them again would bury the traced
       -- name under a second alias.
@@ -546,7 +550,7 @@ rewriteInside ctx mode0 = goM mode0
     let
       r' = if all (null . snd) results then r else GHC.Recursive
       binds' = concatMap (\(b0, extras) -> b0 : extras) results
-    pure (r', GHC.listToBag binds')
+    pure (r', bindsFromList binds')
 
   onLocalBind ::
     Mode ->
@@ -720,10 +724,9 @@ wrapFunBind abi m wanted nm spn b@FunBind{fun_ext = fvs, fun_matches = MG ext (L
   , all zeroPat ms =
       b{fun_matches = MG ext (L la (map (fmap wrapMatch) ms))}
  where
-  zeroPat (L _ (Match _ _ pats _)) = null pats
-  zeroPat _ = False
-  wrapMatch (Match mx mc [] grhss) =
-    Match mx mc [] (wrapGRHSs abi m nm spn grhss)
+  zeroPat (L _ mt) = null (matchPats mt)
+  wrapMatch mt@Match{m_grhss = grhss}
+    | null (matchPats mt) = mt{m_grhss = wrapGRHSs abi m nm spn grhss}
   wrapMatch other = other
 wrapFunBind _ _ _ _ _ b = b
 
@@ -1002,9 +1005,13 @@ mkGuardCase origin spn gx galts =
           [ L
               (noAnnSrcSpan spn)
               ( Match
+#if __GLASGOW_HASKELL__ >= 912
+                  noExtField
+#else
                   noAnn
+#endif
                   CaseAlt
-                  [L (noAnnSrcSpan spn) (WildPat noExtField)]
+                  (mkMatchPats [L (noAnnSrcSpan spn) (WildPat noExtField)])
                   (GRHSs gx galts (EmptyLocalBinds noExtField))
               )
           ]
@@ -1020,6 +1027,29 @@ mkLetE spn lbs body =
     (HsLet noExtField lbs body)
 #else
     (HsLet noExtField noHsTok lbs noHsTok body)
+#endif
+
+-- GHC 9.12 turned 'LHsBinds' from a 'Bag' into a list.
+bindsToList :: LHsBinds GhcRn -> [LHsBind GhcRn]
+bindsFromList :: [LHsBind GhcRn] -> LHsBinds GhcRn
+#if __GLASGOW_HASKELL__ >= 912
+bindsToList = id
+bindsFromList = id
+#else
+bindsToList = GHC.bagToList
+bindsFromList = GHC.listToBag
+#endif
+
+-- GHC 9.12 wraps a 'Match's argument patterns in a location.
+matchPats :: Match GhcRn body -> [LPat GhcRn]
+#if __GLASGOW_HASKELL__ >= 912
+mkMatchPats :: [LPat GhcRn] -> XRec GhcRn [LPat GhcRn]
+matchPats = unLoc . m_pats
+mkMatchPats = L noAnn
+#else
+mkMatchPats :: [LPat GhcRn] -> [LPat GhcRn]
+matchPats = m_pats
+mkMatchPats = id
 #endif
 {- FOURMOLU_ENABLE -}
 
