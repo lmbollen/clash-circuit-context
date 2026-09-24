@@ -984,7 +984,7 @@ mkGuardCase ::
 mkGuardCase origin spn gx galts =
   L
     (noAnnSrcSpan spn)
-#if __GLASGOW_HASKELL__ >= 910
+#if __GLASGOW_HASKELL__ >= 908
     (HsCase CaseAlt scrut mg)
 #else
     (HsCase noExtField scrut mg)
