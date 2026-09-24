@@ -86,7 +86,9 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     "no instance for: BitPack Undescribed" \
     "recorded as raw bits, not described: Bare" \
     "no instance for: Waveform Bare" \
-    "the oracle could not decide: 1 <= n"
+    "the oracle could not decide: 1 <= n" \
+    "'withComponentRst'' is not traced: its signature is higher-rank" \
+    "Its right-hand side has a higher-rank type"
   do
     if grep -qF "$want" "$log"; then
       echo "ok: diagnostic fired: $want"
