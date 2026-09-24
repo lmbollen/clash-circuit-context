@@ -105,15 +105,21 @@ data OracleEnv = OracleEnv
   , describableClass :: API.Class
   }
 
+{- FOURMOLU_DISABLE -}
 oracle :: API.TcPlugin
 oracle =
   API.TcPlugin
     { API.tcPluginInit = initEnv
     , API.tcPluginSolve = solveStuck
     , API.tcPluginRewrite = rewriters
+#if MIN_VERSION_ghc_tcplugin_api(0,19,0)
     , API.tcPluginPostTc = \_ -> pure ()
     , API.tcPluginShutdown = \_ -> pure ()
+#else
+    , API.tcPluginStop = \_ -> pure ()
+#endif
     }
+{- FOURMOLU_ENABLE -}
 
 initEnv :: API.TcPluginM 'API.Init OracleEnv
 initEnv = do
