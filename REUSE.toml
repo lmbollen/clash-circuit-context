@@ -1,0 +1,105 @@
+version = 1
+SPDX-PackageName = "clash-circuit-context"
+SPDX-PackageSupplier = "QBayLogic B.V. <devops@qbaylogic.com>"
+SPDX-PackageDownloadLocation = "https://github.com/clash-lang/clash-circuit-context"
+
+# Copyright and licensing for files that carry no SPDX header of their own.
+#
+# Declaring it here rather than in headers keeps src/ byte-identical across the
+# main and dogfood/* lineages, which are kept in sync by cherry-pick.
+#
+# `precedence = "aggregate"` means a file's own header still applies and this
+# only fills in what the header leaves out -- the Haddock blocks in src/ state
+# a copyright but no SPDX-License-Identifier, so they get the license from here
+# and keep their own copyright line.
+
+# --- clash-circuit-context itself -------------------------------------------
+
+[[annotations]]
+path = [
+  ".gitignore",
+  ".github/**",
+  "CHANGELOG.md",
+  "README.md",
+  "cabal.project",
+  "check.sh",
+  "clash-circuit-context.cabal",
+  "deps/README.md",
+  "docs/**",
+  "format.sh",
+  "fourmolu.yaml",
+  "src/**",
+  "tests/**",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 QBayLogic B.V."
+SPDX-License-Identifier = "BSD-2-Clause"
+
+# Waveforms written by the test suites and committed as golden output. They are
+# generated data, not authored work, so they are released without restriction.
+[[annotations]]
+path = "goldens/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 QBayLogic B.V."
+SPDX-License-Identifier = "CC0-1.0"
+
+# --- vendored dogfooding checkouts under deps/ -------------------------------
+#
+# These are upstream projects, checked out here so the plugin can be built
+# against instrumented copies of them (see deps/README.md). Each block states
+# the project's own licensing for the files that ship without a header;
+# anything that has a header keeps it.
+
+[[annotations]]
+path = "deps/bittide-hardware/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2022-2024 Google LLC"
+SPDX-License-Identifier = "Apache-2.0"
+
+# Mirrors the paragraphs in deps/bittide-hardware/.reuse/dep5, which reuse 6 no
+# longer reads (Debian dep5 was dropped in favour of REUSE.toml).
+[[annotations]]
+path = [
+  "deps/bittide-hardware/.vscode/**",
+  "deps/bittide-hardware/cabal.project.freeze",
+]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2022-2024 Google LLC"
+SPDX-License-Identifier = "CC0-1.0"
+
+[[annotations]]
+path = "deps/circuit-notation/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2019-2024 Christopher Chalmers"
+SPDX-License-Identifier = "BSD-3-Clause"
+
+[[annotations]]
+path = "deps/clash-cores/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+  "2019 Foamspace Corp.",
+  "2022-2024 QBayLogic B.V.",
+  "2023 Amaranth HDL contributors",
+]
+SPDX-License-Identifier = "BSD-2-Clause"
+
+[[annotations]]
+path = "deps/clash-protocols/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = [
+  "2024 Martijn Bastiaan",
+  "2024-2026 QBayLogic B.V.",
+]
+SPDX-License-Identifier = "BSD-2-Clause"
+
+[[annotations]]
+path = "deps/clash-protocols-memmap/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2024 Google LLC"
+SPDX-License-Identifier = "Apache-2.0"
+
+[[annotations]]
+path = "deps/clash-shockwaves/**"
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2025-2026 QBayLogic B.V."
+SPDX-License-Identifier = "BSD-2-Clause"
