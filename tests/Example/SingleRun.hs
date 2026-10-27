@@ -77,8 +77,9 @@ top clk rst inp = out
 stimulus :: Signal System (Unsigned 8)
 stimulus = fromList (cycle [1, 2, 3])
 
-simulate' :: (HasCircuitContext) => Int -> [Unsigned 8]
-simulate' n = sampleN n (top clockGen resetGen stimulus)
+-- | The design under test: the signal every capture below samples.
+design :: (HasCircuitContext) => Signal System (Unsigned 8)
+design = top clockGen resetGen stimulus
 
 --------------------------------------------------------------------------------
 -- 2. The tests
@@ -97,7 +98,7 @@ tests =
       -- still leaves the waveform that shows why.
       testCase "a bracketed test always leaves its waveform" $ do
         out <- withWaveformSlot "example-single-run" $ \wf ->
-          withWaveform wf 32 (simulate' 32)
+          withWaveform wf 32 design
         P.length out @?= 32
         wrote <- doesFileExist singleRunVcd
         assertBool "the waveform was written when the bracket closed" wrote
@@ -106,7 +107,7 @@ tests =
       -- Nothing is recorded, rendered or written while the test passes.
       testCase "on-failure capture costs a passing test nothing" $ do
         passing <- newWaveformSlot "example-on-failure-passing"
-        withWaveformOnFailure passing 32 (simulate' 32) $ \out ->
+        withWaveformOnFailure passing 32 design $ \out ->
           P.length out @?= 32
         wrote <- doesFileExist (waveformSlotPath passing)
         assertBool "a passing test writes no waveform at all" (P.not wrote)
@@ -121,7 +122,7 @@ tests =
         failing <- newWaveformSlot "example-on-failure-failing"
         outcome <-
           try @SomeException $
-            withWaveformOnFailure failing 32 (simulate' 32) $ \out ->
+            withWaveformOnFailure failing 32 design $ \out ->
               P.length out @?= 99 -- fails on purpose
         assertBool
           "the original failure still propagates"

@@ -25,7 +25,7 @@ many times the generator is re-run during shrinking.
 > prop_roundtrip fired = property $ do
 >   input <- forAll genInput
 >   keep  <- recordLargestCase fired
->   out   <- withWaveformWhen keep slot nCycles (…traceSignalC…)
+>   out   <- withWaveformWhen keep slot nCycles (dut input)
 >   out === expected input
 
 For a FAILING case you want the counterexample rather than a size heuristic,
@@ -37,6 +37,14 @@ module Clash.CircuitContext.Waveform.Hedgehog (
   withWaveformOnCounterexample,
   withWaveformCase,
   withWaveformCaseLazy,
+
+  -- * For a simulation that is not one signal
+
+  -- | As for 'Clash.CircuitContext.Waveform.withWaveformSim': these take the
+  -- simulation RESULT and a trailing capture window.
+  withWaveformOnCounterexampleSim,
+  withWaveformCaseSim,
+  withWaveformCaseLazySim,
 
   -- * Choosing a passing case to keep
   recordThisCase,
@@ -65,6 +73,7 @@ import Hedgehog.Internal.Property (
 import qualified Hedgehog
 import qualified Hedgehog.Gen as Gen
 
+import Clash.Explicit.Signal (Signal, sampleN)
 import Clash.Prelude (NFDataX, deepseqX)
 
 import Clash.CircuitContext.Core (
@@ -103,7 +112,7 @@ it means running the property monad, which is what this does.
 > prop_roundtrip :: WaveformSlot -> Property
 > prop_roundtrip wf = property $ do
 >   input <- forAll genInput
->   withWaveformOnCounterexample wf 10_000 (sampleN n (dut input)) $ \out ->
+>   withWaveformOnCounterexample wf n (dut input) $ \out ->
 >     out === model input
 
 Two constraints, both from the re-run:
@@ -123,18 +132,29 @@ directory, which differs between @cabal test@ and @cabal run@, so a relative
 path would be a small treasure hunt.
 -}
 withWaveformOnCounterexample ::
-  (NFDataX r) =>
+  (NFDataX a) =>
   -- | This test's slot; the counterexample is recorded into it.
   WaveformSlot ->
-  -- | Trailing capture window in cycles; see
-  -- 'Clash.CircuitContext.Waveform.withWaveformLazy'.
+  -- | Cycles to simulate.
   Int ->
-  -- | The simulation, under a recording context.
+  -- | The signal to sample, under a recording context.
+  (HasCircuitContext => Signal dom a) ->
+  -- | Assertions over its samples; run twice when they fail.
+  ([a] -> PropertyT IO b) ->
+  PropertyT IO b
+withWaveformOnCounterexample = withWaveformCase False
+
+-- | 'withWaveformOnCounterexample' for a simulation that is not one 'Signal'.
+withWaveformOnCounterexampleSim ::
+  (NFDataX r) =>
+  WaveformSlot ->
+  -- | Trailing capture window in cycles; see
+  -- 'Clash.CircuitContext.Waveform.withWaveformLazySim'.
+  Int ->
   (HasCircuitContext => r) ->
-  -- | Assertions over it; run twice when they fail.
   (r -> PropertyT IO a) ->
   PropertyT IO a
-withWaveformOnCounterexample = withWaveformCase False
+withWaveformOnCounterexampleSim = withWaveformCaseSim False
 
 {- | 'withWaveformOnCounterexample', plus: keep THIS case's waveform even
 though it passed.
@@ -151,32 +171,57 @@ overwrites it, since a failure is the more interesting of the two.
 property passes.
 -}
 withWaveformCase ::
-  (NFDataX r) =>
+  (NFDataX a) =>
   -- | Keep this case's waveform even if it passes?
+  Bool ->
+  WaveformSlot ->
+  -- | Cycles to simulate.
+  Int ->
+  (HasCircuitContext => Signal dom a) ->
+  ([a] -> PropertyT IO b) ->
+  PropertyT IO b
+withWaveformCase keep slot n sig = withWaveformCaseSim keep slot n (sampleN n sig)
+
+-- | 'withWaveformCase' for a simulation that is not one 'Signal'.
+withWaveformCaseSim ::
+  (NFDataX r) =>
   Bool ->
   WaveformSlot ->
   Int ->
   (HasCircuitContext => r) ->
   (r -> PropertyT IO a) ->
   PropertyT IO a
-withWaveformCase = withWaveformCaseWith forceSim
+withWaveformCaseSim = withWaveformCaseWith forceSim
 
 {- | 'withWaveformCase' for a simulation that must NOT be forced whole: a
 firmware test reading a UART stream until it sees its result, where the
 consumer's own exit condition is what bounds the run.
 
-The waveform then covers exactly the cycles the consumer forced, which is the
-point — but it also means a consumer that stops early records little. See
-'withWaveformCase' for what that costs when it is not deliberate.
+@n@ is then an upper bound: the waveform covers exactly the cycles the
+consumer forced, which is the point — but it also means a consumer that stops
+early records little. See 'withWaveformCase' for what that costs when it is
+not deliberate.
 -}
 withWaveformCaseLazy ::
+  (NFDataX a) =>
+  Bool ->
+  WaveformSlot ->
+  -- | Upper bound on the cycles simulated.
+  Int ->
+  (HasCircuitContext => Signal dom a) ->
+  ([a] -> PropertyT IO b) ->
+  PropertyT IO b
+withWaveformCaseLazy keep slot n sig = withWaveformCaseLazySim keep slot n (sampleN n sig)
+
+-- | 'withWaveformCaseLazy' for a simulation that is not one 'Signal'.
+withWaveformCaseLazySim ::
   Bool ->
   WaveformSlot ->
   Int ->
   (HasCircuitContext => r) ->
   (r -> PropertyT IO a) ->
   PropertyT IO a
-withWaveformCaseLazy = withWaveformCaseWith pure
+withWaveformCaseLazySim = withWaveformCaseWith pure
 
 {- | Force a simulation result to normal form so that every traced signal
 records its whole run.

@@ -485,7 +485,7 @@ withCircuitContext = withCircuitContextWindow maxBound
 {- | 'withCircuitContext' with a trailing capture window: recorders keep (at
 least) the last @window@ cycles of history and drop older data, bounding
 memory for signals that change every cycle (program counters, busses) — see
-'WRuns'. Cycles before the retained window render @x@ in the dump.
+'WRuns'. Cycles before the retained window render @z@ in the dump.
 -}
 withCircuitContextWindow ::
   Int -> ((HasCircuitContext) => IO r) -> IO (r, TraceData, ProbeMap)

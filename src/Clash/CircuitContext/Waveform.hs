@@ -15,22 +15,31 @@ of a repeated property survives, when the render happens, and how the pair of
 files a typed viewer reads is written so that neither is ever seen half
 written.
 
-Two entry points, by how the design is sampled:
+Every capture takes the design as the 'Signal' to observe and a number of
+cycles @n@, and samples it itself — the test never writes @sampleN n@ next to
+an @n@ it already passed. Two entry points, by who decides how far to
+simulate:
 
-* 'withWaveform' — designs sampled with @sampleN@\/@simulateN@. Hand it the
-  simulation result; it is forced under a fresh recording context so every
-  'Clash.CircuitContext.traceSignalC' and probe fires.
+* 'withWaveform' — the test does: all @n@ cycles are simulated under a fresh
+  recording context, forced so every 'Clash.CircuitContext.traceSignalC' and
+  probe fires, and the samples returned.
 
-* 'withWaveformLazy' — designs whose consumer decides how far to simulate
-  (a firmware test reading a UART stream until it sees its result). ONE lazy
-  run serves as both the assertion and the capture, so nothing is simulated
-  twice and the waveform covers exactly the cycles the test caused.
+* 'withWaveformLazy' — the consumer does (a firmware test reading a UART
+  stream until it sees its result): @n@ is only an upper bound. ONE lazy run
+  serves as both the assertion and the capture, so nothing is simulated twice
+  and the waveform covers exactly the cycles the test caused.
 
-A @clash-protocols@ t'Protocols.Circuit' is not a 'Clash.Signal.Signal' and so
-needs a coercion before any of this applies. That bridge cannot live here:
-@clash-protocols@ depends on this package, so depending on it back would be a
-cycle. Provide it alongside your protocol code (bittide keeps @withWaveformC@
-in @bittide-extra@'s "Protocols.Waveform") and build it on 'withWaveform'.
+The signal is sampled with "Clash.Explicit.Signal"'s @sampleN@, so clocks and
+resets are the design's own arguments; a design written against hidden ones
+is given them with @withClockResetEnable clockGen resetGen enableGen@.
+
+A simulation that is not ONE signal — outputs in several clock domains, or a
+@clash-protocols@ t'Protocols.Circuit' run with @sampleC@ — does not fit these.
+Give it a dedicated combinator built on the @…Sim@ variants, which take any
+simulation result (see "Building your own capture combinator"). Circuit
+combinators cannot live here: @clash-protocols@ depends on this package, so
+depending on it back would be a cycle. Keep them alongside your protocol code
+(bittide keeps @withWaveformC@ in @bittide-extra@'s "Protocols.Waveform").
 
 == One waveform per test, holding the LAST run
 
@@ -75,7 +84,6 @@ module Clash.CircuitContext.Waveform (
   -- * Capturing
   withWaveform,
   withWaveformLazy,
-  recordAndDump,
 
   -- * Capturing only when it will be kept
   waveformsRequested,
@@ -85,6 +93,18 @@ module Clash.CircuitContext.Waveform (
   withWaveformOnFailure',
 
   -- * Building your own capture combinator
+
+  -- | The captures above for a simulation that is not one 'Signal': each takes
+  -- the simulation RESULT (@'HasCircuitContext' => r@, e.g. a tuple of
+  -- @sampleN@s in different domains) instead of a signal to sample, and an
+  -- explicit capture window instead of a cycle count.
+  withWaveformSim,
+  withWaveformLazySim,
+  withWaveformWhenSim,
+  withWaveformLazyWhenSim,
+  withWaveformOnFailureSim,
+  withWaveformOnFailureSim',
+  recordAndDump,
   captureRun,
   announce,
 
@@ -117,6 +137,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TIO
 
+import Clash.Explicit.Signal (Signal, sampleN)
 import Clash.Prelude (NFDataX, deepseqX)
 
 import Clash.CircuitContext.Core (
@@ -220,7 +241,7 @@ the test captured — even if it throws, so a failing test still leaves the
 waveform that shows why.
 
 > case_myTest = withWaveformSlot "my_test" $ \wf ->
->   withWaveformLazy wf 100_000 (simStream cfg) $ \out -> …
+>   withWaveformLazy wf 100_000 (uartOut cfg) $ \out -> …
 -}
 withWaveformSlot :: String -> (WaveformSlot -> IO a) -> IO a
 withWaveformSlot name act = do
@@ -266,15 +287,15 @@ captureRun slot traces probes = do
         Left _ -> pure False
         Right (txt, meta) -> capture slot txt meta >> pure True
 
-{- | Simulate under a fresh circuit context, force the result so every
-instrumented signal registers, and write ONE hierarchical VCD to
-@waveformDir\/\<name\>.vcd@.
+{- | Simulate @n@ cycles of a design under a fresh circuit context and keep the
+run as the slot's pending waveform.
 
-The simulation is given as a value @'HasCircuitContext' => r@ (typically the
-list @sampleN@\/@simulateN@ returns): the implicit context is supplied here, and
-@r@ is forced to normal form inside the context so every @traceSignalC@\/probe
-fires. The forced @r@ is returned unchanged so the caller can keep asserting on
-it.
+The design is the signal to observe, @'HasCircuitContext' => 'Signal' dom a@:
+the implicit context is supplied here, the signal is sampled for @n@ cycles
+and forced to normal form inside it so every @traceSignalC@\/probe fires, and
+the samples are returned so the caller can keep asserting on them.
+
+> out <- withWaveform wf 1000 (top clockGen resetGen (fromList [1 ..]))
 
 Safe to call from inside a hedgehog property: every run replaces the slot's
 pending waveform (LAST run wins, see the module header) and the file is
@@ -284,9 +305,24 @@ that should not pay for that uses 'withWaveformWhen' with a flag from
 with 'Clash.CircuitContext.Waveform.Hedgehog.withWaveformOnCounterexample'.
 -}
 withWaveform ::
+  forall m dom a.
+  (MonadIO m, NFDataX a) =>
+  -- | This test's slot; the run is recorded into it.
+  WaveformSlot ->
+  -- | Cycles to simulate, and the dump window.
+  Int ->
+  -- | The signal to sample.
+  (HasCircuitContext => Signal dom a) ->
+  m [a]
+withWaveform slot n sig = withWaveformSim slot n (sampleN n sig)
+
+{- | 'withWaveform' for a simulation that is not one 'Signal': the result @r@
+(typically a tuple of the lists @sampleN@\/@simulateN@ return) is forced to
+normal form under the context and returned unchanged.
+-}
+withWaveformSim ::
   forall m r.
   (MonadIO m, NFDataX r) =>
-  -- | This test's slot; the run is recorded into it.
   WaveformSlot ->
   -- | Dump window, starting at 0. For single-clock traces this is in cycles;
   -- when traces span multiple clock domains the unit is one VCD tick.
@@ -294,16 +330,15 @@ withWaveform ::
   -- | The simulation result to trace and return.
   (HasCircuitContext => r) ->
   m r
-withWaveform slot nSamples sim = liftIO (recordAndDump slot (0, nSamples) sim)
+withWaveformSim slot window sim = liftIO (recordAndDump slot (0, window) sim)
 
 {- | Single-run waveform capture: simulate ONCE, lazily.
 
-@sim@ is the simulation value under a recording context — typically the
-output stream of @sampleC conf (dut …)@ where the DUT carries
-'HasCircuitContext'. @consume@ forces exactly as much of it as the test
-needs and may exit early (e.g. stop at the first @\"RESULT: OK\"@). The
-recorded waveform covers precisely the cycles the consumer caused to be
-simulated.
+@consume@ is handed the signal's samples as a lazy list of (at most) @n@
+cycles, forces exactly as much of it as the test needs and may stop early
+(e.g. at the first @\"RESULT: OK\"@). The recorded waveform covers precisely
+the cycles the consumer caused to be simulated, so @n@ is only an upper
+bound — a generous one costs nothing.
 
 This replaces the {separate strict re-run over a fixed window} pattern for
 the firmware tests: that design simulated every DUT TWICE and always for the
@@ -313,13 +348,29 @@ the assertion run IS the capture run: no second simulation, no dead-air
 cycles past the exit point, and memory is bounded by what actually ran.
 -}
 withWaveformLazy ::
+  forall dom a b m.
+  (MonadIO m, NFDataX a) =>
+  -- | This test's slot; the run is recorded into it.
+  WaveformSlot ->
+  -- | Upper bound on the cycles simulated.
+  Int ->
+  -- | The signal to sample; consumed at most once.
+  (HasCircuitContext => Signal dom a) ->
+  -- | Consumer: forces what the test needs, returns the test's result.
+  ([a] -> IO b) ->
+  m b
+withWaveformLazy slot n sig = withWaveformLazySim slot n (sampleN n sig)
+
+-- | 'withWaveformLazy' for a simulation that is not one 'Signal', such as a
+-- @clash-protocols@ circuit's @sampleC@ output.
+withWaveformLazySim ::
   forall r a m.
   (MonadIO m) =>
   -- | This test's slot; the run is recorded into it.
   WaveformSlot ->
   -- | Trailing capture window in cycles: the waveform keeps (at least) this
   -- many cycles of history before the point the simulation stopped; older
-  -- cycles render @x@. Bounds recorder memory and VCD size for signals that
+  -- cycles render @z@. Bounds recorder memory and VCD size for signals that
   -- change every cycle (program counters, busses). 'maxBound' = unlimited.
   Int ->
   -- | The (lazy) simulation value; consumed at most once.
@@ -327,7 +378,7 @@ withWaveformLazy ::
   -- | Consumer: forces what the test needs, returns the test's result.
   (r -> IO a) ->
   m a
-withWaveformLazy slot window sim consume = liftIO $ do
+withWaveformLazySim slot window sim consume = liftIO $ do
   (a, traces, probes) <- withCircuitContextWindow window (consume sim)
   _ <- captureRun slot traces probes
   pure a
@@ -375,7 +426,7 @@ failure — regenerating the documented waveforms, or looking at a passing
 design — so that an ordinary green run pays nothing for them:
 
 > keep <- waveformsRequested
-> out  <- withWaveformWhen keep slot n …
+> out  <- withWaveformWhen keep slot n (top clockGen resetGen inp)
 
 Capturing a FAILING run needs no switch; that is
 'withWaveformOnFailure' and is always on.
@@ -404,9 +455,22 @@ concurrently running tests. A repeated property that keeps one case out of a
 hundred should pay for one, and this is how:
 
 > keep <- recordLargestCase fired          -- see "…Waveform.Hedgehog"
-> out  <- withWaveformWhen keep slot n $ …
+> out  <- withWaveformWhen keep slot n (top clockGen resetGen inp)
 -}
 withWaveformWhen ::
+  forall m dom a.
+  (MonadIO m, NFDataX a) =>
+  -- | Record this run?
+  Bool ->
+  WaveformSlot ->
+  Int ->
+  (HasCircuitContext => Signal dom a) ->
+  m [a]
+withWaveformWhen keep slot n sig = withWaveformWhenSim keep slot n (sampleN n sig)
+
+-- | 'withWaveformWhen' for a simulation that is not one 'Signal'; see
+-- 'withWaveformSim'.
+withWaveformWhenSim ::
   forall m r.
   (MonadIO m, NFDataX r) =>
   -- | Record this run?
@@ -415,13 +479,26 @@ withWaveformWhen ::
   Int ->
   (HasCircuitContext => r) ->
   m r
-withWaveformWhen keep slot nSamples sim
-  | keep = withWaveform slot nSamples sim
+withWaveformWhenSim keep slot window sim
+  | keep = withWaveformSim slot window sim
   | otherwise = liftIO (evaluate (let r = withoutCircuitContext sim in r `deepseqX` r))
 
 -- | 'withWaveformLazy', but only record when the flag is 'True'; see
 -- 'withWaveformWhen'.
 withWaveformLazyWhen ::
+  forall dom a b m.
+  (MonadIO m, NFDataX a) =>
+  Bool ->
+  WaveformSlot ->
+  Int ->
+  (HasCircuitContext => Signal dom a) ->
+  ([a] -> IO b) ->
+  m b
+withWaveformLazyWhen keep slot n sig = withWaveformLazyWhenSim keep slot n (sampleN n sig)
+
+-- | 'withWaveformLazyWhen' for a simulation that is not one 'Signal'; see
+-- 'withWaveformLazySim'.
+withWaveformLazyWhenSim ::
   forall r a m.
   (MonadIO m) =>
   Bool ->
@@ -430,8 +507,8 @@ withWaveformLazyWhen ::
   (HasCircuitContext => r) ->
   (r -> IO a) ->
   m a
-withWaveformLazyWhen keep slot window sim consume
-  | keep = withWaveformLazy slot window sim consume
+withWaveformLazyWhenSim keep slot window sim consume
+  | keep = withWaveformLazySim slot window sim consume
   | otherwise = liftIO (consume (withoutCircuitContext sim))
 
 {- | Capture a waveform ONLY for a failing run, by re-running it.
@@ -451,15 +528,31 @@ Two things to know before using it:
   undefined values randomly per run: @clash-vexriscv@ does exactly that
   (@unsafeMakeDefinedRandom@ on its CPU inputs), and two runs of one such
   simulation demonstrably differ. Use 'withWaveformOnFailure'' there.
+
+Like 'withWaveformLazy', @consume@ gets a lazy list of at most @n@ samples
+and the waveform covers the cycles it forced.
 -}
 withWaveformOnFailure ::
+  forall dom a b.
+  (NFDataX a) =>
+  WaveformSlot ->
+  -- | Upper bound on the cycles simulated.
+  Int ->
+  (HasCircuitContext => Signal dom a) ->
+  ([a] -> IO b) ->
+  IO b
+withWaveformOnFailure slot n sig = withWaveformOnFailureSim slot n (sampleN n sig)
+
+-- | 'withWaveformOnFailure' for a simulation that is not one 'Signal'; the
+-- 'Int' is a trailing capture window, as for 'withWaveformLazySim'.
+withWaveformOnFailureSim ::
   forall r a.
   WaveformSlot ->
   Int ->
   (HasCircuitContext => r) ->
   (r -> IO a) ->
   IO a
-withWaveformOnFailure slot window sim consume = do
+withWaveformOnFailureSim slot window sim consume = do
   first <- try (consume (withoutCircuitContext sim))
   case first of
     Right a -> pure a
@@ -483,7 +576,7 @@ withWaveformOnFailure slot window sim consume = do
           -- The re-run PASSED, so its waveform shows a working run and would
           -- be read as the failure's. Say so and write nothing; the design is
           -- not reproducible enough for this combinator (see the haddock) and
-          -- the test should use 'withWaveformOnFailure''.
+          -- the test should use 'withWaveformOnFailure'' (or its …Sim).
           hPutStrLn
             stderr
             ( "clash-circuit-context: "
@@ -501,13 +594,26 @@ test still produces no file and no render; it does pay for the recording
 itself, which is the price of not needing a reproducible re-run.
 -}
 withWaveformOnFailure' ::
+  forall dom a b.
+  (NFDataX a) =>
+  WaveformSlot ->
+  -- | Upper bound on the cycles simulated.
+  Int ->
+  (HasCircuitContext => Signal dom a) ->
+  ([a] -> IO b) ->
+  IO b
+withWaveformOnFailure' slot n sig = withWaveformOnFailureSim' slot n (sampleN n sig)
+
+-- | 'withWaveformOnFailure'' for a simulation that is not one 'Signal'; see
+-- 'withWaveformOnFailureSim'.
+withWaveformOnFailureSim' ::
   forall r a.
   WaveformSlot ->
   Int ->
   (HasCircuitContext => r) ->
   (r -> IO a) ->
   IO a
-withWaveformOnFailure' slot window sim consume = do
+withWaveformOnFailureSim' slot window sim consume = do
   (r, traces, probes) <- withCircuitContextWindowE window (consume sim)
   case r of
     Right a -> pure a -- discard the recording UNRENDERED
