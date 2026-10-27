@@ -334,15 +334,12 @@ main = do
     try
       $ withWaveformOnFailure
         slot
-        maxBound
-        ( sampleN
-            4
-            ( bundle
-                ( traceSignalSW "skewed" (fromList (P.map Skewed (P.cycle [1, 2, 3])))
-                , traceSignalSW "phase" (fromList (P.cycle [Idle, Busy, Done]))
-                ) ::
-                Signal System (Skewed, Phase)
-            )
+        4
+        ( bundle
+            ( traceSignalSW "skewed" (fromList (P.map Skewed (P.cycle [1, 2, 3])))
+            , traceSignalSW "phase" (fromList (P.cycle [Idle, Busy, Done]))
+            ) ::
+            Signal System (Skewed, Phase)
         )
         (\xs -> evaluate (xs `deepseqX` ()) >> throwIO Deliberate)
   check

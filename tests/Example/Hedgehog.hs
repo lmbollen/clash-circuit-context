@@ -148,7 +148,7 @@ prop_keepLargest art = property $ do
   xs <- forAll genStim
   keep <- recordLargestCase (largestFired art)
   let n = P.length xs
-  withWaveformCase keep (largestSlot art) n (sampleN n (accDut (stim xs))) $ \out -> do
+  withWaveformCase keep (largestSlot art) n (accDut (stim xs)) $ \out -> do
     let acc = accModel xs
     when keep (liftIO (writeIORef (largestModel art) (Just acc)))
     out === acc
@@ -165,7 +165,7 @@ prop_keepSizedCase art = withTests 20 $ property $ do
   xs <- forAll genStim
   keep <- recordCaseOfSize (sizedFired art) 15
   let n = P.length xs
-  withWaveformCase keep (sizedSlot art) n (sampleN n (accDut (stim xs))) $ \out ->
+  withWaveformCase keep (sizedSlot art) n (accDut (stim xs)) $ \out ->
     out === accModel xs
 
 {- | The failure pattern: assertions live in the consumer, so when they fail
@@ -177,7 +177,7 @@ prop_offByOneIsCaught :: WaveformSlot -> Property
 prop_offByOneIsCaught slot = property $ do
   xs <- forAll (Gen.list (Range.linear 1 8) (Gen.integral Range.linearBounded))
   let n = P.length xs
-  withWaveformOnCounterexample slot n (sampleN n (offByOne (stim xs))) $ \out ->
+  withWaveformOnCounterexample slot n (offByOne (stim xs)) $ \out ->
     out === xs
 
 tests :: Artifacts -> TestTree

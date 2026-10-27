@@ -412,11 +412,18 @@ Initial version.
   tree is `-Wall -Wcompat`-clean on GHC 9.6.7 and 9.10.3.
 * Waveforms from a test suite: `Clash.CircuitContext.Waveform` ships the
   lifecycle every instrumented project otherwise re-derives — a `WaveformSlot`
-  owning one test's pending waveform, `withWaveform`/`withWaveformLazy` by how
-  the design is sampled, and atomic writes. Deliberately not a global
+  owning one test's pending waveform, `withWaveform`/`withWaveformLazy` by who
+  decides how far to simulate, and atomic writes. Deliberately not a global
   registry, which can only be drained once every test has finished and so must
   retain every rendered VCD until then (measured: 26 GB resident across a
   suite).
+* Captures take the design as the `Signal` to observe plus a cycle count and
+  sample it themselves, so a test no longer writes `sampleN n` beside the `n`
+  it already passed: `withWaveform wf 32 (top clk rst inp)`. Consumers get the
+  samples as a lazy list of at most `n` cycles, so a lazy capture's `n` is
+  only an upper bound. A simulation that is not one `Signal` (several clock
+  domains, a protocol circuit) uses the `…Sim` variants, which take the
+  simulation result plus an explicit capture window.
 * Capture only what will be kept. `withWaveformWhen` (and
   `waveformsRequested`, reading `CCC_WAVEFORMS`) decide BEFORE simulating: a
   run that will not be kept executes under `noCircuitContext`, where nothing

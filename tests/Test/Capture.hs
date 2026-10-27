@@ -78,12 +78,12 @@ tests =
     "Test.Capture"
     [ testCase "withWaveformWhen False writes nothing" $
         withSlot "capture-skipped" $ \slot -> do
-          _ <- withWaveformWhen False slot 8 (sampleN 8 counter)
+          _ <- withWaveformWhen False slot 8 counter
           (v, j) <- filesFor slot
           assertBool "no VCD, no sidecar" (P.not v P.&& P.not j)
     , testCase "withWaveformWhen True writes the VCD and its sidecar" $
         withSlot "capture-kept" $ \slot -> do
-          _ <- withWaveformWhen True slot 8 (sampleN 8 counter)
+          _ <- withWaveformWhen True slot 8 counter
           writeWaveformSlot slot
           (v, j) <- filesFor slot
           assertBool "both halves written" (v P.&& j)
@@ -92,7 +92,7 @@ tests =
       -- to render and nothing to discard.
       testCase "withWaveformOnFailure writes nothing when the test passes" $
         withSlot "capture-passing" $ \slot -> do
-          _ <- withWaveformOnFailure slot 8 (sampleN 8 counter) evaluate
+          _ <- withWaveformOnFailure slot 8 counter evaluate
           (v, j) <- filesFor slot
           assertBool "no VCD, no sidecar" (P.not v P.&& P.not j)
     , -- A FAILING run writes both, and the original exception propagates.
@@ -100,7 +100,7 @@ tests =
         withSlot "capture-failing" $ \slot -> do
           outcome <-
             try @SomeException $
-              withWaveformOnFailure slot 8 (sampleN 8 counter) $ \xs -> do
+              withWaveformOnFailure slot 8 counter $ \xs -> do
                 _ <- evaluate (P.length xs)
                 errorX "deliberate failure"
           assertBool
@@ -113,7 +113,7 @@ tests =
         withSlot "capture-failing-strict" $ \slot -> do
           _ <-
             try @SomeException $
-              withWaveformOnFailure' slot 8 (sampleN 8 counter) $ \xs -> do
+              withWaveformOnFailure' slot 8 counter $ \xs -> do
                 _ <- evaluate (P.length xs)
                 errorX "deliberate failure"
           (v, j) <- filesFor slot
@@ -124,7 +124,7 @@ tests =
         withSlot "capture-prop-passing" $ \slot -> do
           ok <-
             Hedgehog.check . Hedgehog.property $
-              withWaveformOnCounterexample slot 8 (sampleN 8 counter) $ \xs ->
+              withWaveformOnCounterexample slot 8 counter $ \xs ->
                 P.length xs Hedgehog.=== 8
           assertBool "the passing property passes" ok
           (v, j) <- filesFor slot
@@ -133,7 +133,7 @@ tests =
         withSlot "capture-prop-failing" $ \slot -> do
           ok <-
             Hedgehog.check . Hedgehog.property $
-              withWaveformOnCounterexample slot 8 (sampleN 8 counter) $ \xs ->
+              withWaveformOnCounterexample slot 8 counter $ \xs ->
                 P.length xs Hedgehog.=== 7
           assertBool "the failing property fails" (P.not ok)
           (v, j) <- filesFor slot
@@ -149,7 +149,7 @@ tests =
         withSlot "capture-prop-lastcycle" $ \slot -> do
           _ <-
             Hedgehog.check . Hedgehog.withTests 1 . Hedgehog.property $
-              withWaveformOnCounterexample slot 8 (sampleN 8 counter) $ \xs ->
+              withWaveformOnCounterexample slot 8 counter $ \xs ->
                 P.length xs Hedgehog.=== 7
           vcd <- P.readFile (waveformSlotPath slot)
           let stamps = [l | l <- P.lines vcd, P.take 1 l P.== "#"]
@@ -160,7 +160,7 @@ tests =
         withSlot "capture-prop-kept" $ \slot -> do
           ok <-
             Hedgehog.check . Hedgehog.withTests 1 . Hedgehog.property $
-              withWaveformCase True slot 8 (sampleN 8 counter) $ \xs ->
+              withWaveformCase True slot 8 counter $ \xs ->
                 P.length xs Hedgehog.=== 8
           assertBool "the kept property passes" ok
           (v, j) <- filesFor slot
@@ -172,7 +172,7 @@ tests =
       -- refused as empty.
       testCase "a run that forced exactly one cycle still captures it" $
         withSlot "capture-one-cycle" $ \slot -> do
-          _ <- withWaveformLazy slot 8 (sampleN 1 counter) (evaluate . P.length)
+          _ <- withWaveformLazy slot 8 counter (evaluate . P.length . P.take 1)
           writeWaveformSlot slot
           (v, j) <- filesFor slot
           assertBool "both halves written" (v P.&& j)
@@ -181,11 +181,12 @@ tests =
       -- display the representative's value for exactly the cycle the capture
       -- is about. The divergent value 1 only exists at that last cycle, so
       -- its (full-width) change line appearing at all proves "diff" kept its
-      -- own identifier.
+      -- own identifier. Two separately sampled signals are not ONE signal,
+      -- so this goes through the …Sim variant.
       testCase "signals diverging only at the last (uncommitted) cycle are not aliased" $
         withSlot "capture-alias-tail" $ \slot -> do
           _ <-
-            withWaveformLazy slot 8 twins $ \(xs, ys) ->
+            withWaveformLazySim slot 8 twins $ \(xs, ys) ->
               evaluate (P.length xs + P.length ys)
           writeWaveformSlot slot
           vcd <- P.readFile (waveformSlotPath slot)

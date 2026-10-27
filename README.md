@@ -374,11 +374,13 @@ import Clash.CircuitContext.Waveform
 
 case_myDesign :: Assertion
 case_myDesign = withWaveformSlot "my_design" $ \wf -> do
-  out <- withWaveform wf 1000 (sampleN 1000 (top (fromList [1 ..])))
+  out <- withWaveform wf 1000 (top (fromList [1 ..]))
   expected @=? out
 ```
 
-That writes `waveforms/my_design.vcd`, and its typed-waveform sidecar
+Every capture takes the design as the `Signal` to observe plus a cycle count,
+and samples it itself (with `Clash.Explicit.Signal.sampleN`). That writes
+`waveforms/my_design.vcd`, and its typed-waveform sidecar
 `waveforms/my_design.json` beside it. A *slot* is one test's pending
 waveform, created and owned by that test — deliberately not a global registry,
 which would have to retain every rendered VCD until the whole suite finished.
@@ -394,12 +396,12 @@ rendered or written:
 ```haskell
 -- Only when asked for (CCC_WAVEFORMS=1), e.g. to regenerate documentation.
 keep <- waveformsRequested
-out  <- withWaveformWhen keep wf 1000 (sampleN 1000 (top inp))
+out  <- withWaveformWhen keep wf 1000 (top inp)
 
 -- Or: nothing while the test passes, the failing run's waveform when it does
 -- not. `consume` runs twice, so it must be assertions and forcing, not
 -- one-shot IO.
-withWaveformOnFailure wf 1000 (sampleN 1000 (top inp)) $ \out ->
+withWaveformOnFailure wf 1000 (top inp) $ \out ->
   expected @=? out
 ```
 
@@ -411,7 +413,14 @@ randomly): it records as it goes but still renders only on failure.
 
 For a design whose consumer decides how far to simulate — firmware reading a
 UART stream until it prints its result — use `withWaveformLazy`, which
-captures exactly the cycles the consumer forced instead of a fixed window.
+captures exactly the cycles the consumer forced instead of a fixed window;
+its cycle count is then only an upper bound.
+
+A simulation that is not one `Signal` — outputs in several clock domains, or a
+`clash-protocols` circuit run with `sampleC` — goes through a dedicated
+combinator built on the `…Sim` variants (`withWaveformSim`,
+`withWaveformOnFailureSim`, …), which take the simulation *result* and an
+explicit capture window instead.
 
 ### Hedgehog properties
 
@@ -427,7 +436,7 @@ prop_roundtrip :: IORef Bool -> WaveformSlot -> Property
 prop_roundtrip fired wf = property $ do
   input <- forAll genInput
   keep  <- recordLargestCase fired          -- which PASSING case to keep
-  withWaveformCase keep wf nCycles (sampleN nCycles (dut input)) $ \out ->
+  withWaveformCase keep wf nCycles (dut input) $ \out ->
     out === model input
 ```
 
