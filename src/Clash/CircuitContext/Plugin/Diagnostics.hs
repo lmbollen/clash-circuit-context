@@ -20,7 +20,7 @@ it is tuned with the flags every Haskell project already uses:
 -Werror=x-circuit-context-untraced  -- strict: a lost wire fails the build
 @
 
-Four categories, because they differ in how likely each is to be a defect:
+Five categories, because they differ in how likely each is to be a defect:
 
 [@x-circuit-context@] The plugin could not honour something the source
   unambiguously asked for. Nothing benign lands here.
@@ -41,6 +41,14 @@ Four categories, because they differ in how likely each is to be a defect:
   found no instance. A real answer, and the verbose one: it fires once per
   declined binding, including all the @Int@s and @Bool@s that were never going
   to trace.
+
+[@x-circuit-context-undescribed@] The signal IS recorded, but as raw bits:
+  its payload has 'BitPack' and no @clash-shockwaves@ @Waveform@ instance (or
+  the oracle could not decide one), so a typed viewer cannot show its
+  constructors and fields. Nothing is lost, which is why this is not
+  @untraced@ and why @-Werror=x-circuit-context-untraced@ ignores it. The fix
+  is usually one derived instance; silence the category if raw bits are what
+  you want.
 
 Note that a blanket @-Werror@ promotes these like any other warning. That is
 GHC's behaviour and not something this plugin chooses, but it is worth
@@ -98,6 +106,8 @@ data Category
     Undecided
   | -- | @x-circuit-context-untraced@
     Untraced
+  | -- | @x-circuit-context-undescribed@
+    Undescribed
   deriving (Eq, Ord, Show)
 
 categoryFlag :: Category -> String
@@ -106,6 +116,7 @@ categoryFlag = \case
   Uninstrumented -> "x-circuit-context-uninstrumented"
   Undecided -> "x-circuit-context-undecided"
   Untraced -> "x-circuit-context-untraced"
+  Undescribed -> "x-circuit-context-undescribed"
 
 {- | Emit one diagnostic, at most once per process.
 

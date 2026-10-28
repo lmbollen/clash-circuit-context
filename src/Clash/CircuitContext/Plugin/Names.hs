@@ -56,7 +56,9 @@ lookupAbiNames = do
       hasProbeN <- GHC.lookupOrig cm (GHC.mkTcOcc "HasProbe")
       noCircuitScopeN <- GHC.lookupOrig cm (GHC.mkDataOcc "NoCircuitScope")
       explicitNs <-
-        mapM (GHC.lookupOrig cm . GHC.mkVarOcc) ["traceSignalC", "probe", "probeSW"]
+        mapM
+          (GHC.lookupOrig cm . GHC.mkVarOcc)
+          ["traceSignalC", "traceSignalSW", "probe", "probeSW"]
       pure
         ( Just
             AbiNames

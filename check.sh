@@ -73,6 +73,7 @@ case "$ghcver" in
        "[-Wx-circuit-context-uninstrumented]"
        "[-Wx-circuit-context-undecided]"
        "[-Wx-circuit-context-untraced]"
+       "[-Wx-circuit-context-undescribed]"
      ) ;;
 esac
 if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
@@ -83,6 +84,8 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     "'bothModes' has both HasProbe and HasCircuitContext" \
     "not traced: Signal dom Undescribed" \
     "no instance for: BitPack Undescribed" \
+    "recorded as raw bits, not described: Bare" \
+    "no instance for: Waveform Bare" \
     "the oracle could not decide: 1 <= n"
   do
     if grep -qF "$want" "$log"; then
@@ -108,6 +111,22 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     # built -- either way the pair proves nothing.
     echo "FAIL: the unvouched harness did not warn, so the marker is untested"
     fail=1
+  fi
+fi
+
+# A payload without Waveform is still traced and probed, as raw bits. That
+# is reported -- it asks for the instance -- but as undescribed, never as
+# untraced/undecided: those mean a LOST signal, and
+# -Werror=x-circuit-context-untraced must not fail a build whose signals are
+# all there. Test/AdtSidecar.hs traces and probes such a payload (Ticks) on
+# purpose. Same fresh-build caveat.
+if grep -q "Compiling Main.*AdtSidecar" "$log" 2>/dev/null; then
+  if grep -qE "not (traced|probed): .*Ticks" "$log"; then
+    echo "FAIL: a recorded (only undescribed) payload was reported as lost"; fail=1
+  elif grep -qF "recorded as raw bits, not described: Ticks" "$log"; then
+    echo "ok: an undescribed payload is reported as undescribed, not lost"
+  else
+    echo "FAIL: an undescribed payload drew no undescribed warning"; fail=1
   fi
 fi
 

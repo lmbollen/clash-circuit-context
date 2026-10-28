@@ -38,8 +38,12 @@ import System.Exit (exitFailure)
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext.Auto (Traceable, autoTrace)
-import Clash.CircuitContext.Core (HasCircuitContext, withCircuitContext)
-import Clash.Shockwaves.Internal.Waveform (Waveform)
+import Clash.CircuitContext.Core (
+  HasCircuitContext,
+  TraceEntry (teAdt),
+  withCircuitContext,
+ )
+import Clash.Shockwaves.Waveform (Waveform)
 
 -- | Payload without BitPack: @CanTrace (Signal System NoPack)@ is 'False.
 data NoPack = MkNoPack
@@ -70,12 +74,10 @@ data PortA
 
 data PortB
 
-{- | Note: no 'Typeable'. The tracing requirement is
-@(KnownDomain, BitPack, NFDataX, Waveform)@ — 'Waveform' because every traced
-signal also carries its payload type's ADT description (see
-"Clash.CircuitContext.Shockwaves"). A polymorphic component that traces its
-payload must therefore carry 'Waveform' too; that is the visible cost of
-getting typed waveforms automatically.
+{- | Note: no 'Typeable' — @(KnownDomain, BitPack, NFDataX)@ is the full
+tracing requirement. The 'Waveform' given is not needed to trace; it is what
+lets the trace also carry the payload's ADT description (see
+"Clash.CircuitContext.Shockwaves"), decided from the givens like the rest.
 -}
 polyTraced ::
   (HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a, Waveform a) =>
@@ -83,9 +85,9 @@ polyTraced ::
   Signal dom a
 polyTraced s = autoTrace "polyyes" s
 
-{- | The same, but WITHOUT the 'Waveform' given: bit-level evidence alone no
-longer suffices, so this falls back to identity — silently, like every other
-undecidable case, rather than failing to compile.
+{- | The same, but WITHOUT the 'Waveform' given: still traced, because
+bit-level evidence is all tracing needs, but recorded as raw bits with no
+description.
 -}
 polyNoWaveform ::
   (HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) =>
@@ -186,8 +188,15 @@ main = do
   check "non-BitPack payload fell back to identity" (P.not (has "blocked"))
   check "poly-without-evidence fell back to identity" (P.not (has "polyno@"))
   check
-    "poly with bit evidence but no Waveform fell back to identity"
-    (P.not (has "polynowave"))
+    "poly with bit evidence but no Waveform is still traced"
+    (has "polynowave@")
+  let
+    described nm =
+      P.any
+        (\(k, e) -> nm `isInfixOf` k P.&& P.maybe False (P.const True) (teAdt e))
+        (Map.toList traces)
+  check "poly with a Waveform given is described" (described "polyyes@")
+  check "poly without a Waveform given is not" (P.not (described "polynowave@"))
   check "record without instance fell back to identity" (P.not (has "recn"))
   check "Tagged signal traced (newtype delegation)" (has "tagsig@")
   check

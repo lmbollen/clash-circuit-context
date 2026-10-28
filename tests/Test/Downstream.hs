@@ -153,14 +153,17 @@ rather than a class, and the oracle gave up on it — at a LITERAL, so "the
 payload is monomorphic, therefore it traces" was not a usable rule. It costs
 them @cache.heldOffset@ and @processor.bodyPtr@.
 
-This reproduces their case exactly, not just its shape: like them, this
-package takes @clash-shockwaves@ from Hackage, whose @Waveform (Index n)@
-carries the @1 <= n@ (@BitPack@'s wants only @KnownNat n@), so the oracle is
-asked the literal @Assert@ they hit. @Test.PluginDiagnostics@'s @grounded@
-guards the same MECHANISM on a payload of its own; that one would survive
-shockwaves ever relaxing the instance, which is why both exist.
+The @Assert@ comes from Hackage @clash-shockwaves@' @Waveform (Index n)@,
+which carries the @1 <= n@ (@BitPack@'s wants only @KnownNat n@). Their
+branch required @Waveform@ to trace at all, so a lost decision cost them the
+wire. Here @Waveform@ is only asked to DESCRIBE a signal, so the same lost
+decision would leave @f2.ix@ recorded as raw bits instead. The question asked
+is the same literal @Assert@ they hit. @Test.PluginDiagnostics@'s @grounded@
+guards the same MECHANISM on a payload whose 'BitPack' carries the @Assert@,
+so it costs the wire there; that one would also survive shockwaves ever
+relaxing the instance, which is why both exist.
 
-@f2.ix@ must be recorded.
+@f2.ix@ must be recorded, and described.
 -}
 f2 ::
   (HiddenClockResetEnable dom, HasCircuitContext) =>

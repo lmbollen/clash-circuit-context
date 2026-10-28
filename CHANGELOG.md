@@ -55,18 +55,19 @@ Initial version.
   author was explicit. Unsigned closed bindings are still skipped, and are
   the one remaining path that is silent in both channels: no wire and no
   warning, because the oracle is never asked.
-* A binding whose right-hand side already applies `traceSignalC`, `probe` or
-  `probeSW` under the binder's own name does not get an injected recorder on
-  top. It used to record the signal twice, rendered `name_0`/`name_1`. A
+* A binding whose right-hand side already applies `traceSignalC`,
+  `traceSignalSW`, `probe` or `probeSW` under the binder's own name does not
+  get an injected recorder on top. It used to record the signal twice, rendered `name_0`/`name_1`. A
   different name still gets both, since that is two signals the author asked
   for.
 * Regression tests lifted from a downstream consumer's reproducers
   (`tests/Test/Downstream.hs`), inverted to assert the fixes rather than the
   defects. Their F1 case reproduced here exactly against the audited pin.
-  Their F2 case needs `Waveform (Index n)` to carry `1 <= n`, as Hackage
-  `clash-shockwaves` does, so it is asked exactly as they hit it; the
-  mechanism is also tested on a payload of its own, which stays tested if
-  shockwaves ever relaxes the instance.
+  Their F2 case asks the oracle the literal `1 <= 16` they hit, from Hackage
+  `clash-shockwaves`' `Waveform (Index n)`; here that decides whether the
+  wire is described rather than whether it is recorded, so the test asserts
+  both. The mechanism is also tested on a payload whose `BitPack` carries the
+  `Assert`, which stays tested if shockwaves ever relaxes the instance.
 * `{-# ANN f NoCircuitScope #-}` declares that a binder carries
   `HasCircuitContext` and deliberately has no `OPAQUE` — a harness boundary
   that wants the design tree rooted at the waveform top. It silences
@@ -118,26 +119,34 @@ Initial version.
   bundles): derive `Generic` and write an empty instance. Fields trace as
   `name.field` sub-scopes in the VCD hierarchy; nested records nest. The
   umbrella module re-exports `Traceable`.
-* Typed waveforms, from `clash-shockwaves`: every traced signal carries its
-  payload type's ADT description (constructors, fields, bit ranges, styles),
-  captured at registration where the type is still known. `dumpVCDSW`
+* Typed waveforms, from `clash-shockwaves`: every traced or probed signal
+  whose payload type has a `Waveform` instance carries that type's ADT
+  description (constructors, fields, bit ranges, styles), captured at
+  registration where the type is still known. `dumpVCDSW`
   (`Clash.CircuitContext.Shockwaves`) writes the hierarchical VCD and a JSON
-  sidecar in shockwaves' own format, keyed by the paths the VCD declares, so
-  shockwaves' Surfer plugin decodes our output unmodified. The waveform
+  sidecar in shockwaves' own format, keyed by the full scope paths the VCD
+  declares (`vcdPath`: a top-level name is `logic.<name>`), so shockwaves'
+  Surfer plugin decodes our output unmodified. The waveform
   lifecycle in `Clash.CircuitContext.Waveform` writes the pair through
   temp + rename, sidecar first: if the `.vcd` exists, its `.json` is complete.
-* Probes carry the ADT description of their payload type too, so an FSM
-  state — which is state, never a wire, and therefore visible only as a
-  probe — renders as constructors rather than as raw bits. Decided
-  separately from probeability (`CanDescribe`/`Describable` beside
-  `CanProbe`/`Probeable`), so a payload `Waveform` cannot describe still
-  probes, as before: `probe` is unchanged, `probeSW` is the describing
-  variant, and the plugin picks per type.
+* Describing is decided separately from recording (`CanDescribe`/
+  `Describable` beside `CanTrace`/`CanProbe`), so a payload `Waveform`
+  cannot describe is still traced or probed, as raw bits, exactly as before.
+  `traceSignalC` and `probe` are unchanged; `traceSignalSW` and `probeSW` are
+  the describing variants, and the plugin picks per type. That matters most
+  for probes: an FSM state is state, never a wire, so it is visible only as
+  a probe, and is routinely a size-polymorphic type `Waveform` rejects. A
+  declined description is reported in a category of its own,
+  `-Wx-circuit-context-undescribed`, which asks for the `Waveform` instance:
+  nothing was lost, so it is not `untraced`, and
+  `-Werror=x-circuit-context-untraced` does not promote it.
+* `ProbeMap` holds `ProbeEntry` records (period, width, runs and the ADT
+  descriptor) instead of tuples, mirroring `TraceEntry`. `Core` also exports
+  `disambiguate` and `vcdPath`, the key transforms a dump applies, for
+  anything that has to name the VCD's vars from outside it.
 * Tracing a `Signal dom a` requires `(KnownDomain dom, BitPack a,
-  NFDataX a, Waveform a)` — no `Typeable`. A payload without `Waveform` falls
-  back to identity like any other untraceable one, and is reported with
-  `-Wx-circuit-context-untraced`. Registration stores an empty `TypeRep`
-  encoding (unused by `dumpVCDC`), so size-polymorphic payloads
+  NFDataX a)` — no `Typeable`, and no `Waveform`. Registration stores an
+  empty `TypeRep` encoding (unused by `dumpVCDC`), so size-polymorphic payloads
   (`Unsigned n`, `BitVector n`) trace inside polymorphic components.
 * Supported GHCs: 9.6, 9.10, 9.12; clash-prelude `>=1.9 && <1.12` (the trace
   internals used are identical across these versions).

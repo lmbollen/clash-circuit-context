@@ -30,19 +30,22 @@ It also pins the two things a descriptor must NOT depend on:
   step, so it reaches the waveform as a probe and not a trace — which is
   precisely the signal whose constructors a reader wants named. Beside it,
   @ticks@ has 'BitPack' and no 'Waveform' and must still record, as bits:
-  probing and describing are separate questions, and collapsing them would
-  drop the size-polymorphic state a probe exists to see.
+  recording and describing are separate questions, and collapsing them would
+  drop the size-polymorphic state a probe exists to see. The same goes for a
+  trace: @stage@'s @raw@ is a 'Ticks' too, and is traced all the same.
 
-* The sidecar is keyed on the paths the VCD actually declares, which are
-  numbered from the trace AND probe key set together. Keying it on the traces
-  alone put descriptors on names the VCD never wrote.
+* The sidecar is keyed on the paths the VCD actually declares: numbered from
+  the trace AND probe key set together (keying it on the traces alone put
+  descriptors on names the VCD never wrote), and including the @logic@ scope
+  a dot-free name is declared under. Both are checked against the @$var@
+  declarations of the dumped VCD, not against a substring.
 -}
 module Main where
 
 import qualified Prelude as P
 
 import Control.Exception (evaluate)
-import Data.List (isInfixOf)
+import Data.List (intercalate, isInfixOf, isSuffixOf)
 import System.Exit (exitFailure)
 
 import qualified Data.Aeson as Json
@@ -54,9 +57,10 @@ import Clash.Explicit.Prelude
 
 import Clash.CircuitContext
 import Clash.CircuitContext.Shockwaves (dumpVCDSW)
-import Clash.Shockwaves.Internal.Waveform (Waveform)
 import Clash.Shockwaves.LUT (WaveformForLut (..), WaveformLUT)
+import Clash.Shockwaves.Waveform (Waveform)
 
+import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
 
 -- | A sum type: its CONSTRUCTOR names are what the sidecar must carry.
@@ -91,8 +95,11 @@ newtype Ticks = Ticks (Unsigned 4)
   deriving (Generic, Show)
   deriving anyclass (BitPack, NFDataX)
 
+unTicks :: Ticks -> Unsigned 8
+unTicks (Ticks t) = resize t
+
 {- | A component: @OPAQUE@ + 'HasCircuitContext', so the plugin wraps it in its
-own VCD scope and auto-traces @packet@ and @phase@ underneath.
+own VCD scope and auto-traces @packet@, @phase@ and @raw@ underneath.
 -}
 stage ::
   (HasCircuitContext) =>
@@ -103,7 +110,10 @@ stage ::
 stage clk rst addr = packet
  where
   phase = register clk rst enableGen Idle (next <$> phase)
-  packet = Packet <$> addr <*> phase
+  -- No 'Waveform' for 'Ticks': traced as raw bits, absent from the sidecar.
+  -- It feeds the output so that it is forced, and therefore registered.
+  raw = Ticks . resize <$> addr
+  packet = Packet <$> (addr + (unTicks <$> raw)) <*> phase
   next p = case p of
     Idle -> Busy
     Busy -> Done
@@ -165,6 +175,26 @@ describedPaths meta = case meta of
     P.maybe "" (ByteStringLazyChar8.unpack . Json.encode) (KeyMap.lookup "signals" o)
   _ -> ""
 
+-- | The sidecar's @signals@ keys: the VCD paths that carry a description.
+signalPaths :: Json.Value -> [String]
+signalPaths (Json.Object o)
+  | Just (Json.Object sigs) <- KeyMap.lookup "signals" o =
+      P.map Key.toString (KeyMap.keys sigs)
+signalPaths _ = []
+
+{- | Every var a VCD declares, by full scope path: what a viewer looks a
+sidecar entry up by.
+-}
+declaredPaths :: String -> [String]
+declaredPaths = go [] . P.map P.words . P.lines
+ where
+  go scopes (("$scope" : _ : nm : _) : rest) = go (nm : scopes) rest
+  go (_ : scopes) (("$upscope" : _) : rest) = go scopes rest
+  go scopes (("$var" : _ : _ : _ : ref : _) : rest) =
+    intercalate "." (P.reverse (ref : scopes)) : go scopes rest
+  go scopes (_ : rest) = go scopes rest
+  go _ [] = []
+
 check :: String -> Bool -> IO ()
 check what ok
   | ok = putStrLn ("ok: " <> what)
@@ -206,7 +236,16 @@ main = do
         $ P.all (`isInfixOf` j) ["pAddr", "pPhase"]
       check
         "a descriptor is keyed by the VCD's own hierarchical path"
-        ("top.stage_0.packet" `isInfixOf` j)
+        ("top.stage_0.packet" `P.elem` signalPaths meta)
+      check
+        "every sidecar key is a var the VCD declares"
+        (P.all (`P.elem` declaredPaths v) (signalPaths meta))
+      check
+        "a trace without Waveform is recorded, as bits"
+        (P.any ("stage_0.raw" `isSuffixOf`) (declaredPaths v))
+      check
+        "...and stays out of the sidecar"
+        (P.not (P.any ("raw" `isSuffixOf`) (signalPaths meta)))
 
       -- Probes, which carry no descriptor until one is asked for per type.
       check
@@ -228,13 +267,22 @@ main = do
   (_, traces2, probes2) <- withCircuitContext $ do
     let op :: Signal System Opcode
         op = fromList (P.map Opcode [0, 0, 0, 3, 0])
-        xs = sampleN 4 (traceSignalC "op" op)
+        -- 'traceSignalSW', the describing variant: an explicit 'traceSignalC'
+        -- records raw bits only, as 'probe' does.
+        xs = sampleN 4 (traceSignalSW "op" op)
     _ <- evaluate (xs `deepseqX` xs)
     pure xs
   rendered2 <- dumpVCDSW (0, 4) traces2 probes2
   case rendered2 of
     Left err -> putStrLn ("FAIL: LUT dump failed: " <> err) >> exitFailure
-    Right (_, meta2) -> do
+    Right (vcd2, meta2) -> do
+      -- @op@ is traced outside any component, so the VCD declares it in the
+      -- stock @logic@ scope, and a viewer looks it up as @logic.op@.
+      check
+        "a dot-free trace is keyed by its logic-scope path"
+        ( "logic.op" `P.elem` signalPaths meta2
+            P.&& "logic.op" `P.elem` declaredPaths (Text.unpack vcd2)
+        )
       let lutsJson = case meta2 of
             Json.Object o ->
               P.maybe "" (ByteStringLazyChar8.unpack . Json.encode)

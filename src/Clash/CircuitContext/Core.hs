@@ -35,11 +35,12 @@ Everything hangs off one implicit parameter @?circuitContext@:
   wrapper derives one from a companion counter register and binds a
   per-application @?probe@ context; writes are keyed by (name, cycle) and
   hence idempotent — safe under lazy re-ordering and speculative sparks, and
-  an expression that is never forced simply records nothing. 'probeSW' is
-  'probe' plus the payload type's @clash-shockwaves@ descriptor, kept
-  separate because a probe's whole job is to see state that a trace cannot,
-  and that state is routinely a type 'Clash.Shockwaves.Waveform' will not
-  accept.
+  an expression that is never forced simply records nothing.
+* 'traceSignalSW' and 'probeSW' are 'traceSignalC' and 'probe' plus the
+  payload type's @clash-shockwaves@ descriptor. They are separate functions,
+  not extra constraints on the plain ones, because recording and describing
+  have different requirements: a size-polymorphic payload is routinely
+  something 'BitPack' accepts and 'Clash.Shockwaves.Waveform' does not.
 
 Tracing is optional by construction: with 'noCircuitContext' (both refs 'Nothing')
 every combinator collapses to identity.
@@ -75,9 +76,11 @@ module Clash.CircuitContext.Core (
   imapComponents,
   qualifyName,
   disambiguate,
+  vcdPath,
 
   -- * Scoped signal tracing
   traceSignalC,
+  traceSignalSW,
   dumpVCDC,
 
   -- * Recorded data (change-compressed)
@@ -652,18 +655,12 @@ say) from tracing inside polymorphic components.
 -}
 traceSignalC ::
   forall dom a.
-  ( HasCallStack
-  , HasCircuitContext
-  , KnownDomain dom
-  , BitPack a
-  , NFDataX a
-  , Waveform a
-  ) =>
+  (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) =>
   String ->
   Signal dom a ->
   Signal dom a
 traceSignalC nm sig
-  | clashSimulation = simTraceSignalC nm sig
+  | clashSimulation = simTraceSignalC Nothing nm sig
   | otherwise = sig
 {-# OPAQUE traceSignalC #-}
 {-# ANN traceSignalC hasBlackBox #-}
@@ -672,16 +669,24 @@ traceSignalC nm sig
   , "  name: Clash.CircuitContext.Core.traceSignalC"
   , "  kind: Expression"
   , "  type: |-"
-  , "      (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a, Waveform a ) => String -> Signal dom a -> Signal dom a"
-  , "  template: ~ARG[7]"
+  , "      (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) => String -> Signal dom a -> Signal dom a"
+  , "  template: ~ARG[6]"
   , "  workInfo: Never"
   ])) #-}
 
-{- | Simulation worker for 'traceSignalC'. OPAQUE, holding the sole
-'unsafePerformIO' in the design (lazy one-shot registration, exactly like
-stock 'Clash.Signal.Trace.traceSignal1'); identity when tracing is off.
+{- | 'traceSignalC' that also records the payload type's @clash-shockwaves@
+descriptor, so a typed-waveform viewer shows constructors and fields rather
+than raw bits (see "Clash.CircuitContext.Shockwaves").
+
+Separate from 'traceSignalC' rather than replacing it, for the same reason
+as 'probeSW': a payload 'BitPack' accepts is not always one
+'Clash.Shockwaves.Waveform' accepts (its @Index n@ instance wants @1 <= n@,
+@BitPack@'s only @KnownNat n@), and requiring a description would stop such
+a signal from being recorded at all. The plugin's auto-tracing picks between
+the two per payload type, so nothing has to be written to get descriptions;
+see @Clash.CircuitContext.Auto.Describable@.
 -}
-simTraceSignalC ::
+traceSignalSW ::
   forall dom a.
   ( HasCallStack
   , HasCircuitContext
@@ -693,7 +698,34 @@ simTraceSignalC ::
   String ->
   Signal dom a ->
   Signal dom a
-simTraceSignalC nm sig = case (ccTracer ctx, ccOrdinals ctx) of
+traceSignalSW nm sig
+  | clashSimulation = simTraceSignalC (Just (typeName @a, tRef @a)) nm sig
+  | otherwise = sig
+{-# OPAQUE traceSignalSW #-}
+{-# ANN traceSignalSW hasBlackBox #-}
+{-# ANN traceSignalSW (InlineYamlPrimitive [minBound ..] (unlines
+  [ "BlackBox:"
+  , "  name: Clash.CircuitContext.Core.traceSignalSW"
+  , "  kind: Expression"
+  , "  type: |-"
+  , "      (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a, Waveform a) => String -> Signal dom a -> Signal dom a"
+  , "  template: ~ARG[7]"
+  , "  workInfo: Never"
+  ])) #-}
+
+{- | Simulation worker for 'traceSignalC' and 'traceSignalSW'. OPAQUE, holding the sole
+'unsafePerformIO' in the design (lazy one-shot registration, exactly like
+stock 'Clash.Signal.Trace.traceSignal1'); identity when tracing is off.
+-}
+simTraceSignalC ::
+  forall dom a.
+  (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) =>
+  -- | The payload's @clash-shockwaves@ descriptor, if the caller has one
+  Maybe (TypeName, Translator) ->
+  String ->
+  Signal dom a ->
+  Signal dom a
+simTraceSignalC adt nm sig = case (ccTracer ctx, ccOrdinals ctx) of
   (Just ref, Just ordRef) ->
     -- Instance ordinals are resolved inside this same action — no id minting
     -- in pure code.
@@ -701,17 +733,13 @@ simTraceSignalC nm sig = case (ccTracer ctx, ccOrdinals ctx) of
       segs <- resolveHier ordRef (ccHier ctx)
       leafI <- freshOrdinal ordRef
       let key = intercalate "." (reverse (taggedLoc nm loc leafI : segs))
-      -- The payload type is still known here, so capture its typed-waveform
-      -- descriptor alongside the values; nothing downstream can recover it.
+      -- The descriptor travels with the values: only the caller, where the
+      -- payload type is still known, could build it.
       registerTrace (ccWindow ctx) ref period adt key sig
   _ -> sig
  where
   ctx = ?circuitContext
   loc = callLoc callStack
-  -- 'tRef', not 'translator': the reference form is what registers the type
-  -- itself under its name (a bare translator only pulls in the types it
-  -- REFERENCES), and it is what shockwaves' own recorder stores per signal.
-  adt = Just (typeName @a, tRef @a)
   period :: Int
   period = case knownDomain @dom of
     SDomainConfiguration{sPeriod} -> snatToNum sPeriod
@@ -1164,6 +1192,24 @@ insertVar v = go (splitPath (varReference v))
   go (seg : rest) (ScopeTree cs vs) =
     ScopeTree (Map.alter (Just . go rest . fromMaybe emptyScope) seg cs) vs
 
+{- | The full scope path 'dumpVCDC' declares a var under, given its key as
+returned by 'disambiguate'. A dotted key is already that path, since each
+segment becomes a nested @$scope@. A dot-free key has no scope of its own, so
+it lands in the stock @logic@ scope, as in 'Clash.Signal.Trace.dumpVCD'.
+
+Anything that names VCD vars from outside the file (the
+"Clash.CircuitContext.Shockwaves" sidecar) must use this, not the bare key:
+a viewer looks a var up by its full path.
+-}
+vcdPath :: String -> String
+vcdPath key
+  | '.' `elem` key = key
+  | otherwise = rootScope <> "." <> key
+
+-- | The scope 'dumpVCDC' declares dot-free keys under; see 'vcdPath'.
+rootScope :: String
+rootScope = "logic"
+
 splitPath :: String -> [String]
 splitPath = splitOn '.'
 
@@ -1190,9 +1236,10 @@ renderVCDHier now (VCDFile decCmds simCmds) =
     renderRoot (foldl' (flip insertVar) emptyScope vs)
 
   -- Unqualified (dot-free) vars keep the stock @logic@ scope; each
-  -- top-level path segment becomes its own top scope.
+  -- top-level path segment becomes its own top scope. 'vcdPath' states the
+  -- same rule for anything that has to name these vars from outside.
   renderRoot (ScopeTree cs vs) =
-    (if null vs then [] else renderScope 0 "logic" (ScopeTree Map.empty vs))
+    (if null vs then [] else renderScope 0 rootScope (ScopeTree Map.empty vs))
       ++ concat [renderScope 0 nm t | (nm, t) <- Map.toList cs]
 
   renderScope depth nm (ScopeTree cs vs) =
@@ -1349,6 +1396,10 @@ binding whose type CAN be described is, without anything to write; see
 -}
 probeSW ::
   forall a. (HasProbe, BitPack a, NFDataX a, Waveform a) => String -> a -> a
+-- 'tRef', not 'translator', here and in 'traceSignalSW': the reference form
+-- is what registers the type itself under its name (a bare translator only
+-- pulls in the types it REFERENCES), and it is what shockwaves' own recorder
+-- stores per signal.
 probeSW nm a
   | clashSimulation = simProbe (Just (typeName @a, tRef @a)) nm a
   | otherwise = a

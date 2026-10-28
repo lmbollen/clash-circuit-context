@@ -24,9 +24,11 @@ The two libraries know different things, and neither subsumes the other:
 Combining them needs no coordination at dump time, because the descriptor is
 captured where the payload type is still known — at registration, into
 'teAdt' \/ 'peAdt' — and travels with the recording. 'adtSidecar' then keys
-descriptors by the same 'disambiguate'd paths 'dumpVCDC' writes into the VCD,
-so a descriptor lands on exactly the name the VCD declares, sibling suffixes
-(@name_0@, @name_1@) included. No name guessing, and nothing to keep in sync.
+descriptors by the same 'disambiguate'd keys 'dumpVCDC' writes into the VCD,
+turned into full scope paths by the same 'vcdPath' rule, so a descriptor
+lands on exactly the var the VCD declares: sibling suffixes (@name_0@,
+@name_1@) included, and the @logic@ scope a dot-free name is declared under.
+No name guessing, and nothing to keep in sync.
 
 Traces AND probes, over the same key set the dump uses. Both halves of that
 matter: a probe is how an FSM state is seen at all (it is state, never a
@@ -63,10 +65,15 @@ import Clash.CircuitContext.Core (
   TraceEntry (..),
   disambiguate,
   dumpVCDC,
+  vcdPath,
  )
 
 import Clash.Shockwaves.Internal.BitList (BitList (BL))
-import Clash.Shockwaves.Internal.Translator (addTypesT, addValueT)
+import Clash.Shockwaves.Internal.Translator (
+  addTypesT,
+  addValueT,
+  hasGeneratedLutT,
+ )
 import Clash.Shockwaves.Internal.Types (LUTMap, SignalMap, TypeMap)
 
 {- | 'dumpVCDC' plus the typed-waveform sidecar: a hierarchical VCD, and the
@@ -85,15 +92,16 @@ dumpVCDSW slice@(offset, nSamples) traces probes = do
 @{ signals, types, luts }@ — the same three keys its own @dumpVCD@ emits, so
 its Surfer plugin consumes this unmodified.
 
-@signals@ maps a signal's VCD path to its type name, @types@ carries each type's
+@signals@ maps a signal's full VCD scope path ('vcdPath') to its type name, @types@ carries each type's
 translator (the ADT structure), and @luts@ the lookup-table entries for the
 values that actually occurred.
 
 Signals whose payload type has no 'Clash.Shockwaves.Waveform' instance simply
 have no descriptor and are absent from @signals@ — they still appear in the VCD
-as plain bits. For a trace that means no instance at all; for a probe it also
-covers the deliberate case, a payload 'Clash.Shockwaves.Waveform' cannot
-describe but 'Clash.CircuitContext.Core.probe' records anyway (see
+as plain bits. That covers both a payload that never got an instance and
+one 'Clash.Shockwaves.Waveform' cannot describe at all, which
+'Clash.CircuitContext.Core.traceSignalC' and 'Clash.CircuitContext.Core.probe'
+record anyway (see 'Clash.CircuitContext.Core.traceSignalSW' and
 'Clash.CircuitContext.Core.probeSW').
 -}
 adtSidecar ::
@@ -123,8 +131,11 @@ adtSidecar end traces probes =
     | (path, (Just adt, width, values)) <- Map.toList recorded
     ]
 
+  -- A viewer looks a var up by its full scope path, which for a dot-free key
+  -- includes the @logic@ scope 'dumpVCDC' declares it under.
   signals :: SignalMap
-  signals = Map.fromList [(path, tyName) | (path, (tyName, _), _, _) <- described]
+  signals =
+    Map.fromList [(vcdPath path, tyName) | (path, (tyName, _), _, _) <- described]
 
   types :: TypeMap
   types = foldl' (\acc (_, (_, tr), _, _) -> addTypesT tr acc) Map.empty described
@@ -137,7 +148,8 @@ adtSidecar end traces probes =
   its entry like any other, or the viewer decodes every cycle except the one
   the capture exists to show. A probe has no such tail: it commits the cycle it
   fires on. Translators that are not LUT-shaped contribute nothing
-  ('addValueT' returns no updates for them). -}
+  ('addValueT' returns no updates for them), so they are skipped before their
+  history is walked at all. -}
   luts :: LUTMap
   luts =
     foldl'
@@ -145,6 +157,7 @@ adtSidecar end traces probes =
       Map.empty
       [ update
       | (_, (_, tr), width, values) <- described
+      , hasGeneratedLutT tr
       , value <- values
       , update <- addValueT tr (toBitList width value)
       ]

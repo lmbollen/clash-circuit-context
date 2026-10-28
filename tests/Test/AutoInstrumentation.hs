@@ -42,7 +42,7 @@ import qualified Prelude as P
 import Control.Exception (evaluate)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe)
+import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Text.IO as TIO
 import System.Exit (exitFailure)
 
@@ -229,6 +229,13 @@ main = do
   check
     "mealyBProbed probes step internals"
     (P.any (".s'@" `isInfixOf`) (Map.keys mbProbes))
+  -- This module never mentions clash-shockwaves, so its Waveform instances
+  -- reach the oracle only through the plugin's force-load of their home
+  -- interface. Without it every wire still traces, as raw bits, which the
+  -- golden VCD cannot tell apart; only the descriptor can.
+  check
+    "an Int wire is described without importing clash-shockwaves"
+    (P.any (".out@" `isInfixOf`) (Map.keys (Map.filter (isJust . teAdt) traces)))
   vcd <- dumpVCDC (0, 8) traces probes
   case vcd of
     Left err -> putStrLn ("VCD error: " <> err) >> exitFailure
