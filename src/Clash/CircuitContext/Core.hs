@@ -93,6 +93,7 @@ module Clash.CircuitContext.Core (
   probeFmap,
 ) where
 
+import Clash.Annotations.Primitive (HDL (..), Primitive (InlineYamlPrimitive), hasBlackBox)
 import Clash.Explicit.Mealy (mealy)
 import Clash.Explicit.Moore (moore)
 import Clash.Explicit.Signal (delay, register)
@@ -586,7 +587,17 @@ traceSignalC ::
 traceSignalC nm sig
   | clashSimulation = simTraceSignalC nm sig
   | otherwise = sig
-{-# INLINE traceSignalC #-}
+{-# OPAQUE traceSignalC #-}
+{-# ANN traceSignalC hasBlackBox #-}
+{-# ANN traceSignalC (InlineYamlPrimitive [minBound ..] (unlines
+  [ "BlackBox:"
+  , "  name: Clash.CircuitContext.Core.traceSignalC"
+  , "  kind: Expression"
+  , "  type: |-"
+  , "      (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) => String -> Signal dom a -> Signal dom a"
+  , "  template: ~ARG[6]"
+  , "  workInfo: Never"
+  ])) #-}
 
 {- | Simulation worker for 'traceSignalC'. OPAQUE, holding the sole
 'unsafePerformIO' in the design (lazy one-shot registration, exactly like
@@ -1209,10 +1220,32 @@ probe :: forall a. (HasProbe, BitPack a, NFDataX a) => String -> a -> a
 probe nm a
   | clashSimulation = simProbe nm a
   | otherwise = a
-{-# INLINE probe #-}
+{-# OPAQUE probe #-}
+{- The blackbox makes 'probe' an identity primitive in HDL, so Clash never
+looks inside the @clashSimulation@ guard. Without it the dead 'simProbe'
+branch reaches 'inlineOrLiftNonRep', which diverges on a step polymorphic in
+a 'KnownNat' -- its dictionaries are non-representable local bindings -- and
+HDL generation grows without bound.
+OPAQUE keeps GHC from inlining the guard away, so the name is still there for
+Clash to match. Simulation is unaffected: the blackbox is HDL-only.
+-}
+{-# ANN probe hasBlackBox #-}
+{-# ANN probe (InlineYamlPrimitive [minBound ..] (unlines
+  [ "BlackBox:"
+  , "  name: Clash.CircuitContext.Core.probe"
+  , "  kind: Expression"
+  , "  type: |-"
+  , "    probe :: (HasProbe, BitPack a, NFDataX a) => String -> a -> a"
+  , "  template: ~ARG[4]"
+  , "  workInfo: Never"
+  ])) #-}
 
-{- | Simulation worker for 'probe'. NOINLINE, holding the 'unsafePerformIO'
+{- | Simulation worker for 'probe'. OPAQUE, holding the 'unsafePerformIO'
 write; identity when probing is off.
+
+OPAQUE for uniformity with the other simulation workers only; it is the
+blackbox on 'probe' above that keeps HDL generation finite
+(measured 2026-09-21: OPAQUE here alone changed nothing).
 -}
 simProbe :: forall a. (HasProbe, BitPack a, NFDataX a) => String -> a -> a
 simProbe nm a = case (ccProbes ctx, ccOrdinals ctx) of
@@ -1255,7 +1288,7 @@ simProbe nm a = case (ccProbes ctx, ccOrdinals ctx) of
   w = snatToNum (SNat @(BitSize a))
   -- Robust to undefined bits AND partial bindings; see 'packMaskValue'.
   val = packMaskValue a
-{-# NOINLINE simProbe #-}
+{-# OPAQUE simProbe #-}
 
 {- | Stock 'Clash.Explicit.Mealy.mealy', except the step function may 'probe'
 its internals. Implemented purely with stock combinators: a companion counter
