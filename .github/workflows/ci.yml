@@ -5,24 +5,41 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
+    name: check.sh (GHC ${{ matrix.ghc }})
     strategy:
       fail-fast: false
       matrix:
-        ghc: ["9.6.7", "9.10.3"]
+        # Every GHC clash-compiler supports: its packages' `tested-with`, which
+        # is also the union of its cabal CI matrices (.ci/ci_recipe.py runs
+        # 9.14.1, 9.12.4, 9.10.3 and 9.6.7 on every PR and 9.8.4 nightly). A
+        # Clash user can be on any of these, so this package is tested on all
+        # of them rather than on a hand-picked subset.
+        ghc: ["9.14.1", "9.12.4", "9.10.3", "9.8.4", "9.6.7"]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
-      - uses: haskell-actions/setup@v2
+      - uses: haskell-actions/setup@0f8e8c99d88aeb3fbfd523f1ef2c6f762d10d64d  # v2.12.1
         id: setup
         with:
           ghc-version: ${{ matrix.ghc }}
-          cabal-version: "3.12"
+          # The newest GHCs need a newer cabal than any fixed pin would stay
+          # current with; clash-compiler's CI uses `latest` for the same reason.
+          cabal-version: latest
+
+      - name: Version information
+        run: |
+          ghc --version
+          cabal --version
 
       - name: Cache cabal store
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: |
             ${{ steps.setup.outputs.cabal-store }}
