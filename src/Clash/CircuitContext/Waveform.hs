@@ -12,7 +12,8 @@ Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
 Emitting waveforms from a TEST SUITE: the lifecycle around 'dumpVCDC' that
 every instrumented suite otherwise has to reinvent — where files go, which run
 of a repeated property survives, when the render happens, and how the pair of
-files a typed viewer reads is written without a window in which they disagree.
+files a typed viewer reads is written so that neither is ever seen half
+written.
 
 Two entry points, by how the design is sampled:
 
@@ -188,6 +189,8 @@ writeWaveformSlot (WaveformSlot path pending) = liftIO $ do
     -- viewer reads to decode the bits the VCD only names. Both go through
     -- temp + rename, and the SIDECAR LANDS FIRST, so the invariant a reader
     -- depends on holds: if the .vcd is there, its .json is there and complete.
+    -- Not that the two are from the same run: a crash between the renames
+    -- leaves the new .json beside the previous run's .vcd.
     let sidecar = path -<.> "json"
     (jTmp, jH) <- openTempFile waveformDir (takeFileName sidecar <.> "tmp")
     ByteString.hPut jH meta
@@ -361,8 +364,7 @@ recordAndDump slot slice sim = do
     rendered <- dumpVCDSW slice traces probes
     case rendered of
       Left _ -> pure () -- empty/failed render: don't clobber an earlier run
-      Right (txt, meta) -> do
-        capture slot txt meta
+      Right (txt, meta) -> capture slot txt meta
   pure forced
 
 {- | Has the developer asked for waveforms this run?

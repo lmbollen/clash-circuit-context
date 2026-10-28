@@ -133,34 +133,40 @@ initEnv = do
       -- this the first oracle query can run before the Traceable/Probeable
       -- instances are visible and wrongly decide 'False (observed).
       forceInterface md
-      -- Same hazard one package over: the Traceable Signal instance requires
-      -- clash-shockwaves' Waveform per payload, and a module that never
-      -- mentions clash-shockwaves never loads its instances — every stock
-      -- payload (BitVector, Index, …) would silently stop tracing there
-      -- (observed on bittide's Prbs). The module cannot be resolved by name
-      -- from an arbitrary unit (only DIRECT dependencies are), so read the
-      -- class off 'waveformClassWitness' and force its home interface.
-      witId <-
-        API.tcLookupId =<< API.lookupOrig md (API.mkVarOcc "waveformClassWitness")
-      let (_, theta, _) = GHC.tcSplitSigmaTy (GHC.idType witId)
-      case [cls | pred0 <- theta, GHC.ClassPred cls _ <- [GHC.classifyPredType pred0]] of
-        (cls : _) -> forceInterface (GHC.nameModule (GHC.getName cls))
-        [] ->
-          error
-            "Clash.CircuitContext.Plugin: waveformClassWitness carries no class constraint"
       let
         tc nm = API.tcLookupTyCon =<< API.lookupOrig md (API.mkTcOcc nm)
         cl nm = API.tcLookupClass =<< API.lookupOrig md (API.mkTcOcc nm)
-      OracleEnv
-        <$> tc "CanTrace"
-        <*> tc "CanProbe"
-        <*> cl "AutoTrace"
-        <*> cl "AutoProbe"
-        <*> cl "Traceable"
-        <*> cl "Probeable"
-        <*> tc "CanDescribe"
-        <*> cl "AutoDescribe"
-        <*> cl "Describable"
+      env <-
+        OracleEnv
+          <$> tc "CanTrace"
+          <*> tc "CanProbe"
+          <*> cl "AutoTrace"
+          <*> cl "AutoProbe"
+          <*> cl "Traceable"
+          <*> cl "Probeable"
+          <*> tc "CanDescribe"
+          <*> cl "AutoDescribe"
+          <*> cl "Describable"
+      -- Same hazard one package over: CanDescribe asks for clash-shockwaves'
+      -- Waveform per payload, and a module that never mentions
+      -- clash-shockwaves never loads its instances, so every stock payload
+      -- (BitVector, Index, …) would silently go undescribed there (observed
+      -- on bittide's Prbs). The module cannot be resolved by name from an
+      -- arbitrary unit (only DIRECT dependencies are), so read the class off
+      -- the context of Describable's instance, which the load above made
+      -- visible, and force the class's home interface.
+      instEnvs <- API.getInstEnvs
+      case [ cls
+           | inst <- GHC.classInstances instEnvs (describableClass env)
+           , let (_, theta, _) = GHC.tcSplitSigmaTy (GHC.idType (GHC.instanceDFunId inst))
+           , pred0 <- theta
+           , GHC.ClassPred cls _ <- [GHC.classifyPredType pred0]
+           ] of
+        (cls : _) -> forceInterface (GHC.nameModule (GHC.getName cls))
+        [] ->
+          error
+            "Clash.CircuitContext.Plugin: no Describable instance with a class context"
+      pure env
     _ ->
       error
         "Clash.CircuitContext.Plugin: Clash.CircuitContext.Auto not found (missing clash-circuit-context dependency?)"
@@ -314,6 +320,36 @@ reportDeclined ::
   Decision ->
   m ()
 reportDeclined loc cls t = \case
+  -- A declined description is not a lost signal: the binding is still
+  -- recorded, as raw bits. So it gets its own category rather than
+  -- untraced/undecided, which mean "lost" and which
+  -- -Werror=x-circuit-context-untraced promotes.
+  NoInstance blame
+    | describing ->
+        say
+          Diag.Undescribed
+          [ "recorded as raw bits, not described: " <> Diag.renderPlain t
+          , "no instance for: " <> Diag.renderPlain blame
+          , if GHC.noFreeVarsOfType blame
+              then
+                "Derive or write a clash-shockwaves Waveform instance so a typed"
+                  <> " viewer shows its constructors and fields."
+              else
+                "Add the Waveform constraint to the enclosing signature (or"
+                  <> " derive the instance it needs) so a typed viewer shows its"
+                  <> " constructors and fields."
+          ]
+  GaveUp blame
+    | describing ->
+        say
+          Diag.Undescribed
+          [ "recorded as raw bits, not described: " <> Diag.renderPlain t
+          , "the oracle could not decide: " <> Diag.renderPlain blame
+          , "This may be a limit of the approximation rather than a fact about"
+              <> " the type."
+          , "Name the binding with traceSignalSW or probeSW, which take Waveform"
+              <> " as a real constraint, to find out which."
+          ]
   NoInstance blame ->
     say
       Diag.Untraced
@@ -339,11 +375,10 @@ reportDeclined loc cls t = \case
   -- 'ctLocSpan' is the REAL span; the diagnostic machinery takes the sum.
   spn = GHC.RealSrcSpan (GHC.ctLocSpan loc) Strict.Nothing
 
-  -- A declined @Describable@ is the mildest of the three: the binding still
-  -- records, it just renders as bits. Say which it is.
+  describing = GHC.getOccString (GHC.getName cls) == "Describable"
+
   headline = case GHC.getOccString (GHC.getName cls) of
     "Probeable" -> "not probed: "
-    "Describable" -> "probed as raw bits (no ADT description): "
     _ -> "not traced: "
 
 --------------------------------------------------------------------------------
@@ -376,7 +411,7 @@ boolTy False = GHC.mkTyConTy GHC.promotedFalseDataCon
 
 Both negative answers carry the requirement they stopped at, which is the
 difference between "this will not be traced" and a message a reader can act
-on: for @Signal dom (Maybe (Packet dimX dimY))@ the blame is @Waveform
+on: for @Signal dom (Maybe (Packet dimX dimY))@ the blame is @BitPack
 (Packet dimX dimY)@ (write the instance), for a size-polymorphic payload it
 is the @KnownNat@ or @1 <= n@ the oracle cannot discharge (name it with an
 explicit 'Clash.CircuitContext.Core.traceSignalC' instead).

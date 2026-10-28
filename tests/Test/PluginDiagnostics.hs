@@ -7,6 +7,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 -- DELIBERATE: the suite's cabal stanza ALREADY enables the plugin, so this
@@ -33,11 +34,14 @@ Two halves, both exercised by this one module:
 * what the plugin now SAYS — every near-miss below is a GHC warning at
   compile time, and this module holds one live example of each category:
   @x-circuit-context-uninstrumented@ (@noOpaque@, @unsigned@, @bothModes@),
-  @x-circuit-context-untraced@ (@label@, @untraceable@) and
+  @x-circuit-context-untraced@ (@label@, a 'String', which no hardware
+  representation exists for, and @untraceable@),
   @x-circuit-context-undecided@ (@held@, whose 'Awkward' payload has a
-  'Waveform' instance the oracle cannot recurse into). @check.sh@ greps the
-  build log for all three, because a diagnostic that stops firing is exactly
-  as silent as the bug it reports.
+  'BitPack' instance the oracle cannot recurse into) and
+  @x-circuit-context-undescribed@ (@bare@, recorded as raw bits for want of
+  a @Waveform@ instance). @check.sh@ greps the build log for all of them,
+  because a diagnostic that stops firing is exactly as silent as the bug it
+  reports.
 -}
 module Main where
 
@@ -50,7 +54,6 @@ import System.Exit (exitFailure)
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext
-import Clash.Shockwaves.Internal.Waveform (Waveform)
 import qualified Test.DeclGroups as DeclGroups
 import Test.DesignCtx (DesignCtx)
 import qualified Test.Downstream as Downstream
@@ -61,14 +64,22 @@ environment yet at renamer stage.
 -}
 type LocalCtx dom = (KnownDomain dom, HasCircuitContext)
 
-{- | A payload with no 'Clash.Shockwaves.Waveform' (indeed no 'BitPack')
-instance: the binding below it is dropped, and says which requirement did it.
+{- | A payload with no 'BitPack' instance: the binding below it is dropped,
+and says which requirement did it.
 -}
 newtype Undescribed = Undescribed Int
   deriving stock (Generic)
   deriving anyclass (NFDataX)
 
-{- | A payload whose 'Waveform' instance context is NOT ordinary class
+{- | A payload that records ('BitPack') but has no @clash-shockwaves@
+@Waveform@ instance: the binding below it is traced as raw bits, and the
+warning asks for the instance.
+-}
+newtype Bare = Bare (Unsigned 4)
+  deriving stock (Generic)
+  deriving anyclass (BitPack, NFDataX)
+
+{- | A payload whose 'BitPack' instance context is NOT ordinary class
 constraints: @1 <= n@ is GHC's @Assert@ type family, which the oracle cannot
 recurse into. It does not answer "no instance" — it gives up, which is a
 different thing to be told, and the reason
@@ -76,9 +87,12 @@ different thing to be told, and the reason
 -}
 newtype Awkward n = Awkward (Unsigned n)
   deriving (Generic, Show)
-  deriving newtype (BitPack, NFDataX)
+  deriving newtype (NFDataX)
 
-deriving anyclass instance (KnownNat n, 1 <= n) => Waveform (Awkward n)
+instance (KnownNat n, 1 <= n) => BitPack (Awkward n) where
+  type BitSize (Awkward n) = n
+  pack (Awkward u) = pack u
+  unpack = Awkward . unpack
 
 unAwkward :: (KnownNat n) => Awkward n -> Int
 unAwkward (Awkward u) = fromIntegral u
@@ -90,9 +104,9 @@ viaLocalSyn inp = out
   out = inp + 1
 {-# OPAQUE viaLocalSyn #-}
 
-{- | Component via an IMPORTED constraint synonym, and the module's two
+{- | Component via an IMPORTED constraint synonym, and the module's
 oracle diagnostics: @untraceable@ has no 'BitPack' instance, @label@ is not a
-signal at all.
+signal at all, and @bare@ is traced but cannot be described.
 -}
 viaImportedSyn :: (DesignCtx dom) => Int -> Signal dom Int -> Signal dom Int
 viaImportedSyn k inp = out
@@ -101,6 +115,8 @@ viaImportedSyn k inp = out
   label = P.replicate k 'x'
   _forced = untraceable
   untraceable = Undescribed <$> inp
+  _forcedBare = bare
+  bare = Bare . fromIntegral <$> inp
 {-# OPAQUE viaImportedSyn #-}
 
 {- | The GROUND half of Helios F2. @1 <= 8@ is the same @Assert@ family as
@@ -122,7 +138,7 @@ once.
 -}
 
 {- | A size-polymorphic component whose local binding the oracle cannot
-decide: @Waveform (Awkward n)@ needs @1 <= n@, and only @KnownNat n@ is
+decide: @BitPack (Awkward n)@ needs @1 <= n@, and only @KnownNat n@ is
 given here.
 -}
 sized ::
@@ -259,6 +275,18 @@ main = do
           [ "downstream regression: " <> show p <> " was not recorded"
           | p <- [["f1", "direct"], ["f1", "tup"], ["f2", "ix"]]
           , p `P.notElem` downstreamPaths
+          ]
+        , -- F2's literal Assert is asked by the DESCRIBE question
+          -- (@Waveform (Index 16)@ carries @1 <= n@); recording it needs only
+          -- @BitPack@. So a regression there leaves @f2.ix@ recorded but
+          -- rendered as bits, and only its descriptor can tell.
+          [ "downstream regression: [\"f2\",\"ix\"] was recorded but not described"
+          | P.null
+              [ ()
+              | (k, e) <- Map.toList downstream
+              , P.map segmentName (splitOn '.' k) == ["f2", "ix"]
+              , P.maybe False (P.const True) (teAdt e)
+              ]
           ]
         , [ "a signed closed binding was not traced: " <> show p
           | p <- [["signedClosed", "constant"]]

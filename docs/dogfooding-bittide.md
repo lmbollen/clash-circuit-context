@@ -132,6 +132,16 @@ capture_ugn 7→**40**, registerwb 2→**35**, ring_buffer 7→**46**; scopes 1�
    strict 100 k-cycle capture and a model-driven CPU sim — the slowest test in
    the suite by far. `withTests 1` plus a live, output-count-bounded capture
    brought it to 0.6 s.
+10b3. **A serializing lock was the wrong fix — the leak was.** Tasty running N
+   CPU tests concurrently held N partially evaluated sims (GBs each), so the
+   harness serialized heavyweight sims on a global lock (`heavySimLock`). That
+   treated the symptom: what made concurrency unaffordable was per-test
+   retention (a lazy sidecar pinning every run's history, and a process-global
+   store holding every rendered VCD to the end of the suite). With capture
+   bounded per test, the lock was removed and the suite runs on all cores
+   again. Serializing to control memory hides the retention bug that makes
+   serializing feel necessary.
+
 10b4. **Record only what you keep.** Even leak-free, recording every run is
    wasteful: a 100-case property rendered 100 VCDs to keep one, and a passing
    firmware test rendered 270 MB nobody reads. Under a parallel runner that is
@@ -143,16 +153,6 @@ capture_ugn 7→**40**, registerwb 2→**35**, ring_buffer 7→**46**; scopes 1�
    for bittide-instances, with zero VCDs written on a green run. The wall-clock
    win is the surprise — per-cycle packing and RLE encoding cost real time, not
    just memory.
-
-10b3. **A serializing lock was the wrong fix — the leak was.** Tasty running N
-   CPU tests concurrently held N partially evaluated sims (GBs each), so the
-   harness serialized heavyweight sims on a global lock (`heavySimLock`). That
-   treated the symptom: what made concurrency unaffordable was per-test
-   retention (a lazy sidecar pinning every run's history, and a process-global
-   store holding every rendered VCD to the end of the suite). With capture
-   bounded per test, the lock was removed and the suite runs on all cores
-   again. Serializing to control memory hides the retention bug that makes
-   serializing feel necessary.
 10c. **What remains is the simulation itself.** Control-measured: dna's
    UN-instrumented assertion run alone costs ~60 s and ~3.3 GB max residency
    (ghci) — sampleC + the VexRiscv FFI over 540 k cycles. Recording now adds
@@ -757,10 +757,12 @@ inverted from "reproduce the bug" to "assert the fix", and run by
   Hackage `clash-shockwaves` (their pin) and was false of the copy the
   `dogfood/shockwaves` branches vendor, which relaxes it to `KnownNat n`. So
   it did not reproduce there. This package now takes shockwaves from Hackage
-  too, so the lifted F2 asks the oracle exactly the literal `Assert` they hit;
-  `grounded` in `Test.PluginDiagnostics` guards the same MECHANISM on a
-  payload of its own, which keeps it tested even if shockwaves relaxes the
-  instance upstream.
+  too, so the lifted F2 asks the oracle exactly the literal `Assert` they hit.
+  Here `Waveform` decides only whether a signal is DESCRIBED, so the case
+  asserts that `f2.ix` is recorded and described; `grounded` in
+  `Test.PluginDiagnostics` guards the same MECHANISM on a payload whose
+  `BitPack` carries the `Assert` (where a lost decision costs the wire), which
+  keeps it tested even if shockwaves relaxes the instance upstream.
 * **Their F1 control was not controlling anything.** `direct = pure Plain{…}`
   is a CLOSED binding, which the plugin skips to preserve GHC's
   generalisation of polymorphic locals — so it was never wrapped, the oracle
