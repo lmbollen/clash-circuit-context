@@ -52,7 +52,7 @@ still enable it per module with
 `{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}` — but do not do
 both, or the plugin runs twice.
 
-Requires GHC 9.6 or 9.10 and `clash-prelude >= 1.9 && < 1.12`. Nothing else,
+Requires GHC 9.6, 9.10 or 9.12 and `clash-prelude >= 1.9 && < 1.12`. Nothing else,
 and in particular no patched `clash-prelude`.
 
 Then instrument a function with the two annotations above, and see
@@ -370,11 +370,11 @@ actually collects a waveform.
 
 ## Limitations
 
-* GHC 9.6 and 9.10 are supported (`tested-with: 9.6.7, 9.10.3`), with
-  `clash-prelude >= 1.9 && < 1.12` — the `Clash.Signal.Trace` internals
-  used are identical across these versions. The `cabal.project` here pins
-  the 1.11 upstream commit this package is developed against (1.11 is not
-  yet on Hackage).
+* GHC 9.6, 9.10 and 9.12 are supported (`tested-with: 9.6.7, 9.10.3,
+  9.12.4`), with `clash-prelude >= 1.9 && < 1.12` — the
+  `Clash.Signal.Trace` internals used are identical across these versions.
+  The `cabal.project` here pins the 1.11 upstream commit this package is
+  developed against (1.11 is not yet on Hackage).
 * Constraint synonyms bundling `HasCircuitContext` with other constraints
   are not recognized at renamer stage; write the constraint (or the raw
   implicit parameter) literally in the signature.
@@ -406,8 +406,8 @@ entirely by the plugin) and `waveform-tests` (the test suite in two levels:
 contract, and the tasty-sequenced tests that decode the waveforms the Example
 level wrote) — then diffs the generated VCDs against the goldens in
 `goldens/` and asserts the fall-through warning fires. VCD output is fully
-deterministic by design, so the goldens are byte-identical across GHC 9.6
-and 9.10.
+deterministic by design, so the goldens are byte-identical across GHC 9.6,
+9.10 and 9.12.
 ## Proof of concept: tracing a real design
 
 `main` is the plugin alone, and builds from a plain clone. Two branches carry
