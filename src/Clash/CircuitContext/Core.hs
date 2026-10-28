@@ -535,15 +535,19 @@ run the action, not in what recording means.
 -}
 newRecorders :: Int -> IO (CircuitContext, IO (TraceData, ProbeMap))
 newRecorders window = do
-  tRef <- newIORef Map.empty
-  pRef <- newIORef Map.empty
-  oRef <- newIORef emptyOrdinals
+  -- Not @tRef@: that is clash-shockwaves' descriptor function, imported here.
+  traceRef <- newIORef Map.empty
+  probeRef <- newIORef Map.empty
+  ordRef <- newIORef emptyOrdinals
   let freeze = do
-        live <- readIORef tRef
+        live <- readIORef traceRef
         traces <- traverse freezeTrace live
-        probes <- readIORef pRef >>= traverse freezeProbe
+        probes <- readIORef probeRef >>= traverse freezeProbe
         pure (traces, probes)
-  pure (CircuitContext [] (Just tRef) (Just pRef) window (Just oRef), freeze)
+  pure
+    ( CircuitContext [] (Just traceRef) (Just probeRef) window (Just ordRef)
+    , freeze
+    )
  where
   freezeTrace (per, w, adt, tapRef) = do
     TraceTap touched committed runs rest <- readIORef tapRef
