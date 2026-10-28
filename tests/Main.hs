@@ -12,7 +12,7 @@
 -}
 module Main where
 
-import Test.Tasty (DependencyType (AllSucceed), defaultMain, sequentialTestGroup, testGroup)
+import Test.Tasty (DependencyType (AllSucceed), defaultMain, dependentTestGroup, testGroup)
 
 import qualified Example.Hedgehog
 import qualified Example.SingleRun
@@ -28,7 +28,7 @@ main = do
       "waveform-tests"
       [ Test.Recorder.tests
       , Test.Capture.tests
-      , sequentialTestGroup
+      , dependentTestGroup
           "the examples, then what they wrote"
           AllSucceed
           [ testGroup

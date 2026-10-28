@@ -128,7 +128,7 @@ test-suite waveform-tests
     directory,
     filepath,
     hedgehog,
-    tasty >=1.5,
+    tasty >=1.5.4,
     tasty-hedgehog,
     tasty-hunit,
     text,
