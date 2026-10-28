@@ -56,5 +56,12 @@ jobs:
           restore-keys: |
             ${{ runner.os }}-ghc-${{ matrix.ghc }}-cabal-${{ steps.setup.outputs.cabal-version }}-
 
+      # Dependencies first, in parallel: with more than one job cabal keeps each
+      # package's compiler output in a log and prints it only on failure. Under
+      # check.sh's -j1 it would stream third-party warnings into our log (e.g.
+      # 120+ -Wderiving-typeable from haskell-src-exts on GHC 9.12).
+      - name: Build dependencies
+        run: cabal build all --only-dependencies -j
+
       - name: Build and run checks
         run: ./check.sh
