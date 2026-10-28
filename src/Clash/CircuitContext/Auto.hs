@@ -2,12 +2,16 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
@@ -63,15 +67,27 @@ module Clash.CircuitContext.Auto (
 ) where
 
 import Clash.Prelude (
-  BitPack,
+  BitPack (..),
+  DSignal,
+  Enable,
   KnownDomain,
   KnownNat,
   NFDataX,
+  Reset,
   Signal,
   Vec,
+  fromEnable,
   imap,
+  toEnable,
+  toSignal,
+  unsafeFromReset,
+  unsafeFromSignal,
+  unsafeToReset,
  )
+import Data.Coerce (coerce)
+import Data.Int (Int64)
 import Data.Kind (Type)
+import Data.Word (Word64)
 import Data.Tagged (Tagged (..))
 import GHC.Generics (
   C,
@@ -87,6 +103,7 @@ import GHC.Generics (
   (:+:) (..),
  )
 import GHC.Stack (HasCallStack, withFrozenCallStack)
+import Numeric.Natural (Natural)
 
 import Clash.CircuitContext.Core (
   HasCircuitContext,
@@ -96,7 +113,12 @@ import Clash.CircuitContext.Core (
   traceSignalC,
   traceSignalSW,
  )
-import Clash.Shockwaves.Waveform (Waveform)
+import Clash.Shockwaves.Waveform (
+  DecSpacer,
+  NumberFormat (NFSig, NFUns),
+  Waveform,
+  WaveformForNumber (..),
+ )
 
 --------------------------------------------------------------------------------
 -- Tracing
@@ -166,6 +188,66 @@ instance
   Traceable (Signal dom a)
   where
   traceNamed = traceDescribedAt @(CanDescribe a) @a
+
+{- $integer
+'Integer' and 'Natural' have no 'BitPack' instance, yet Clash translates
+both: to 64 bits, two's complement for 'Integer'. A signal (or probe) of
+either records exactly that, wrapping where the hardware would, so a design
+computing in @Integer@ is still traced. These instances are INCOHERENT so
+they can never get in the way of the general ones: they apply to 'Integer'
+and 'Natural' themselves, and a payload polymorphic in @a@ keeps the general
+instance and its 'BitPack' requirement. Inside a composite payload (@Maybe
+Integer@) there is still no 'BitPack', so use @Signed 64@ there.
+-}
+
+-- | 'Integer' as Clash's hardware carries it.
+newtype Integer64 = Integer64 Integer
+  deriving newtype (NFDataX)
+
+instance BitPack Integer64 where
+  type BitSize Integer64 = 64
+  pack (Integer64 i) = pack (fromInteger i :: Int64)
+  unpack = Integer64 . toInteger . unpack @Int64
+
+deriving via
+  WaveformForNumber 'NFSig DecSpacer Integer64
+  instance
+    Waveform Integer64
+
+-- | 'Natural' as Clash's hardware carries it.
+newtype Natural64 = Natural64 Natural
+  deriving newtype (NFDataX)
+
+instance BitPack Natural64 where
+  type BitSize Natural64 = 64
+  pack (Natural64 n) = pack (fromIntegral n :: Word64)
+  unpack = Natural64 . fromIntegral . unpack @Word64
+
+deriving via
+  WaveformForNumber 'NFUns DecSpacer Natural64
+  instance
+    Waveform Natural64
+
+-- | See $integer.
+instance {-# INCOHERENT #-} (KnownDomain dom) => Traceable (Signal dom Integer) where
+  traceNamed nm = coerce . traceSignalSW @dom @Integer64 nm . coerce
+
+-- | See $integer.
+instance {-# INCOHERENT #-} (KnownDomain dom) => Traceable (Signal dom Natural) where
+  traceNamed nm = coerce . traceSignalSW @dom @Natural64 nm . coerce
+
+{- | The other wires: a delayed signal, a reset and an enable each trace as
+the 'Signal' underneath them (a reset as its raw level, in the domain's own
+polarity). They are newtypes, so this is a coercion and adds no strictness.
+-}
+instance (Traceable (Signal dom a)) => Traceable (DSignal dom d a) where
+  traceNamed nm = unsafeFromSignal . traceNamed nm . toSignal
+
+instance (KnownDomain dom) => Traceable (Reset dom) where
+  traceNamed nm = unsafeToReset . traceSignalSW nm . unsafeFromReset
+
+instance (KnownDomain dom) => Traceable (Enable dom) where
+  traceNamed nm = toEnable . traceSignalSW nm . fromEnable
 
 {- | Vectors of traceable things trace element-wise, names indexed by
 structural position.
@@ -404,6 +486,14 @@ instance
   Probeable t
   where
   probeNamed = probeDescribedAt @(CanDescribe t) @t
+
+-- | See $integer.
+instance {-# INCOHERENT #-} Probeable Integer where
+  probeNamed nm = coerce . probeSW @Integer64 nm . coerce
+
+-- | See $integer.
+instance {-# INCOHERENT #-} Probeable Natural where
+  probeNamed nm = coerce . probeSW @Natural64 nm . coerce
 
 class AutoProbe (flag :: Bool) t where
   autoProbeAt :: (HasProbe) => String -> t -> t

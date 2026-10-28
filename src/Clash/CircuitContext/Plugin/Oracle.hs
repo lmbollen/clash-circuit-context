@@ -59,10 +59,12 @@ import Data.Maybe (isJust)
 import qualified GHC.Builtin.Names as GHC
 import qualified GHC.Builtin.Types as GHC
 import qualified GHC.Builtin.Types.Literals as GHC (typeNatTyCons)
+import qualified GHC.Core.DataCon as GHC
 import qualified GHC.Core.InstEnv as GHC
 import qualified GHC.Core.Predicate as GHC
 import qualified GHC.Core.Reduction as GHC (reductionReducedType)
 import qualified GHC.Core.TyCo.FVs as GHC
+import qualified GHC.Core.TyCo.Rep as GHC (scaledThing)
 import qualified GHC.Core.TyCon as GHC
 import qualified GHC.Core.Type as GHC
 import qualified GHC.Data.Strict as Strict
@@ -294,8 +296,7 @@ requirement that stopped it.
 Two categories, because the reader needs to know which of these happened:
 
 * @x-circuit-context-untraced@ — the instance environment has no match. A
-  real answer, and the common one: most local bindings in a design are
-  @Int@s and @Bool@s that were never going to trace.
+  real answer, and the message ends with the fix.
 * @x-circuit-context-undecided@ — the oracle could not decide and fell back
   to not tracing. This one may be a limitation of the approximation rather
   than a fact about the type, so it is the one worth promoting to an error
@@ -307,7 +308,8 @@ that takes @Traceable@ as a real constraint, so a payload it cannot describe
 is a compile error rather than a hole.
 
 'Defer' is not reported at all: it is a round the solver will come back
-from, not an answer.
+from, not an answer. Neither is a binding no recorder could ever take (see
+'neverRecordable'): a warning about it would have no fix.
 -}
 reportDeclined ::
   forall m.
@@ -351,23 +353,35 @@ reportDeclined loc cls t = \case
               <> " as a real constraint, to find out which."
           ]
   NoInstance blame ->
-    say
-      Diag.Untraced
-      [ headline <> Diag.renderPlain t
-      , "no instance for: " <> Diag.renderPlain blame
-      ]
+    unlessNeverRecordable blame $
+      say
+        Diag.Untraced
+        [ headline <> Diag.renderPlain t
+        , "no instance for: " <> Diag.renderPlain blame
+        , remedy blame
+        ]
   GaveUp blame ->
-    say
-      Diag.Undecided
-      [ headline <> Diag.renderPlain t
-      , "the oracle could not decide: " <> Diag.renderPlain blame
-      , "This may be a limit of the approximation rather than a fact about"
-          <> " the type."
-      , "Name the binding with traceSignalC, which takes Traceable as a real"
-          <> " constraint, to find out which."
-      ]
+    unlessNeverRecordable blame $
+      say
+        Diag.Undecided
+        [ headline <> Diag.renderPlain t
+        , "the oracle could not decide: " <> Diag.renderPlain blame
+        , "This may be a limit of the approximation rather than a fact about"
+            <> " the type."
+        , "Name the binding with traceSignalC, which takes Traceable as a real"
+            <> " constraint, to find out which."
+        ]
   _ -> pure ()
  where
+  -- A binding that could never be recorded in this mode, whatever instances
+  -- were in scope, is not reported: the warning would have no fix (see
+  -- 'neverRecordable').
+  unlessNeverRecordable blame act = do
+    never <- neverRecordable (not probing) t blame
+    if never then pure () else act
+
+  probing = GHC.getOccString (GHC.getName cls) == "Probeable"
+
   say :: Diag.Category -> [String] -> m ()
   say cat body =
     APIInternal.unsafeLiftTcM (Diag.report spn cat body)
@@ -377,9 +391,256 @@ reportDeclined loc cls t = \case
 
   describing = GHC.getOccString (GHC.getName cls) == "Describable"
 
-  headline = case GHC.getOccString (GHC.getName cls) of
-    "Probeable" -> "not probed: "
-    _ -> "not traced: "
+  headline
+    | probing = "not probed: "
+    | otherwise = "not traced: "
+
+{- | The next step for a binding that could have been recorded and was not,
+read off the requirement that stopped it. A requirement on a data type
+(@BitPack PacketStreamS2M@, @Traceable (Bus dom)@) wants an instance; one on a
+type variable or a type family that did not reduce (@BitPack a@,
+@Traceable (Fwd p)@) wants a constraint.
+-}
+remedy :: API.PredType -> String
+remedy blame = case GHC.classifyPredType blame of
+  GHC.ClassPred cls args
+    | all onDataType args ->
+        if GHC.getOccString (GHC.getName cls) == "Traceable"
+          then
+            "Give it a Traceable instance: for a record of signals, derive"
+              <> " Generic and write an empty instance."
+          else "Derive or write that instance to record this binding."
+  _ -> "Add that constraint to the enclosing signature to record this binding."
+ where
+  onDataType arg = case GHC.tcSplitTyConApp_maybe arg of
+    Just (tc, _) -> not (GHC.isTypeFamilyTyCon tc)
+    Nothing -> False
+
+--------------------------------------------------------------------------------
+-- Nothing to record
+--------------------------------------------------------------------------------
+
+{- | Whether a declined binding could never have been recorded in this mode,
+whatever instances were in scope. Such a binding is not reported: a warning
+about it has no fix, and these are a large share of what the renamer wraps
+(it wraps every local, because it cannot see types).
+
+What each mode records:
+
+* A trace records WIRES: a 'Signal' (or @DSignal@), or a tuple, 'Vec' or
+  record holding them. So a type with no 'Signal' anywhere in its fields (a
+  @Bool@ or @Vec 4 Bool@ computed inside a lambda, a @MemoryMap@, a function)
+  is not a trace target at all; and a signal whose payload Clash cannot
+  represent (@Signal dom [a]@, a signal of functions) cannot be traced.
+* A probe records a VALUE at each step of a mealy machine: anything Clash can
+  represent that is not itself sequential. So a 'Signal' (it has no single
+  value), a @[a]@ or a function is not a probe target.
+
+"Can represent" means a finite bit width, read off the type's constructors
+('bitWidth'), with @Integer@ and @Natural@ counted as the 64 bits Clash
+translates them to. Every "never" is PROVED from the constructors: anything
+the walks cannot see into (a type variable, a type family that does not
+reduce, an abstract type, a step budget run out) counts as recordable, so it
+still warns.
+-}
+neverRecordable ::
+  (API.MonadTcPlugin m) =>
+  -- | 'True' for a trace, 'False' for a probe
+  Bool ->
+  -- | the declined type
+  API.Type ->
+  -- | the requirement that stopped it
+  API.PredType ->
+  m Bool
+neverRecordable tracing t blame = do
+  notTarget <-
+    if tracing
+      then holdsNoSignal t
+      else (== Unbounded) <$> bitWidth t
+  if notTarget
+    then pure True
+    else case GHC.classifyPredType blame of
+      GHC.ClassPred cls [payload]
+        | GHC.getOccString (GHC.getName cls) == "BitPack" ->
+            (== Unbounded) <$> bitWidth payload
+      _ -> pure False
+
+-- | What a type is made of, one constructor layer down.
+data Layer
+  = -- | A function or a polymorphic value: a computation, not data.
+    Computation
+  | -- | Clash's 'Signal'.
+    Wire
+  | {- | Clash's 'Clock'. It does hold a 'Signal' (a dynamic clock's periods),
+    but a clock is not a data wire: Clash's own @traceSignal@ cannot record one
+    either.
+    -}
+    ClockLine
+  | {- | A primitive type: 'True' when its width is fixed (@Int#@, @Double#@,
+    …), 'False' for a heap object (the @ByteArray#@ behind 'Integer', @Array#@,
+    …).
+    -}
+    Primitive Bool
+  | -- | An algebraic data type or newtype.
+    Algebraic Constructors
+  | {- | Nothing to see: a type variable, a type family that does not reduce,
+    an abstract type.
+    -}
+    Opaque
+
+data Constructors = Constructors
+  { existential :: Bool
+  -- ^ some constructor binds existential type variables (a GADT such as 'Vec')
+  , storesDictionary :: Bool
+  -- ^ some constructor stores a class dictionary (Clash's @SNat@)
+  , fields :: [API.Type]
+  -- ^ the fields of every constructor; existentials are left as type variables
+  }
+
+layer :: (API.MonadTcPlugin m) => API.Type -> m Layer
+layer = go (10 :: Int)
+ where
+  go fuel ty
+    | GHC.isFunTy ty || GHC.isForAllTy ty = pure Computation
+    | Just (tc, args) <- GHC.splitTyConApp_maybe ty = tyCon fuel tc args
+    | otherwise = pure Opaque
+
+  tyCon fuel tc args
+    | GHC.isTypeFamilyTyCon tc =
+        if fuel <= 0
+          then pure Opaque
+          else maybe (pure Opaque) (go (fuel - 1)) =<< reduceFamily tc args
+    | clashSignal "Signal" = pure Wire
+    | clashSignal "Clock" = pure ClockLine
+    -- Clash translates these to 64 bits, so they count as representable.
+    | tc == GHC.integerTyCon || tc == GHC.naturalTyCon = pure (Primitive True)
+    | GHC.isPrimTyCon tc = pure (Primitive (occ `elem` fixedWidthPrims))
+    | Just dcs <- GHC.tyConDataCons_maybe tc =
+        pure . Algebraic $
+          Constructors
+            { existential = not (all (null . GHC.dataConExTyCoVars) dcs)
+            , storesDictionary = any (any isDictionary . GHC.dataConOtherTheta) dcs
+            , fields =
+                [ GHC.scaledThing f
+                | dc <- dcs
+                , let exs = GHC.mkTyCoVarTys (GHC.dataConExTyCoVars dc)
+                , f <- GHC.dataConInstOrigArgTys dc (args <> exs)
+                ]
+            }
+    | otherwise = pure Opaque
+   where
+    occ = GHC.getOccString tc
+    clashSignal nm =
+      occ == nm
+        && fmap (GHC.moduleNameString . GHC.moduleName) (GHC.nameModule_maybe (GHC.getName tc))
+          == Just "Clash.Signal.Internal"
+
+  -- An equality is erased; a class constraint is a runtime value.
+  isDictionary p = case GHC.classifyPredType p of
+    GHC.ClassPred cls _ ->
+      GHC.getName cls `notElem` map GHC.getName [GHC.eqTyCon, GHC.heqTyCon, GHC.coercibleTyCon]
+    _ -> False
+
+  fixedWidthPrims =
+    [ "Int#"
+    , "Int8#"
+    , "Int16#"
+    , "Int32#"
+    , "Int64#"
+    , "Word#"
+    , "Word8#"
+    , "Word16#"
+    , "Word32#"
+    , "Word64#"
+    , "Char#"
+    , "Float#"
+    , "Double#"
+    ]
+
+-- | Steps either walk below may take before it stops and calls the type opaque.
+walkFuel :: Int
+walkFuel = 400
+
+{- | 'True' when NO 'Signal' is reachable through the type's fields.
+
+A walk over the fields, with every visited type remembered so a recursive
+type is seen once. Arguments that cannot hold data (a @Nat@ index, a domain)
+are left out of what is remembered, or @Vec n Bool@ would unfold into @Vec n1
+Bool@, @Vec n2 Bool@, … until the budget ran out.
+-}
+holdsNoSignal :: (API.MonadTcPlugin m) => API.Type -> m Bool
+holdsNoSignal t0 = go walkFuel [] [t0]
+ where
+  go _ _ [] = pure True
+  go fuel seen (t : rest)
+    | fuel <= 0 = pure False
+    | Just k <- key t, any (sameKey k) seen = go (fuel - 1) seen rest
+    | otherwise = do
+        l <- layer t
+        let seen' = maybe seen (: seen) (key t)
+        case l of
+          Wire -> pure False
+          Opaque -> pure False
+          Algebraic cs -> go (fuel - 1) seen' (fields cs <> rest)
+          _ -> go (fuel - 1) seen' rest
+
+  key t = case GHC.splitTyConApp_maybe t of
+    Just (tc, args) -> Just (tc, filter mayHoldData args)
+    Nothing -> Nothing
+
+  sameKey (a, as) (b, bs) =
+    a == b && length as == length bs && and (zipWith GHC.eqType as bs)
+
+  -- A ground kind that is neither @Type@ nor an arrow: @Nat@, @Symbol@, a
+  -- promoted data kind. Nothing of such a kind is ever a field.
+  mayHoldData arg =
+    let k = GHC.typeKind arg
+     in GHC.isLiftedTypeKind k || GHC.isFunTy k || not (GHC.noFreeVarsOfType k)
+
+-- | The bit width a payload could have, as far as its constructors show.
+data Width
+  = Finite
+  | -- | could not see far enough to tell
+    Unknown
+  | -- | values of any size: no 'BitPack' instance can exist
+    Unbounded
+  deriving (Eq, Ord)
+
+{- | A depth-first walk over the payload's fields. 'Unbounded' wins over
+everything (one field without a width is enough), and a type met again on
+its own path is recursive, so unbounded too. A GADT is 'Unknown' rather than
+unfolded: @Vec@'s @Cons@ meets @Vec n1 a@ on its own path, which is a
+recursion its index bounds.
+-}
+bitWidth :: (API.MonadTcPlugin m) => API.Type -> m Width
+bitWidth t0 = fst <$> go [] (walkFuel, []) t0
+ where
+  go path st@(fuel, done) t
+    | fuel <= 0 = pure (Unknown, st)
+    | any (GHC.eqType t) path = pure (Unbounded, st)
+    | any (GHC.eqType t) done = pure (Finite, st)
+    | otherwise = do
+        l <- layer t
+        let st' = (fuel - 1, done)
+        case l of
+          Primitive True -> pure (Finite, st')
+          Opaque -> pure (Unknown, st')
+          Algebraic cs
+            | storesDictionary cs -> pure (Unbounded, st')
+            | existential cs -> pure (Unknown, st')
+            | otherwise -> do
+                (w, (f, d)) <- allFields (t : path) st' (fields cs)
+                pure (w, (f, if w == Finite then t : d else d))
+          _ -> pure (Unbounded, st')
+
+  allFields _ st [] = pure (Finite, st)
+  allFields path st (f : fs) = do
+    (w, st') <- go path st f
+    if w == Unbounded
+      then pure (w, st')
+      else do
+        (w', st'') <- allFields path st' fs
+        pure (max w w', st'')
 
 --------------------------------------------------------------------------------
 -- Solvability approximation
