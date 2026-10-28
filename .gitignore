@@ -3,6 +3,8 @@ dist-newstyle/
 cabal.project.local*
 /manual-instrumentation.vcd
 /auto-instrumentation.vcd
+/adt-sidecar.vcd
+/adt-sidecar.json
 /notation.vcd
 *.hi
 *.o

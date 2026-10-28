@@ -17,7 +17,8 @@ runlog cabal build all -j1 "$@"
 run cabal test manual-instrumentation -j1 "$@"
 run cabal test oracle-fallback -j1 "$@"
 runlog cabal test auto-instrumentation -j1 "$@"
-# knot (silent hang under the threaded RTS) — fail loudly instead.
+# The clash-shockwaves half: the ADT sidecar written beside the VCD.
+run cabal test adt-sidecar -j1 "$@"
 # Constraint synonyms, idempotence under a double plugin enable, and the
 # compile-time diagnostics (grepped from the build log below).
 runlog cabal test plugin-diagnostics -j1 "$@"

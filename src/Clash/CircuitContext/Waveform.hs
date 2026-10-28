@@ -11,8 +11,8 @@ Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
 
 Emitting waveforms from a TEST SUITE: the lifecycle around 'dumpVCDC' that
 every instrumented suite otherwise has to reinvent — where files go, which run
-of a repeated property survives, when the render happens, and how the file is
-written without a window in which a reader can see half of it.
+of a repeated property survives, when the render happens, and how the pair of
+files a typed viewer reads is written without a window in which they disagree.
 
 Two entry points, by how the design is sampled:
 
@@ -52,11 +52,11 @@ wiring into @main@: a test owns its slot, so nothing outlives it.
 Two properties are load-bearing rather than incidental, both learned the hard
 way on a real suite:
 
-* A captured run is rendered to forced, compact text immediately, and only one
-  test's worth is ever held. Retaining anything lazy here retains that run's
-  entire RLE history through the thunks that close over the trace maps; in a
-  process-global store that meant every instrumented test's history at once,
-  26 GB resident, measured.
+* A captured run is reduced to forced, compact values immediately, and only
+  one test's worth is ever held. Retaining anything lazy here — notably the
+  sidecar's 'Json.Value', a lazy tree over the trace maps — retains that run's
+  entire RLE history; in a process-global store that meant every instrumented
+  test's history at once, 26 GB resident, measured.
 
 * Nothing here serializes tests. An earlier version did — a global lock around
   the simulation phase — because a leak made each concurrent capture retain
@@ -107,9 +107,11 @@ import Data.Char (toLower)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import System.Directory (createDirectoryIfMissing, makeAbsolute, renameFile)
 import System.Environment (lookupEnv)
-import System.FilePath (takeFileName, (<.>), (</>))
+import System.FilePath (takeFileName, (-<.>), (<.>), (</>))
 import System.IO (hClose, hPutStrLn, openTempFile, stderr)
 
+import qualified Data.Aeson as Json
+import qualified Data.ByteString as ByteString
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TIO
@@ -120,13 +122,13 @@ import Clash.CircuitContext.Core (
   HasCircuitContext,
   ProbeMap,
   TraceData,
-  dumpVCDC,
   recordedCycles,
   withCircuitContext,
   withCircuitContextWindow,
   withCircuitContextWindowE,
   withoutCircuitContext,
  )
+import Clash.CircuitContext.Shockwaves (dumpVCDSW)
 
 {- | Directory the VCDs are written to, relative to the process's WORKING
 DIRECTORY — which is not the same place under every way of running a suite:
@@ -158,10 +160,10 @@ Owned by the test, the same deferral costs one test's waveform at a time and
 the file is written the moment that test ends.
 -}
 data WaveformSlot
-  = WaveformSlot FilePath (IORef (Maybe Text.Text))
+  = WaveformSlot FilePath (IORef (Maybe (Text.Text, ByteString.ByteString)))
 
-{- | A slot writing to @waveformDir\/\<name\>.vcd@. Names must be unique
-across tests: one name is one file.
+{- | A slot writing to @waveformDir\/\<name\>.vcd@ (and its @.json@ sidecar).
+Names must be unique across tests: one name is one file.
 
 Pair with 'writeWaveformSlot', or use 'withWaveformSlot' to bracket both.
 -}
@@ -180,11 +182,18 @@ run empty, or the render failed) writes nothing rather than truncating a file.
 writeWaveformSlot :: (MonadIO m) => WaveformSlot -> m ()
 writeWaveformSlot (WaveformSlot path pending) = liftIO $ do
   captured <- readIORef pending
-  forM_ captured $ \txt -> do
+  forM_ captured $ \(txt, meta) -> do
     createDirectoryIfMissing True waveformDir
-    -- Temp + rename, so a reader never sees a half-written VCD — and an
-    -- interrupted run leaves the previous complete one rather than a truncated
-    -- file that looks like a waveform until you open it.
+    -- A waveform is a PAIR of files: the VCD, and the ADT sidecar a typed
+    -- viewer reads to decode the bits the VCD only names. Both go through
+    -- temp + rename, and the SIDECAR LANDS FIRST, so the invariant a reader
+    -- depends on holds: if the .vcd is there, its .json is there and complete.
+    let sidecar = path -<.> "json"
+    (jTmp, jH) <- openTempFile waveformDir (takeFileName sidecar <.> "tmp")
+    ByteString.hPut jH meta
+    hClose jH
+    renameFile jTmp sidecar
+
     (tmp, h) <- openTempFile waveformDir (takeFileName path <.> "tmp")
     TIO.hPutStr h txt
     hClose h
@@ -217,15 +226,16 @@ withWaveformSlot name act = do
 
 {- | Record a run into the slot, replacing any earlier one (LAST run wins).
 
-Forces the rendered text first: a lazy render closes over the trace and probe
-maps it was built from, so retaining an unforced one retains that run's entire
-RLE history — 26 GB resident across a suite, measured, when this was left
-lazy.
+Forces both parts to compact, fully evaluated values first. A 'Json.Value' is
+a lazy tree whose thunks close over the trace and probe maps it was built
+from, so retaining an unforced one retains that run's entire RLE history —
+26 GB resident across a suite, measured, when this was left lazy.
 -}
-capture :: WaveformSlot -> Text.Text -> IO ()
-capture (WaveformSlot _ pending) txt = do
+capture :: WaveformSlot -> Text.Text -> Json.Value -> IO ()
+capture (WaveformSlot _ pending) txt meta = do
   txt' <- evaluate txt
-  writeIORef pending (Just txt')
+  meta' <- evaluate (ByteString.toStrict (Json.encode meta))
+  writeIORef pending (Just (txt', meta'))
 
 {- | Render what a recording context collected and store it in the slot,
 replacing any earlier run.
@@ -248,10 +258,10 @@ captureRun slot traces probes = do
   if Map.null traces && Map.null probes || end == 0
     then pure False
     else do
-      rendered <- dumpVCDC (0, end) traces probes
+      rendered <- dumpVCDSW (0, end) traces probes
       case rendered of
         Left _ -> pure False
-        Right txt -> capture slot txt >> pure True
+        Right (txt, meta) -> capture slot txt meta >> pure True
 
 {- | Simulate under a fresh circuit context, force the result so every
 instrumented signal registers, and write ONE hierarchical VCD to
@@ -348,10 +358,11 @@ recordAndDump slot slice sim = do
   -- and probe maps immediately — after 'capture' the slot holds only the
   -- forced, compact bytes (see the module header on memory).
   unless (Map.null traces && Map.null probes) $ do
-    rendered <- dumpVCDC slice traces probes
+    rendered <- dumpVCDSW slice traces probes
     case rendered of
       Left _ -> pure () -- empty/failed render: don't clobber an earlier run
-      Right txt -> capture slot txt
+      Right (txt, meta) -> do
+        capture slot txt meta
   pure forced
 
 {- | Has the developer asked for waveforms this run?

@@ -35,7 +35,11 @@ Everything hangs off one implicit parameter @?circuitContext@:
   wrapper derives one from a companion counter register and binds a
   per-application @?probe@ context; writes are keyed by (name, cycle) and
   hence idempotent — safe under lazy re-ordering and speculative sparks, and
-  an expression that is never forced simply records nothing.
+  an expression that is never forced simply records nothing. 'probeSW' is
+  'probe' plus the payload type's @clash-shockwaves@ descriptor, kept
+  separate because a probe's whole job is to see state that a trace cannot,
+  and that state is routinely a type 'Clash.Shockwaves.Waveform' will not
+  accept.
 
 Tracing is optional by construction: with 'noCircuitContext' (both refs 'Nothing')
 every combinator collapses to identity.
@@ -70,6 +74,7 @@ module Clash.CircuitContext.Core (
   component,
   imapComponents,
   qualifyName,
+  disambiguate,
 
   -- * Scoped signal tracing
   traceSignalC,
@@ -85,9 +90,11 @@ module Clash.CircuitContext.Core (
 
   -- * Probes inside mealy machines
   ProbeMap,
+  ProbeEntry (..),
   ProbeCtx (..),
   HasProbe,
   probe,
+  probeSW,
   mealyProbed,
   mealyBProbed,
   mooreProbed,
@@ -132,6 +139,9 @@ import Clash.Signal.Trace (
  )
 import Clash.Sized.Internal.BitVector (BitVector (BV))
 import Clash.XException (NFDataX)
+
+import Clash.Shockwaves.Internal.Types (Translator, TypeName)
+import Clash.Shockwaves.Internal.Waveform (Waveform (typeName), tRef)
 
 import Control.Exception (SomeException, evaluate, throwIO, try)
 import Control.Monad.IO.Class (MonadIO, liftIO)
@@ -219,8 +229,27 @@ addCycleW w cyc v (WRuns flipC cur prev)
 wrunsToRuns :: WRuns -> Runs
 wrunsToRuns (WRuns _ cur prev) = cur ++ prev
 
--- | name → (clock period in ps, bit width, change-compressed history)
-type ProbeMap = Map.Map String (Int, Int, Runs)
+-- | name → recorded probe, as returned by 'withCircuitContext'.
+type ProbeMap = Map.Map String ProbeEntry
+
+{- | Frozen snapshot of one probe. Mirrors 'TraceEntry', minus the drained
+tail: a probe has no signal to drain from, only the cycles it fired on.
+-}
+data ProbeEntry = ProbeEntry
+  { pePeriod :: !Int
+  , peWidth :: !Int
+  , peRuns :: Runs
+  {- ^ Change-compressed history of the cycles the probe fired on. Cycles it
+  never reached are gaps, densified to @z@ by 'dumpVCDC'.
+  -}
+  , peAdt :: Maybe (TypeName, Translator)
+  {- ^ The payload type's @clash-shockwaves@ descriptor, when the probed
+  type has a 'Clash.Shockwaves.Waveform' instance — see 'probeSW' and
+  'teAdt'. 'Nothing' for a plain 'probe', whose whole point is to record
+  types 'Clash.Shockwaves.Waveform' cannot describe (size-polymorphic state
+  records, most usefully).
+  -}
+  }
 
 {- | Live, per-signal trace accumulator. Cycles @[0, 'ttNext')@ have been
 consumed (packed and recorded into 'ttRuns'); 'ttRest' is the not-yet-consumed
@@ -243,7 +272,8 @@ data TraceTap
     TraceTap !Bool !Int !WRuns [Value]
 
 -- | Live trace registry: name → (period ps, bit width, accumulator).
-type LiveTraces = Map.Map String (Int, Int, IORef TraceTap)
+type LiveTraces =
+  Map.Map String (Int, Int, Maybe (TypeName, Translator), IORef TraceTap)
 
 -- | Frozen snapshot of one trace, as returned by 'withCircuitContext'.
 data TraceEntry = TraceEntry
@@ -262,6 +292,17 @@ data TraceEntry = TraceEntry
   , teRest :: [Value]
   {- ^ Packed continuation for cycles the simulation never forced; 'dumpVCDC'
   drains it on demand when the dump window extends past 'teRuns'.
+  -}
+  , teAdt :: Maybe (TypeName, Translator)
+  {- ^ The payload type's @clash-shockwaves@ descriptor: its name, and the
+  translator describing its ADT structure (constructors, fields, bit ranges,
+  styles). Recorded at registration, where the payload type is still known;
+  'Clash.CircuitContext.Shockwaves.adtSidecar' turns these into the JSON
+  sidecar a typed-waveform viewer reads.
+
+  Carried per entry rather than in a side map so that 'withCircuitContext'
+  keeps its signature: whoever already has the 'TraceData' has the ADT
+  information too.
   -}
   }
 
@@ -289,7 +330,7 @@ recordedCycles td pm = maximum (0 : traceEnds ++ probeEnds)
   -- a hedgehog counterexample that is usually the very cycle the assertion
   -- is about.
   traceEnds = map teForced (Map.elems td)
-  probeEnds = [e + 1 | (_, _, (_, e, _) : _) <- Map.elems pm]
+  probeEnds = [e + 1 | ProbeEntry{peRuns = (_, e, _) : _} <- Map.elems pm]
 
 {- | One hierarchy level: user name plus the encoded source location of the
 instantiation. The location is design information — colliding sibling
@@ -501,14 +542,15 @@ newRecorders window = do
         pure (traces, probes)
   pure (CircuitContext [] (Just tRef) (Just pRef) window (Just oRef), freeze)
  where
-  freezeTrace (per, w, tapRef) = do
+  freezeTrace (per, w, adt, tapRef) = do
     TraceTap touched committed runs rest <- readIORef tapRef
     -- committed + 1 is the pending cycle in 'teRest'; see 'teForced'. The
     -- @touched@ bit is what distinguishes "forced exactly one cell" from
     -- "never forced" — the counters alone cannot.
     let forced = if touched then committed + 1 else 0
-    pure (TraceEntry per w forced (wrunsToRuns runs) rest)
-  freezeProbe (per, w, accRef) = (,,) per w . wrunsToRuns <$> readIORef accRef
+    pure (TraceEntry per w forced (wrunsToRuns runs) rest adt)
+  freezeProbe (per, w, adt, accRef) =
+    (\runs -> ProbeEntry per w (wrunsToRuns runs) adt) <$> readIORef accRef
 
 {- | Declarations of intent the plugin reads from an @ANN@ pragma.
 
@@ -610,7 +652,13 @@ say) from tracing inside polymorphic components.
 -}
 traceSignalC ::
   forall dom a.
-  (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) =>
+  ( HasCallStack
+  , HasCircuitContext
+  , KnownDomain dom
+  , BitPack a
+  , NFDataX a
+  , Waveform a
+  ) =>
   String ->
   Signal dom a ->
   Signal dom a
@@ -624,8 +672,8 @@ traceSignalC nm sig
   , "  name: Clash.CircuitContext.Core.traceSignalC"
   , "  kind: Expression"
   , "  type: |-"
-  , "      (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) => String -> Signal dom a -> Signal dom a"
-  , "  template: ~ARG[6]"
+  , "      (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a, Waveform a ) => String -> Signal dom a -> Signal dom a"
+  , "  template: ~ARG[7]"
   , "  workInfo: Never"
   ])) #-}
 
@@ -635,7 +683,13 @@ stock 'Clash.Signal.Trace.traceSignal1'); identity when tracing is off.
 -}
 simTraceSignalC ::
   forall dom a.
-  (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) =>
+  ( HasCallStack
+  , HasCircuitContext
+  , KnownDomain dom
+  , BitPack a
+  , NFDataX a
+  , Waveform a
+  ) =>
   String ->
   Signal dom a ->
   Signal dom a
@@ -647,11 +701,17 @@ simTraceSignalC nm sig = case (ccTracer ctx, ccOrdinals ctx) of
       segs <- resolveHier ordRef (ccHier ctx)
       leafI <- freshOrdinal ordRef
       let key = intercalate "." (reverse (taggedLoc nm loc leafI : segs))
-      registerTrace (ccWindow ctx) ref period key sig
+      -- The payload type is still known here, so capture its typed-waveform
+      -- descriptor alongside the values; nothing downstream can recover it.
+      registerTrace (ccWindow ctx) ref period adt key sig
   _ -> sig
  where
   ctx = ?circuitContext
   loc = callLoc callStack
+  -- 'tRef', not 'translator': the reference form is what registers the type
+  -- itself under its name (a bare translator only pulls in the types it
+  -- REFERENCES), and it is what shockwaves' own recorder stores per signal.
+  adt = Just (typeName @a, tRef @a)
   period :: Int
   period = case knownDomain @dom of
     SDomainConfiguration{sPeriod} -> snatToNum sPeriod
@@ -685,13 +745,14 @@ registerTrace ::
   Int ->
   IORef LiveTraces ->
   Int ->
+  Maybe (TypeName, Translator) ->
   String ->
   Signal dom a ->
   IO (Signal dom a)
-registerTrace window ref period key sig = do
+registerTrace window ref period adt key sig = do
   tapRef <- newIORef (TraceTap False 0 emptyWRuns packed)
   atomicModifyIORef' ref $ \m ->
-    (Map.insert key (period, width, tapRef) m, ())
+    (Map.insert key (period, width, adt, tapRef) m, ())
   pure (touchOnce tapRef (tap window tapRef 0 packed sig))
  where
   width = snatToNum (SNat @(BitSize a))
@@ -876,7 +937,7 @@ dumpVCDC slice@(offset, nSamples) td pm = do
   -- stored continuation — exactly the dump-time forcing the pre-runs
   -- implementation did. Cycles dropped by a trailing capture window (and
   -- any probe-style gaps) densify to @x@.
-  traceVals (TraceEntry per w _ runs rest) =
+  traceVals (TraceEntry per w _ runs rest _) =
     ( ByteStringLazy.empty
     , per
     , w
@@ -889,8 +950,8 @@ dumpVCDC slice@(offset, nSamples) td pm = do
 
   -- A probe cycle that was never reached stays a gap in the runs; densify
   -- with @x@ for those cycles, exactly as a missing key rendered before.
-  probeVals (per, w, runs) =
-    (ByteStringLazy.empty, per, w, expandRunsX w end runs)
+  probeVals ProbeEntry{pePeriod, peWidth, peRuns} =
+    (ByteStringLazy.empty, pePeriod, peWidth, expandRunsX peWidth end peRuns)
 
   -- Densify a run history to per-cycle values on @[0, upto)@, filling gaps
   -- (never-forced probe cycles, window-dropped history) with @x@. Stops at
@@ -1208,7 +1269,8 @@ data ProbeCtx = ProbeCtx
   }
 
 -- | Live probe registry: qualified name → (period ps, bit width, accumulator).
-type LiveProbes = Map.Map String (Int, Int, IORef WRuns)
+type LiveProbes =
+  Map.Map String (Int, Int, Maybe (TypeName, Translator), IORef WRuns)
 
 {- | A fresh probe cache for one mealy\/moore\/'probeFmap' INSTANCE. The
 argument ties the allocation to the instance's identity object ('pcPath'):
@@ -1248,7 +1310,7 @@ step function synthesizes as if the 'probe' calls were not there.
 -}
 probe :: forall a. (HasProbe, BitPack a, NFDataX a) => String -> a -> a
 probe nm a
-  | clashSimulation = simProbe nm a
+  | clashSimulation = simProbe Nothing nm a
   | otherwise = a
 {-# OPAQUE probe #-}
 {- The blackbox makes 'probe' an identity primitive in HDL, so Clash never
@@ -1270,15 +1332,53 @@ Clash to match. Simulation is unaffected: the blackbox is HDL-only.
   , "  workInfo: Never"
   ])) #-}
 
+{- | 'probe' that also records the payload type's @clash-shockwaves@
+descriptor, so the recorded cycles render as constructors and fields rather
+than as raw bits.
+
+Separate from 'probe' rather than replacing it, because the two requirements
+genuinely differ. A probe's job is to see what a trace cannot — the state
+INSIDE a mealy step — and that state is routinely a size-polymorphic record
+that 'BitPack' accepts and 'Clash.Shockwaves.Waveform' does not (its
+@Index n@ instance wants @1 <= n@ where @BitPack@ wants only @KnownNat n@).
+Demanding a description of every probe would silence exactly those.
+
+The plugin's auto-probing picks between the two per type, so a probed
+binding whose type CAN be described is, without anything to write; see
+@Clash.CircuitContext.Auto.Describable@.
+-}
+probeSW ::
+  forall a. (HasProbe, BitPack a, NFDataX a, Waveform a) => String -> a -> a
+probeSW nm a
+  | clashSimulation = simProbe (Just (typeName @a, tRef @a)) nm a
+  | otherwise = a
+{-# OPAQUE probeSW #-}
+{-# ANN probeSW hasBlackBox #-}
+{-# ANN probeSW (InlineYamlPrimitive [minBound ..] (unlines
+  [ "BlackBox:"
+  , "  name: Clash.CircuitContext.Core.probeSW"
+  , "  kind: Expression"
+  , "  type: |-"
+  , "    probeSW :: (HasProbe, BitPack a, NFDataX a, Waveform a) => String -> a -> a"
+  , "  template: ~ARG[5]"
+  , "  workInfo: Never"
+  ])) #-}
+
 {- | Simulation worker for 'probe'. OPAQUE, holding the 'unsafePerformIO'
 write; identity when probing is off.
 
 OPAQUE for uniformity with the other simulation workers only; it is the
-blackbox on 'probe' above that keeps HDL generation finite
+blackbox on 'probe' and 'probeSW' above that keeps HDL generation finite
 (measured 2026-09-21: OPAQUE here alone changed nothing).
 -}
-simProbe :: forall a. (HasProbe, BitPack a, NFDataX a) => String -> a -> a
-simProbe nm a = case (ccProbes ctx, ccOrdinals ctx) of
+simProbe ::
+  forall a.
+  (HasProbe, BitPack a, NFDataX a) =>
+  Maybe (TypeName, Translator) ->
+  String ->
+  a ->
+  a
+simProbe adt nm a = case (ccProbes ctx, ccOrdinals ctx) of
   (Just liveRef, Just ordRef) ->
     unsafePerformIO $ do
       -- Hot path: this runs EVERY cycle. Only the first firing of a probe
@@ -1295,7 +1395,7 @@ simProbe nm a = case (ccProbes ctx, ccOrdinals ctx) of
           atomicModifyIORef' (pcCache ?probe) $ \c ->
             (Map.insert nm accRef c, ())
           atomicModifyIORef' liveRef $ \m ->
-            (Map.insert qual (per, w, accRef) m, ())
+            (Map.insert qual (per, w, adt, accRef) m, ())
           pure accRef
       -- Force the packed value NOW, releasing the design value 'a', and
       -- accumulate change-compressed and STRICT ('$!'): a probe fires every
