@@ -21,15 +21,21 @@ Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
 Plugin ABI: everything "Clash.CircuitContext.Plugin" injects by exact 'Name'
 lives here; module path and export names are frozen interface.
 
-The 'CanTrace'\/'CanProbe' families have no equations — they are decided by
-the plugin's typechecker half, which answers /"is @'Traceable' t@ (resp.
-@'Probeable' t@) solvable right here?"/. All dictionary construction stays
-with ordinary instance resolution; a type whose payload isn't traceable (or a
-binding the context can't justify) falls back to identity instead of
-erroring — the property plain instance selection cannot provide (no
-backtracking on instance contexts). The fallback is not silent: the oracle
-reports it, and distinguishes a proof that no instance exists from its own
-inability to decide (see "Clash.CircuitContext.Plugin.Diagnostics").
+The 'CanTrace'\/'CanProbe'\/'CanDescribe' families have no equations — they
+are decided by the plugin's typechecker half, which answers /"is @'Traceable'
+t@ (resp. @'Probeable' t@, @'Describable' t@) solvable right here?"/. All
+dictionary construction stays with ordinary instance resolution; a type whose
+payload isn't traceable (or a binding the context can't justify) falls back
+to identity instead of erroring — the property plain instance selection
+cannot provide (no backtracking on instance contexts). The fallback is not
+silent: the oracle reports it, and distinguishes a proof that no instance
+exists from its own inability to decide (see
+"Clash.CircuitContext.Plugin.Diagnostics").
+
+Three questions rather than one, because their answers differ. A payload can
+be probeable and not describable — that is the common case for mealy state,
+and collapsing the two would mean either dropping those probes or leaving
+every probe as raw bits.
 
 'Traceable' is also the user-facing extension point: give your protocol
 type an instance and plugin-instrumented bindings of that type get traced.
@@ -41,12 +47,18 @@ module Clash.CircuitContext.Auto (
   GTraceable (..),
   AutoTrace (..),
   autoTrace,
+  waveformClassWitness,
 
   -- * Probing
   CanProbe,
   Probeable (..),
   AutoProbe (..),
   autoProbe,
+
+  -- * Describing a probe
+  CanDescribe,
+  Describable (..),
+  AutoDescribe (..),
 ) where
 
 import Clash.Prelude (
@@ -75,7 +87,14 @@ import GHC.Generics (
  )
 import GHC.Stack (HasCallStack, withFrozenCallStack)
 
-import Clash.CircuitContext.Core (HasCircuitContext, HasProbe, probe, traceSignalC)
+import Clash.CircuitContext.Core (
+  HasCircuitContext,
+  HasProbe,
+  probe,
+  probeSW,
+  traceSignalC,
+ )
+import Clash.Shockwaves.Internal.Waveform (Waveform)
 
 --------------------------------------------------------------------------------
 -- Tracing
@@ -134,8 +153,14 @@ class Traceable t where
   -- disambiguation design-ordered.
   traceNamed nm t = withFrozenCallStack (to (snd (gtraceNamed nm 0 (from t))))
 
+{- | @Waveform a@ is required so every traced signal carries its payload
+type's ADT description (constructors, fields, bit ranges) and not just bits.
+It also makes the requirement decidable by the oracle, so a payload WITHOUT a
+'Waveform' instance falls back to identity rather than failing to compile —
+the usual silent-skip contract, now covering typed-waveform support too.
+-}
 instance
-  (KnownDomain dom, BitPack a, NFDataX a) =>
+  (KnownDomain dom, BitPack a, NFDataX a, Waveform a) =>
   Traceable (Signal dom a)
   where
   traceNamed = traceSignalC
@@ -338,6 +363,20 @@ instance (Traceable t) => AutoTrace 'True t where
 instance AutoTrace 'False t where
   autoTraceAt _ x = x
 
+{- | Plugin support only; never call it. The oracle must consult
+@clash-shockwaves@' 'Waveform' instances (the 'Traceable' 'Signal' instance
+requires one per payload), but an instrumented module that never mentions
+clash-shockwaves never loads its interface — so 'GHC.Core.InstEnv.lookupInstEnv'
+would silently miss e.g. @Waveform (BitVector n)@ and the binder would fall
+back to identity. The plugin cannot resolve the clash-shockwaves module by
+name either (module lookup sees only the compiled unit's DIRECT dependencies).
+This value's TYPE names the class; the plugin reads the class off its context
+and force-loads the class's home interface, exactly as it does for this
+module's own instances.
+-}
+waveformClassWitness :: (Waveform a) => proxy a -> ()
+waveformClassWitness _ = ()
+
 {- | What the renamer pass wraps around named local declarations in
 'HasCircuitContext' functions.
 -}
@@ -365,8 +404,18 @@ the oracle decides @CanProbe t@ by checking ITS context's solvability.
 class Probeable t where
   probeNamed :: (HasProbe) => String -> t -> t
 
-instance (BitPack t, NFDataX t) => Probeable t where
-  probeNamed = probe
+{- | The @AutoDescribe@ member is what upgrades a probe to a DESCRIBED probe
+where the payload allows it, and it constrains nothing: it is satisfiable for
+every @t@ (the ''False' instance matches anything), exactly like the
+per-field @AutoTrace@ in the composite 'Traceable' instances. So @CanProbe t@
+still means what it always meant — 'BitPack' and 'NFDataX' — and a probe of a
+type 'Waveform' cannot describe still records, as raw bits.
+-}
+instance
+  (BitPack t, NFDataX t, AutoDescribe (CanDescribe t) t) =>
+  Probeable t
+  where
+  probeNamed = probeDescribedAt @(CanDescribe t) @t
 
 class AutoProbe (flag :: Bool) t where
   autoProbeAt :: (HasProbe) => String -> t -> t
@@ -388,3 +437,40 @@ autoProbe ::
   t
 autoProbe = autoProbeAt @(CanProbe t) @t
 {-# INLINE autoProbe #-}
+
+--------------------------------------------------------------------------------
+-- Describing a probe
+--------------------------------------------------------------------------------
+
+{- | Bool-kinded oracle: reduced exclusively by the plugin, to ''True' iff
+@Describable t@ is solvable in the context of the occurrence.
+-}
+type family CanDescribe (t :: Type) :: Bool
+
+{- | A probed payload @clash-shockwaves@ can describe.
+
+Probing and describing are decided SEPARATELY because their requirements
+genuinely differ: probing wants 'BitPack' and 'NFDataX', describing wants
+'Waveform', and the state inside a mealy step is routinely a size-polymorphic
+record that satisfies the first and not the second (@Waveform (Index n)@
+wants @1 <= n@ where @BitPack@ wants only @KnownNat n@). Deciding them
+together would mean either dropping those probes or leaving every probe
+undescribed; deciding them apart means each probe gets as much as its type
+allows.
+-}
+class Describable t where
+  probeDescribed :: (HasProbe, BitPack t, NFDataX t) => String -> t -> t
+
+instance (Waveform t) => Describable t where
+  probeDescribed = probeSW
+
+-- | Flag-indexed dispatch; the flag comes from 'CanDescribe'.
+class AutoDescribe (flag :: Bool) t where
+  probeDescribedAt :: (HasProbe, BitPack t, NFDataX t) => String -> t -> t
+
+instance (Describable t) => AutoDescribe 'True t where
+  probeDescribedAt = probeDescribed
+
+-- | Recorded, but as bits: 'probe' is the version with no descriptor.
+instance AutoDescribe 'False t where
+  probeDescribedAt = probe

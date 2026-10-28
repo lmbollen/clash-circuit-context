@@ -4,7 +4,10 @@ Scoped simulation tracing for [Clash](https://clash-lang.org/) designs: a
 small runtime plus a GHC plugin that instruments your design automatically.
 Simulate as usual, get a **hierarchical VCD** of every named signal in your
 design — on **unmodified `clash-prelude`**, with no changes to how you
-simulate.
+simulate. Beside it comes a **typed-waveform sidecar** from
+[`clash-shockwaves`](https://github.com/clash-lang/clash-shockwaves), so a
+viewer shows a 72-bit wire as the `WishboneM2S` it is — constructors and named
+fields — rather than as hex.
 
 Instrumentation is two annotations per function:
 
@@ -52,8 +55,9 @@ still enable it per module with
 `{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}` — but do not do
 both, or the plugin runs twice.
 
-Requires GHC 9.6, 9.10 or 9.12 and `clash-prelude >= 1.9 && < 1.12`. Nothing else,
-and in particular no patched `clash-prelude`.
+Requires GHC 9.6, 9.10 or 9.12, `clash-prelude >= 1.9 && < 1.12` and
+`clash-shockwaves >= 1.1.3` (from Hackage). Nothing else, and in particular no
+patched `clash-prelude`.
 
 Then instrument a function with the two annotations above, and see
 [Waveforms from your test suite](#waveforms-from-your-test-suite) for getting
@@ -139,8 +143,8 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
    the code is untouched. A *closed* binding — one with no free local
    variables — is traced only if it carries its own type signature; without
    one it is skipped, because GHC generalises it and the injected constraint
-   cannot be quantified in an inferred type. Untraceable types (no `BitPack`,
-   unknown domain, missing evidence for a polymorphic type) fall back to
+   cannot be quantified in an inferred type. Untraceable types (no `BitPack`
+   or `Waveform`, unknown domain, missing evidence for a polymorphic type) fall back to
    identity — by
    design, decided by a typechecker-plugin oracle (`CanTrace`), so
    instrumented code never fails to compile because something cannot be
@@ -148,7 +152,10 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
    [When something isn't traced](#when-something-isnt-traced).
 3. **Auto-probe** — same rule for `HasProbe` signatures: bindings become
    `autoProbe "<binder>" …`, recording one value per simulated cycle from
-   inside e.g. a mealy step function.
+   inside e.g. a mealy step function. A probe carries its type's
+   `clash-shockwaves` description wherever the type has a `Waveform`
+   instance, and is recorded as plain bits where it does not — see
+   [Typed waveforms](#typed-waveforms).
 4. **Innermost signature wins** — a local signature switches the mode for
    its subtree, so a `HasProbe` step function nested in a
    `HasCircuitContext` component probes rather than traces.
@@ -168,7 +175,7 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
   why it is a warning you can turn off
   (`-Wno-x-circuit-context-uninstrumented`) rather than an error.
 * Traceable today: `Signal dom a` with `(KnownDomain dom, BitPack a,
-  NFDataX a)`, and `Vec n` thereof (traced element-wise as `name_0`,
+  NFDataX a, Waveform a)`, and `Vec n` thereof (traced element-wise as `name_0`,
   `name_1`, …). No `Typeable` is required — that field of a trace only
   feeds clash's replay machinery, which these maps don't use, and
   requiring it would exclude size-polymorphic payloads (`Unsigned n` under
@@ -212,14 +219,14 @@ wire or a scope is a **real GHC warning**, in a custom category you tune with
 the flags you already use.
 
 ```
-tests/Test/PluginDiagnostics.hs:114:3: warning: [-Wx-circuit-context-undecided]
+tests/Test/PluginDiagnostics.hs:131:3: warning: [-Wx-circuit-context-undecided]
     not traced: Signal dom (Awkward n)
     the oracle could not decide: 1 <= n
     This may be a limit of the approximation rather than a fact about the type.
     Name the binding with traceSignalC, which takes Traceable as a real
     constraint, to find out which.
     |
-114 |   held = inp
+131 |   held = inp
     |   ^^^^^^^^^^
 ```
 
@@ -318,7 +325,8 @@ case_myDesign = withWaveformSlot "my_design" $ \wf -> do
   expected @=? out
 ```
 
-That writes `waveforms/my_design.vcd`. A *slot* is one test's pending
+That writes `waveforms/my_design.vcd`, and its typed-waveform sidecar
+`waveforms/my_design.json` beside it. A *slot* is one test's pending
 waveform, created and owned by that test — deliberately not a global registry,
 which would have to retain every rendered VCD until the whole suite finished.
 
@@ -390,14 +398,66 @@ trust: sequenced by tasty,
 waveforms the examples wrote and verifies they show the run they claim to
 (the failing one down to its shrunk, single-cycle counterexample).
 
+## Typed waveforms
+
+A hierarchical VCD knows *where* a signal is: `top.bus_Fwd`, 72 bits. It does
+not know those bits are a `WishboneM2S 27 4` with an `addr` field in one range
+and a `cycleTypeIdentifier` in another. `clash-shockwaves` knows exactly that,
+from the payload type's `Waveform` instance, so the two are combined rather
+than chosen between:
+
+| | this package | `clash-shockwaves` |
+| --- | --- | --- |
+| knows | *where* a signal is | *what* a signal is |
+| output | nested `$scope` per component instance | ADT structure as a JSON sidecar |
+| state | per-simulation `IORef`s | one process-global `IORef` |
+
+Every traced payload requires `Waveform`, alongside `BitPack` and `NFDataX`.
+The descriptor is captured at registration, where the payload type is still
+known, and `dumpVCDSW` (in `Clash.CircuitContext.Shockwaves`) writes the VCD
+and the sidecar from one call, keyed by the very paths the VCD declares —
+sibling `_0`/`_1` suffixes included — so nothing is matched by name. The
+sidecar is in shockwaves' own format, and its
+[Surfer plugin](https://github.com/clash-lang/clash-shockwaves) reads it
+unmodified.
+
+Give your payload types an instance next to `BitPack`:
+
+```haskell
+data Phase = Idle | Busy (Index 8) | Done
+  deriving (Generic, NFDataX, BitPack, Waveform)
+```
+
+Three things worth knowing:
+
+* **A type without `Waveform` is not traced.** The requirement is decided by
+  the same oracle as every other, so a payload that forgot the instance falls
+  back to identity rather than breaking the build — and says so with
+  `-Wx-circuit-context-untraced`. Deriving both together is the habit;
+  `-Werror=x-circuit-context-untraced` is the check. In the bittide
+  dogfooding, deriving `Waveform` only where it obviously belonged left 10 %
+  of the wires missing until a coverage diff found them.
+* **Probes are described where they can be.** A probe's job is to see the
+  state inside a mealy step, and that state is routinely a size-polymorphic
+  record that `BitPack` accepts and `Waveform` does not (`Waveform (Index n)`
+  wants `1 <= n`, `BitPack` only `KnownNat n`). So probing and describing are
+  decided separately: the plugin picks `probeSW` (described) or `probe` (raw
+  bits) per type, and no probe is dropped for lack of a description.
+* **A waveform is a pair of files.** `Clash.CircuitContext.Waveform` writes
+  both through temp + rename with the sidecar landing first, so if the `.vcd`
+  is there its `.json` is there and complete. Without the sidecar the VCD is
+  still a complete untyped waveform, and `dumpVCDC` remains the VCD-only
+  dump. The sidecar is small: about 0.04 % of the VCD on real designs.
+
 ## Manual API
 
 Everything the plugin injects is ordinary user API from
 `Clash.CircuitContext`, usable directly where you want explicit control:
-`component`, `imapComponents`, `traceSignalC`, `probe`, `mealyProbed`,
-`withCircuitContext`, `dumpVCDC`, and the `autoTrace`/`autoProbe` pair
+`component`, `imapComponents`, `traceSignalC`, `probe`, `probeSW`,
+`mealyProbed`, `withCircuitContext`, `dumpVCDC` (and `dumpVCDSW` for the VCD
+with its sidecar), and the `autoTrace`/`autoProbe` pair
 (these two still need the plugin enabled: its typechecker half reduces the
-`CanTrace`/`CanProbe` type families).
+`CanTrace`/`CanProbe`/`CanDescribe` type families).
 
 ## How it works
 
@@ -415,7 +475,7 @@ Everything the plugin injects is ordinary user API from
   never forced simply records nothing.
 * The plugin is a renamer-stage rewrite (names are resolved, injection is
   by exact `Name` — user code needs no extra imports) plus a
-  typechecker-plugin oracle that decides `CanTrace`/`CanProbe` by
+  typechecker-plugin oracle that decides `CanTrace`/`CanProbe`/`CanDescribe` by
   approximating instance solvability, keeping all evidence construction in
   GHC's ordinary instance machinery.
 
@@ -488,10 +548,12 @@ actually collects a waveform.
 ./check.sh -w ghc-9.10.3         # or any other GHC ≥ 9.6
 ```
 
-`check.sh` builds everything and runs five suites — `manual-instrumentation`
+`check.sh` builds everything and runs six suites — `manual-instrumentation`
 (hand-instrumented reference), `oracle-fallback` (oracle decisions per type),
 `auto-instrumentation` (the same design written naturally, instrumented
-entirely by the plugin), `plugin-diagnostics` (constraint synonyms,
+entirely by the plugin), `adt-sidecar` (the clash-shockwaves half of the
+output: constructors, field names and per-path type keys in the sidecar of a
+design with no manual tracing calls), `plugin-diagnostics` (constraint synonyms,
 idempotence under a deliberate double enable, one live example of every
 warning category, and [`tests/Test/Downstream.hs`](tests/Test/Downstream.hs)
 — the shapes a real consumer lost wires on, lifted from the reproducers they

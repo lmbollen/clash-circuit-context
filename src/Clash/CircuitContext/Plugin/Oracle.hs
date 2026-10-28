@@ -69,8 +69,10 @@ import qualified GHC.Data.Strict as Strict
 import qualified GHC.Iface.Load as GHC (loadSysInterface)
 import qualified GHC.Plugins as GHC (
   getOccString,
+  idType,
   moduleName,
   moduleNameString,
+  nameModule,
   nameModule_maybe,
   text,
  )
@@ -98,6 +100,9 @@ data OracleEnv = OracleEnv
   , autoProbeClass :: API.Class
   , traceableClass :: API.Class
   , probeableClass :: API.Class
+  , canDescribeTyCon :: API.TyCon
+  , autoDescribeClass :: API.Class
+  , describableClass :: API.Class
   }
 
 {- FOURMOLU_DISABLE -}
@@ -127,11 +132,22 @@ initEnv = do
       -- instrumented modules never import Clash.CircuitContext.Auto, so without
       -- this the first oracle query can run before the Traceable/Probeable
       -- instances are visible and wrongly decide 'False (observed).
-      _ <-
-        APIInternal.unsafeLiftTcM
-          ( GHC.initIfaceTcRn
-              (GHC.loadSysInterface (GHC.text "clash-circuit-context") md)
-          )
+      forceInterface md
+      -- Same hazard one package over: the Traceable Signal instance requires
+      -- clash-shockwaves' Waveform per payload, and a module that never
+      -- mentions clash-shockwaves never loads its instances — every stock
+      -- payload (BitVector, Index, …) would silently stop tracing there
+      -- (observed on bittide's Prbs). The module cannot be resolved by name
+      -- from an arbitrary unit (only DIRECT dependencies are), so read the
+      -- class off 'waveformClassWitness' and force its home interface.
+      witId <-
+        API.tcLookupId =<< API.lookupOrig md (API.mkVarOcc "waveformClassWitness")
+      let (_, theta, _) = GHC.tcSplitSigmaTy (GHC.idType witId)
+      case [cls | pred0 <- theta, GHC.ClassPred cls _ <- [GHC.classifyPredType pred0]] of
+        (cls : _) -> forceInterface (GHC.nameModule (GHC.getName cls))
+        [] ->
+          error
+            "Clash.CircuitContext.Plugin: waveformClassWitness carries no class constraint"
       let
         tc nm = API.tcLookupTyCon =<< API.lookupOrig md (API.mkTcOcc nm)
         cl nm = API.tcLookupClass =<< API.lookupOrig md (API.mkTcOcc nm)
@@ -142,9 +158,19 @@ initEnv = do
         <*> cl "AutoProbe"
         <*> cl "Traceable"
         <*> cl "Probeable"
+        <*> tc "CanDescribe"
+        <*> cl "AutoDescribe"
+        <*> cl "Describable"
     _ ->
       error
         "Clash.CircuitContext.Plugin: Clash.CircuitContext.Auto not found (missing clash-circuit-context dependency?)"
+ where
+  forceInterface md =
+    ()
+      <$ APIInternal.unsafeLiftTcM
+        ( GHC.initIfaceTcRn
+            (GHC.loadSysInterface (GHC.text "clash-circuit-context") md)
+        )
 
 --------------------------------------------------------------------------------
 -- Rewriter stage: ground types only (givens are NOT available here)
@@ -155,6 +181,10 @@ rewriters env =
   GHC.listToUFM
     [ (canTraceTyCon env, rewriteGround env (canTraceTyCon env) (traceableClass env))
     , (canProbeTyCon env, rewriteGround env (canProbeTyCon env) (probeableClass env))
+    ,
+      ( canDescribeTyCon env
+      , rewriteGround env (canDescribeTyCon env) (describableClass env)
+      )
     ]
 
 rewriteGround ::
@@ -243,6 +273,9 @@ solveStuck env givens wanteds = do
     | cls == autoProbeClass env
     , famTc == canProbeTyCon env =
         Just (probeableClass env)
+    | cls == autoDescribeClass env
+    , famTc == canDescribeTyCon env =
+        Just (describableClass env)
     | otherwise = Nothing
 
 --------------------------------------------------------------------------------
@@ -274,7 +307,7 @@ reportDeclined ::
   forall m.
   (API.MonadTcPlugin m) =>
   API.CtLoc ->
-  -- | 'Traceable' or 'Probeable' — what was asked for
+  -- | @Traceable@, @Probeable@ or @Describable@ — what was asked for
   API.Class ->
   -- | the payload type
   API.Type ->
@@ -306,8 +339,11 @@ reportDeclined loc cls t = \case
   -- 'ctLocSpan' is the REAL span; the diagnostic machinery takes the sum.
   spn = GHC.RealSrcSpan (GHC.ctLocSpan loc) Strict.Nothing
 
+  -- A declined @Describable@ is the mildest of the three: the binding still
+  -- records, it just renders as bits. Say which it is.
   headline = case GHC.getOccString (GHC.getName cls) of
     "Probeable" -> "not probed: "
+    "Describable" -> "probed as raw bits (no ADT description): "
     _ -> "not traced: "
 
 --------------------------------------------------------------------------------
@@ -326,7 +362,8 @@ reduceFamily tc args =
 'solvablePred').
 -}
 totalClassesOf :: OracleEnv -> [API.Class]
-totalClassesOf env = [autoTraceClass env, autoProbeClass env]
+totalClassesOf env =
+  [autoTraceClass env, autoProbeClass env, autoDescribeClass env]
 
 fuel0 :: Int
 fuel0 = 20
@@ -339,7 +376,7 @@ boolTy False = GHC.mkTyConTy GHC.promotedFalseDataCon
 
 Both negative answers carry the requirement they stopped at, which is the
 difference between "this will not be traced" and a message a reader can act
-on: for @Signal dom (Maybe (Packet dimX dimY))@ the blame is @BitPack
+on: for @Signal dom (Maybe (Packet dimX dimY))@ the blame is @Waveform
 (Packet dimX dimY)@ (write the instance), for a size-polymorphic payload it
 is the @KnownNat@ or @1 <= n@ the oracle cannot discharge (name it with an
 explicit 'Clash.CircuitContext.Core.traceSignalC' instead).

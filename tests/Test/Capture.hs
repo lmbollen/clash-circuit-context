@@ -22,6 +22,7 @@ import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (when)
 import Data.List (isPrefixOf)
 import System.Directory (doesFileExist, removeFile)
+import System.FilePath ((-<.>))
 
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, testCase, (@?=))
@@ -53,14 +54,16 @@ twins =
   , sampleN 4 (traceSignalC "diff" (fromList [0, 0, 0, 1, 0] :: Signal System (Unsigned 8)))
   )
 
--- | Does the slot's file exist?
-fileFor :: WaveformSlot -> IO Bool
-fileFor = doesFileExist . waveformSlotPath
+-- | Do the slot's files exist? (VCD and its ADT sidecar.)
+filesFor :: WaveformSlot -> IO (Bool, Bool)
+filesFor slot = do
+  let vcd = waveformSlotPath slot
+  (,) <$> doesFileExist vcd <*> doesFileExist (vcd -<.> "json")
 
 scrub :: WaveformSlot -> IO ()
 scrub slot = do
   let vcd = waveformSlotPath slot
-  doesFileExist vcd >>= \e -> when e (removeFile vcd)
+  P.mapM_ (\p -> doesFileExist p >>= \e -> when e (removeFile p)) [vcd, vcd -<.> "json"]
 
 -- | A fresh, scrubbed slot for one test.
 withSlot :: String -> (WaveformSlot -> Assertion) -> Assertion
@@ -76,24 +79,24 @@ tests =
     [ testCase "withWaveformWhen False writes nothing" $
         withSlot "capture-skipped" $ \slot -> do
           _ <- withWaveformWhen False slot 8 (sampleN 8 counter)
-          v <- fileFor slot
-          assertBool "no VCD written" (P.not v)
-    , testCase "withWaveformWhen True writes the VCD" $
+          (v, j) <- filesFor slot
+          assertBool "no VCD, no sidecar" (P.not v P.&& P.not j)
+    , testCase "withWaveformWhen True writes the VCD and its sidecar" $
         withSlot "capture-kept" $ \slot -> do
           _ <- withWaveformWhen True slot 8 (sampleN 8 counter)
           writeWaveformSlot slot
-          v <- fileFor slot
-          assertBool "the VCD was written" v
+          (v, j) <- filesFor slot
+          assertBool "both halves written" (v P.&& j)
     , -- A PASSING run under on-failure capture writes nothing at all: the
       -- simulation runs without a recording context, so there is no history
       -- to render and nothing to discard.
       testCase "withWaveformOnFailure writes nothing when the test passes" $
         withSlot "capture-passing" $ \slot -> do
           _ <- withWaveformOnFailure slot 8 (sampleN 8 counter) evaluate
-          v <- fileFor slot
-          assertBool "no VCD written" (P.not v)
+          (v, j) <- filesFor slot
+          assertBool "no VCD, no sidecar" (P.not v P.&& P.not j)
     , -- A FAILING run writes both, and the original exception propagates.
-      testCase "withWaveformOnFailure writes the VCD when the test fails" $
+      testCase "withWaveformOnFailure writes both files when the test fails" $
         withSlot "capture-failing" $ \slot -> do
           outcome <-
             try @SomeException $
@@ -103,18 +106,18 @@ tests =
           assertBool
             "the failure propagates"
             (P.either (P.const True) (P.const False) outcome)
-          v <- fileFor slot
-          assertBool "the VCD was written" v
+          (v, j) <- filesFor slot
+          assertBool "both halves written" (v P.&& j)
     , -- The always-recording variant behaves the same from the outside.
-      testCase "withWaveformOnFailure' writes the VCD when the test fails" $
+      testCase "withWaveformOnFailure' writes both files when the test fails" $
         withSlot "capture-failing-strict" $ \slot -> do
           _ <-
             try @SomeException $
               withWaveformOnFailure' slot 8 (sampleN 8 counter) $ \xs -> do
                 _ <- evaluate (P.length xs)
                 errorX "deliberate failure"
-          v <- fileFor slot
-          assertBool "the VCD was written" v
+          (v, j) <- filesFor slot
+          assertBool "both halves written" (v P.&& j)
     , -- The same contract inside a hedgehog property, where a failure is a
       -- VALUE in the property monad and no amount of `try` in IO can see it.
       testCase "withWaveformOnCounterexample writes nothing when the property passes" $
@@ -124,17 +127,17 @@ tests =
               withWaveformOnCounterexample slot 8 (sampleN 8 counter) $ \xs ->
                 P.length xs Hedgehog.=== 8
           assertBool "the passing property passes" ok
-          v <- fileFor slot
-          assertBool "no VCD written" (P.not v)
-    , testCase "withWaveformOnCounterexample writes the VCD for a counterexample" $
+          (v, j) <- filesFor slot
+          assertBool "no VCD, no sidecar" (P.not v P.&& P.not j)
+    , testCase "withWaveformOnCounterexample writes both files for a counterexample" $
         withSlot "capture-prop-failing" $ \slot -> do
           ok <-
             Hedgehog.check . Hedgehog.property $
               withWaveformOnCounterexample slot 8 (sampleN 8 counter) $ \xs ->
                 P.length xs Hedgehog.=== 7
           assertBool "the failing property fails" (P.not ok)
-          v <- fileFor slot
-          assertBool "the VCD was written" v
+          (v, j) <- filesFor slot
+          assertBool "both halves written" (v P.&& j)
     , -- The counterexample's LAST cycle must be in the waveform. Two ways to
       -- lose it, both found by reading a real one: the assertion here only
       -- looks at the list's length, so nothing forces the samples unless the
@@ -153,15 +156,15 @@ tests =
           P.length stamps @?= 8
           P.last stamps @?= "#7"
     , -- And a passing case can be kept deliberately (the artifact path).
-      testCase "withWaveformCase True writes the VCD for a passing case" $
+      testCase "withWaveformCase True writes both files for a passing case" $
         withSlot "capture-prop-kept" $ \slot -> do
           ok <-
             Hedgehog.check . Hedgehog.withTests 1 . Hedgehog.property $
               withWaveformCase True slot 8 (sampleN 8 counter) $ \xs ->
                 P.length xs Hedgehog.=== 8
           assertBool "the kept property passes" ok
-          v <- fileFor slot
-          assertBool "the VCD was written" v
+          (v, j) <- filesFor slot
+          assertBool "both halves written" (v P.&& j)
     , -- A run that forces exactly ONE cycle must still capture it. Recording
       -- is one cell behind the simulation, so after one forced cell nothing
       -- is committed yet — only the tap's touched bit distinguishes this run
@@ -171,8 +174,8 @@ tests =
         withSlot "capture-one-cycle" $ \slot -> do
           _ <- withWaveformLazy slot 8 (sampleN 1 counter) (evaluate . P.length)
           writeWaveformSlot slot
-          v <- fileFor slot
-          assertBool "the VCD was written" v
+          (v, j) <- filesFor slot
+          assertBool "both halves written" (v P.&& j)
     , -- Signals that agree on every committed cycle but diverge at the
       -- drained last one must NOT share a VCD identifier: an alias would
       -- display the representative's value for exactly the cycle the capture

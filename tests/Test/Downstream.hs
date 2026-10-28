@@ -63,6 +63,7 @@ import Clash.CircuitContext (
   HasCircuitContext,
   traceSignalC,
  )
+import Clash.Shockwaves.Waveform (Waveform)
 
 --------------------------------------------------------------------------------
 -- F1: a satisfiable constraint reported as proved-absent
@@ -74,7 +75,7 @@ data Plain = Plain
   , q :: Bool
   }
   deriving stock (Generic, Show, Eq)
-  deriving anyclass (BitPack, NFDataX)
+  deriving anyclass (BitPack, NFDataX, Waveform)
 
 {- | The reported failure and its own control, in one component.
 
@@ -152,16 +153,12 @@ rather than a class, and the oracle gave up on it — at a LITERAL, so "the
 payload is monomorphic, therefore it traces" was not a usable rule. It costs
 them @cache.heldOffset@ and @processor.bodyPtr@.
 
-A caveat this test carries on its face: __the literal @Index 16@ does not
-reproduce here even at the old pin__. The report came from a branch that also
-requires a @clash-shockwaves@ @Waveform@ instance of every traced payload, and
-Hackage's @Waveform (Index n)@ carries the @1 <= n@; this package asks only
-for @BitPack@, whose @Index n@ instance wants just @KnownNat n@, so the
-@Assert@ is never asked. So this case guards the downstream SHAPE, and
-@Test.PluginDiagnostics@'s @grounded@ guards the MECHANISM on a payload whose
-'BitPack' context carries the @Assert@. Neither alone would have caught the
-regression; deleting either because the other exists is how this stops being
-tested.
+This reproduces their case exactly, not just its shape: like them, this
+package takes @clash-shockwaves@ from Hackage, whose @Waveform (Index n)@
+carries the @1 <= n@ (@BitPack@'s wants only @KnownNat n@), so the oracle is
+asked the literal @Assert@ they hit. @Test.PluginDiagnostics@'s @grounded@
+guards the same MECHANISM on a payload of its own; that one would survive
+shockwaves ever relaxing the instance, which is why both exist.
 
 @f2.ix@ must be recorded.
 -}
