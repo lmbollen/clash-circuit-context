@@ -167,6 +167,23 @@ Initial version.
   `-Wx-circuit-context-undescribed`, which asks for the `Waveform` instance:
   nothing was lost, so it is not `untraced`, and
   `-Werror=x-circuit-context-untraced` does not promote it.
+* Bindings no recorder could ever take are no longer reported. A trace
+  records wires, so a plain value in a traced component (a `Bool` inside a
+  lambda, a `MemoryMap`, a function) is not a trace target; a probe records
+  representable values, so a `Signal`, a list or a function inside a probed
+  step is not a probe target; and a signal or probe whose payload has no
+  finite bit width (`[a]`, a function, anything recursive) cannot be
+  recorded. The oracle decides this from the type's constructors, and
+  whatever it cannot see into still warns. What remains in
+  `-Wx-circuit-context-untraced` could have been recorded, and each message
+  now ends with the fix: the instance to derive, or the constraint to add.
+* `Integer` and `Natural` are recorded, as the 64 bits Clash translates them
+  to: `Signal dom Integer` traces and an `Integer` in a mealy step probes.
+  (Inside a composite payload there is still no `BitPack`; use `Signed 64`
+  there.)
+* `DSignal`, `Reset` and `Enable` are `Traceable`, each as the signal
+  underneath it (a reset as its raw level). They were wires the plugin
+  declined for want of an instance no user could reasonably write.
 * `ProbeMap` holds `ProbeEntry` records (period, width, runs and the ADT
   descriptor) instead of tuples, mirroring `TraceEntry`, which gains the same
   descriptor as `teAdt` (`Nothing` for a `traceSignalC`). `Core` also exports
