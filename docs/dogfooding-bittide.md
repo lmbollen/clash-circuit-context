@@ -132,13 +132,27 @@ capture_ugn 7→**40**, registerwb 2→**35**, ring_buffer 7→**46**; scopes 1�
    strict 100 k-cycle capture and a model-driven CPU sim — the slowest test in
    the suite by far. `withTests 1` plus a live, output-count-bounded capture
    brought it to 0.6 s.
-10b3. **Parallel test runners multiply sim memory but not sim speed.** A Clash
-   simulation evaluates on one thread; tasty running N CPU tests concurrently
-   holds N partially evaluated sims (GBs each) while one thread works — the
-   observed "many near-idle memory hogs, one busy thread". The harness now
-   serializes heavyweight sims on a global lock (`heavySimLock`): peak memory
-   is one sim's worth, cheap tests still parallelize, and nothing is lost
-   because the sims never parallelized anyway.
+10b4. **Record only what you keep.** Even leak-free, recording every run is
+   wasteful: a 100-case property rendered 100 VCDs to keep one, and a passing
+   firmware test rendered 270 MB nobody reads. Under a parallel runner that is
+   the dominant cost. The capture decision now happens BEFORE the simulation
+   wherever possible (`withWaveformWhen`; the losing cases run under
+   `noCircuitContext`, where tracing is identity), and a failing test gets its
+   waveform by re-running with recording on (`withWaveformOnFailure`).
+   Measured on all 24 cores: peak 25.2 GB -> 8.2 GB and wall 6m22s -> 1m06s
+   for bittide-instances, with zero VCDs written on a green run. The wall-clock
+   win is the surprise — per-cycle packing and RLE encoding cost real time, not
+   just memory.
+
+10b3. **A serializing lock was the wrong fix — the leak was.** Tasty running N
+   CPU tests concurrently held N partially evaluated sims (GBs each), so the
+   harness serialized heavyweight sims on a global lock (`heavySimLock`). That
+   treated the symptom: what made concurrency unaffordable was per-test
+   retention (a lazy sidecar pinning every run's history, and a process-global
+   store holding every rendered VCD to the end of the suite). With capture
+   bounded per test, the lock was removed and the suite runs on all cores
+   again. Serializing to control memory hides the retention bug that makes
+   serializing feel necessary.
 10c. **What remains is the simulation itself.** Control-measured: dna's
    UN-instrumented assertion run alone costs ~60 s and ~3.3 GB max residency
    (ghci) — sampleC + the VexRiscv FFI over 540 k cycles. Recording now adds
@@ -353,7 +367,7 @@ dogfooding rather than bittide's:
 Pinned by the `plugin-diagnostics` suite, which enables the plugin twice on
 purpose and greps its own build log for the diagnostics.
 
-### F7 — Waveform lifecycle helpers are re-implemented per project
+### F7 — Waveform lifecycle helpers are re-implemented per project ✅ FIXED
 `withWaveform`/`withWaveformC`, the one-file-per-name discipline, "keep the last
 run", and the `clash-protocols` `toSignals` bridge all live in a bittide-side
 `Tests.Waveform` helper. Every project that wants VCDs from tests will
@@ -361,10 +375,12 @@ re-derive them, and the subtleties (force once to avoid double-instantiation;
 `dumpVCDC` must not throw on an empty run; last-run-wins via a deferred flush at
 teardown) are easy to get wrong.
 
-*Proposal:* ship a small `Clash.CircuitContext.Hedgehog` (or `…Test`) module
-with a blessed `withWaveform`/flush, and — since the `toSignals` bridge needs
-`clash-protocols` — a separate `clash-circuit-context-protocols` package for
-`withWaveformC`/`driveFwd`.
+*Shipped* as `Clash.CircuitContext.Waveform` (slots, capture, writing) plus
+`Clash.CircuitContext.Waveform.Hedgehog` (which case of a property leaves a
+waveform). No separate package was needed: only the `toSignals` bridge is
+`clash-protocols`-shaped, and that one edge stays project-side —
+`clash-protocols` depends on this package, so depending back would be a cycle.
+bittide keeps its `withWaveformC`/`driveFwd` in `bittide-extra`.
 
 ### F8 — Auto-tracing a partial binding crashed the whole VCD dump ✅ FIXED
 Instrumenting real peripherals (the `bittide-instances` firmware DUTs) surfaced
@@ -470,6 +486,49 @@ boilerplate, and with the global flag a newly constrained function is
 instrumented with zero further ceremony. (One caveat worth documenting in the
 ccc README: the plugin listed at both package and module level runs twice —
 remove module pragmas when going global.)
+
+### F11 — A hedgehog failure is invisible to an IO-level capture ✅ FIXED
+Capture-on-failure was built in IO: run with recording off, `try` the consumer,
+and on an exception re-run with recording on. That covers HUnit and the firmware
+tests, and covers **nothing** in a hedgehog property. `===`, `assert` and
+`failure` do not throw — they put a `Failure` into `PropertyT`'s `ExceptT`
+layer, which no `try` in IO can observe. Verified the hard way: breaking
+`prop_alignDealignMsb` produced a perfectly good printed counterexample and
+zero waveform files.
+
+The fix is `Clash.CircuitContext.Waveform.Hedgehog.withWaveformCase`, which runs
+the property monad itself (`runTestT`/`mkTestT`) to catch the failure as a
+value, re-runs that case under a recording context, and re-raises the failure
+unchanged so hedgehog still shrinks and still reports exactly what it would
+have. Two properties fall out of it that are better than the IO version:
+
+* **the waveform is of the SHRUNK counterexample.** Shrinking re-runs the
+  property on ever-smaller inputs and each failing case overwrites the slot, so
+  what survives is the minimal case hedgehog prints. Measured on the broken
+  `prop_alignDealignMsb`: a 2-cycle, 4-wire, 384-byte VCD showing 8-bit `input`
+  going 0→1 while `aligned` never follows — the whole bug, and nothing else.
+* **only failing cases pay.** A passing property records nothing at all, so the
+  cost is one recording per step down the shrink path.
+
+Two constraints to document, both from the re-run: the consumer must contain no
+`forAll` (the second run would draw different values — the seeds differ by
+position in the bind chain), and it must be assertions and forcing rather than
+one-shot IO.
+
+This required `withCircuitContextWindowM` in `Core`: a recording context for an
+action in any `MonadIO`, with no `try`, precisely because the monads that need
+it report failure as a value rather than by throwing.
+
+The same shape covers the artifact case, so it is one combinator, not two:
+`withWaveformCase keep` records as it goes when `keep` (no re-run, no
+reproducibility needed) and falls back to capture-on-failure otherwise. A case
+either passes or fails, so it is never simulated twice.
+
+*Also added:* `recordCaseOfSize fired n`, since hedgehog's `Size` is the only
+knob on how big a generated case is and therefore on how big its waveform is.
+Demonstrated on one property, one run, both waveforms: **size 10 → 2 cycles,
+16-bit words, 470 B; size 90 → 32 cycles, 64-bit words, 6.2 kB.** Small enough
+to read by eye, or large enough to be representative — the caller picks.
 
 ## Dogfooding `bittide-instances` (firmware DUTs)
 
@@ -693,13 +752,15 @@ inverted from "reproduce the bug" to "assert the fix", and run by
 * **F1 reproduced here exactly**, and F4 still warns without the new marker.
   Both were verified against `src/` checked out at the audited pin, so the
   before/after is measured rather than argued.
-* **F2 did NOT reproduce on this branch, at either pin.** Their `Index 16`
-  case depends on `Waveform (Index n)` requiring `1 <= n`, which is true of
-  Hackage `clash-shockwaves` (their pin) and false of the copy vendored here,
-  which already relaxes it to `KnownNat n`. So the lifted F2 guards their
-  SHAPE while `grounded` in `Test.PluginDiagnostics` guards the MECHANISM on a
-  payload carrying the `Assert` regardless of which shockwaves is in scope.
-  Neither alone would have caught it.
+* **F2 depends on which `clash-shockwaves` is in scope.** Their `Index 16`
+  case needs `Waveform (Index n)` to require `1 <= n`, which is true of
+  Hackage `clash-shockwaves` (their pin) and was false of the copy the
+  `dogfood/shockwaves` branches vendor, which relaxes it to `KnownNat n`. So
+  it did not reproduce there. This package now takes shockwaves from Hackage
+  too, so the lifted F2 asks the oracle exactly the literal `Assert` they hit;
+  `grounded` in `Test.PluginDiagnostics` guards the same MECHANISM on a
+  payload of its own, which keeps it tested even if shockwaves relaxes the
+  instance upstream.
 * **Their F1 control was not controlling anything.** `direct = pure Plain{…}`
   is a CLOSED binding, which the plugin skips to preserve GHC's
   generalisation of polymorphic locals — so it was never wrapped, the oracle
@@ -744,7 +805,7 @@ silent path.
 payloads it used to decline, four hand-written `traceSignalC` calls in their
 design became redundant and each recorded its signal twice (`name_0`/`name_1`);
 they deleted them. They need not have: a binding whose right-hand side already
-applies `traceSignalC`/`probe` under the binder's own name no longer
+applies `traceSignalC`/`probe`/`probeSW` under the binder's own name no longer
 gets one injected on top. A different name still gets both — their `switch`
 keeps its `traceSignalC "out"`, which names a function's result rather than a
 where-binding.
@@ -774,9 +835,9 @@ filed as "absent, and correctly so".
    constraint-synonym recognition and renamer idempotence.
 6. **Probe-mode: stop descending into multi-arg local helpers** (F5) — removes a
    correctness+perf footgun.
-7. **`Clash.CircuitContext.Hedgehog` test helpers** (F7) — package the waveform
-   lifecycle so projects don't re-implement it (now duplicated in *two* bittide
-   test-suites — `bittide` and `bittide-instances`).
+7. **`Clash.CircuitContext.Waveform` test helpers** (F7) — ✅ shipped, with
+   `…Waveform.Hedgehog` for the property-monad half (F11). The duplicate
+   `Tests.Waveform` in both bittide suites is gone.
 8. **README "gotchas"** — lexical context resolution (F3), opt-in model, viral
    constraints and how `withoutCircuitContext` cuts them.
 9. **Empty-component visibility** (audit gap 1) — ✅ RESOLVED 2026-07-23 at
