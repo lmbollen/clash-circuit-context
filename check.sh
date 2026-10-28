@@ -17,6 +17,10 @@ runlog cabal build all -j1 "$@"
 run cabal test manual-instrumentation -j1 "$@"
 run cabal test oracle-fallback -j1 "$@"
 runlog cabal test auto-instrumentation -j1 "$@"
+# knot (silent hang under the threaded RTS) — fail loudly instead.
+# Constraint synonyms, idempotence under a double plugin enable, and the
+# compile-time diagnostics (grepped from the build log below).
+runlog cabal test plugin-diagnostics -j1 "$@"
 # The Example level (usage, kept honest by running) and the Test level
 # (recorder properties, the capture contract, and the tasty-sequenced tests
 # that decode the waveforms the Example level wrote).
@@ -54,6 +58,131 @@ if grep -q "Compiling Main.*AutoInstrumentation" "$log" 2>/dev/null; then
     echo "FAIL: expected plugin warning missing"; fail=1
   fi
 fi
+
+# Every warning category must have fired while compiling
+# Test/PluginDiagnostics.hs, tagged with the flag that controls it. A
+# diagnostic that stops firing is exactly as silent as the bug it reports, so
+# it is checked like any other output. Same fresh-build caveat as above.
+# Custom warning categories are GHC >= 9.8; below that the same messages
+# arrive as plain warnings, untagged, so only the messages are checked there.
+ghcver=$(cabal exec "$@" -- ghc --numeric-version 2>/dev/null | tail -1)
+case "$ghcver" in
+  9.6.*) tags=() ;;
+  *) tags=(
+       "[-Wx-circuit-context-uninstrumented]"
+       "[-Wx-circuit-context-undecided]"
+       "[-Wx-circuit-context-untraced]"
+     ) ;;
+esac
+if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
+  for want in \
+    ${tags[@]+"${tags[@]}"} \
+    "'noOpaque' has HasCircuitContext but no OPAQUE" \
+    "'unsigned' is OPAQUE but has no type signature" \
+    "'bothModes' has both HasProbe and HasCircuitContext" \
+    "not traced: Signal dom Undescribed" \
+    "no instance for: BitPack Undescribed" \
+    "the oracle could not decide: 1 <= n"
+  do
+    if grep -qF "$want" "$log"; then
+      echo "ok: diagnostic fired: $want"
+    else
+      echo "FAIL: expected diagnostic missing: $want"; fail=1
+    fi
+  done
+  # ...and the marker must silence exactly the binder it vouches for, while
+  # the same shape without it still reports (Helios F4). Absence is the
+  # assertion, so it is checked against the same fresh log.
+  if grep -qF "'runHarness'" "$log"; then
+    echo "FAIL: {-# ANN … NoCircuitScope #-} did not silence its binder"; fail=1
+  elif grep -qF "'runHarnessUnvouched'" "$log"; then
+    echo "ok: NoCircuitScope silences only the binder it vouches for"
+  else
+    # Both quiet means the marker silenced the category, or the module never
+    # built -- either way the pair proves nothing.
+    echo "FAIL: the unvouched harness did not warn, so the marker is untested"
+    fail=1
+  fi
+fi
+
+# The categories are real GHC warnings, so "strict mode" is -Werror= and
+# "quiet" is -Wno-. That is a claim about the compiler's behaviour, not ours,
+# which is exactly why it is checked rather than described. Custom warning
+# categories are GHC >= 9.8; below that the plugin still warns, just not per
+# category, so there is nothing to check.
+case "$ghcver" in
+  9.6.*)
+    echo "skip: per-category warning control needs GHC >= 9.8 (have $ghcver)" ;;
+  *)
+    scratch=$(mktemp -d)
+    cat > "$scratch/StrictProbe.hs" <<'HS'
+{-# LANGUAGE ImplicitParams #-}
+{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
+
+-- | Two bindings the oracle declines, so plugin warnings fire and nothing
+-- else does. Deliberately free of clash-prelude imports: this is compiled
+-- through `cabal exec ghc`, whose ambient package environment is not ours to
+-- control, and a module that names only this package cannot trip over a
+-- duplicate registration of someone else's.
+module StrictProbe where
+
+import Clash.CircuitContext (HasCircuitContext)
+
+notTraced :: (HasCircuitContext) => Int -> Int
+notTraced k = out
+ where
+  out = length msg
+  msg = replicate k 'x'
+HS
+    # The script's own arguments are cabal's (-w <ghc>); probe's are GHC's.
+    cabalargs=("$@")
+    probe() {
+      cabal exec ${cabalargs[@]+"${cabalargs[@]}"} -- ghc -v0 -fno-code \
+        -fforce-recomp -package clash-circuit-context \
+        "$@" "$scratch/StrictProbe.hs" 2>&1
+    }
+    # Captured, not piped: under `set -o pipefail` a pipeline inherits the
+    # FAILING compile's status, so `probe -Werror=… | grep error` reports
+    # not-fatal exactly when the flag worked. Same trap as the runlog note.
+    default_out=$(probe)
+    quiet_out=$(probe -Wno-x-circuit-context-untraced); quiet_rc=$?
+    strict_out=$(probe -Werror=x-circuit-context-untraced); strict_rc=$?
+
+    # A module that fails to type-check emits no x-circuit-context warning
+    # EITHER, so the -Wno- case below -- whose assertion is an ABSENCE -- would
+    # pass on a broken module. Check that it built before believing it went
+    # quiet. (The lesson is the downstream audit's; it cost them two retracted
+    # conclusions while writing their reproducers.)
+    if [ "$quiet_rc" -ne 0 ]; then
+      echo "FAIL: the -Wno- probe did not compile, so its silence proves nothing"
+      fail=1
+    fi
+
+    case "$default_out" in
+      *-Wx-circuit-context-untraced*)
+        echo "ok: a declined binding warns by default" ;;
+      *)
+        echo "FAIL: no default warning for a declined binding"; fail=1 ;;
+    esac
+    case "$quiet_out" in
+      *-Wx-circuit-context-untraced*)
+        echo "FAIL: -Wno-x-circuit-context-untraced did not silence it"; fail=1 ;;
+      *)
+        echo "ok: -Wno- silences a category" ;;
+    esac
+    # Nonzero alone is not enough: ANY compile error is nonzero. The failure
+    # has to be OUR category being promoted, so the output must say so.
+    case "$strict_rc:$strict_out" in
+      0:*)
+        echo "FAIL: -Werror=x-circuit-context-untraced was not fatal"; fail=1 ;;
+      *-Werror=x-circuit-context-untraced*)
+        echo "ok: -Werror= makes a declined binding fatal (strict mode)" ;;
+      *)
+        echo "FAIL: the -Werror probe failed for some other reason"; fail=1 ;;
+    esac
+    rm -rf "$scratch"
+    ;;
+esac
 
 rm -f "$log"
 [ "$fail" -eq 0 ] && echo "ALL CHECKS PASSED" || echo "CHECKS FAILED"

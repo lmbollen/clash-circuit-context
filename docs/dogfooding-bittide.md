@@ -55,7 +55,7 @@ capture_ugn 7→**40**, registerwb 2→**35**, ring_buffer 7→**46**; scopes 1�
 2. **OPAQUE-for-framing is a silent footgun.** Forget it on one component and its
    internals silently flatten into the parent — exactly the reported red flag.
    The plugin should *warn* when a `HasCircuitContext` component lacks OPAQUE
-   (F6). Also: OPAQUE is a real Clash directive (blocks inlining/specialization;
+   (F6 — since shipped, as `-Wx-circuit-context-uninstrumented`). Also: OPAQUE is a real Clash directive (blocks inlining/specialization;
    each becomes its own HDL module). Simulation + `cabal build` are green, but
    that does **not** exercise Clash HDL generation — the synthesis impact of
    OPAQUE-ing hot polymorphic cores like `processingElement` is unverified here
@@ -308,18 +308,50 @@ bindings. The opt-out works but is silent/surprising.
 *Proposal:* plugin should not descend into multi-argument local functions in
 probe mode (or detect multi-write-per-cycle and warn).
 
-### F6 — The `OPAQUE` marker is easy to forget, and its absence is silent 🔜 PROPOSED
+### F6 — The `OPAQUE` marker is easy to forget, and its absence is silent ✅ FIXED
 A component needs both `HasCircuitContext` *and* `{-# OPAQUE #-}`. With the
 constraint but no `OPAQUE`, the plugin still traces the local bindings but does
 **not** create a `$scope` for the function — the signals silently flatten into
 the parent. `OPAQUE` is also required for correct per-instance identity (heap
 identity relies on the call not being floated/shared).
 
-*Proposal (needs care):* emit a plugin warning when a `HasCircuitContext`
-top-level binding lacks `OPAQUE` ("…will trace but won't be its own VCD scope;
-add `{-# OPAQUE f #-}`"). Auto-injecting the pragma is possible but risks a
-silent instance-identity bug if the injection is a no-op at that stage, so a
-warning is the safer first step.
+*Fix (shipped):* it is a warning, in the category
+`x-circuit-context-uninstrumented`, alongside the other near-misses whose
+symptom is a missing scope: `OPAQUE` without a type signature, a signature
+carrying both `HasProbe` and `HasCircuitContext`, and a class or instance
+method body (which the pass never reaches). The oracle half reports in two
+further categories — `x-circuit-context-undecided` when it could not decide,
+`x-circuit-context-untraced` when it proved there is no instance — because
+only the second is an answer, and a wire lost to the first is as likely to be
+a limit of the approximation as a fact about the design.
+
+On by default and tuned with GHC's own machinery
+(`-Wno-x-circuit-context-untraced`, `-Werror=x-circuit-context-undecided`),
+so "strict mode" needs no plugin option of its own. Auto-injecting `OPAQUE`
+was not done: it risks a silent instance-identity bug if the injection is a
+no-op at that stage.
+
+Two neighbouring silent failures went with it, both found from the Helios
+dogfooding rather than bittide's:
+
+* a `HasCircuitContext` behind the designer's own constraint synonym
+  (`type SwitchCtx dom = (HiddenClockResetEnable dom, HasCircuitContext)`) was
+  invisible to the renamer, which runs before synonyms are expanded — the
+  function kept tracing but silently lost its `$scope`. Both kinds of synonym
+  are now followed: a module-local one from the group being compiled, an
+  imported one from its interface. The real-world case was already in
+  `deps/`: `clash-protocols-memmap`'s `RegisterWbConstraints` bundles the
+  constraint with eight others for twelve-plus register combinators, and none
+  of them could have become a component before this
+  (see [`dep-instrumentation-assessment.md`](dep-instrumentation-assessment.md)).
+* enabling the plugin twice (package-wide *and* an `OPTIONS_GHC` pragma) ran
+  the renamer twice and nested every component wrap in itself
+  (`switch.switch`). The pass is now idempotent, which also means hand-written
+  `component "f"` in a binder the plugin would wrap is left alone instead of
+  doubled.
+
+Pinned by the `plugin-diagnostics` suite, which enables the plugin twice on
+purpose and greps its own build log for the diagnostics.
 
 ### F7 — Waveform lifecycle helpers are re-implemented per project
 `withWaveform`/`withWaveformC`, the one-file-per-name discipline, "keep the last
@@ -627,6 +659,101 @@ The audit's coverage gap 1 (`wbStorage` invisible; protocol wiring binds no
   exists only for genuinely unused holes — there is currently NO per-port
   opt-out for used ports (a future ccc knob if tap cost ever bites).
 
+### F12 — downstream audit of the warning categories (2026-09-02) ✅ FIXED
+
+A consumer moved its pin to the categories commit and triaged all 41 resulting
+warnings. 35 were accurate; the audit is the best evidence the split earns its
+keep, and it found two real upstream defects.
+
+* **The oracle reported satisfiable constraints as proved-absent.** Three
+  warnings named `KnownNat (BitSize <composite>)` in the *untraced* (proved)
+  category. That constraint is a type-family application; the oracle walks the
+  instance environment and never runs the typelits solver plugins the design
+  compiles with, so it could neither discharge nor rule it out — and filed the
+  decline as a fact. Reproduced here as a 3-tuple payload whose member has a
+  family-defined `BitSize` (Clash's tuple `BitPack` instances carry
+  `KnownNat (BitSize a)`), then FIXED at the root: the oracle reduces families
+  now, so the wire traces rather than being relabelled.
+* **Ground `Assert` constraints were undecidable.** `1 <= 4096` and `1 <= 16`
+  were reported *undecided* — "monomorphic is safe" was not a usable
+  heuristic. The same normalisation decides them.
+* **No way to declare that a function intentionally has no scope.** Three
+  harness boundaries carried `HasCircuitContext` without `OPAQUE` on purpose,
+  and the only remedy was suppressing the category — which also masks the
+  mistake it exists to catch. `{-# ANN f NoCircuitScope #-}` marks the
+  binder instead; the category stays promotable everywhere else.
+
+The remaining `undecided` reports were `1 <= n` on genuinely polymorphic `n`,
+which stays honest: no normalisation decides a skolem.
+
+**Their reproducers are now regression tests** — `tests/Test/Downstream.hs`,
+inverted from "reproduce the bug" to "assert the fix", and run by
+`plugin-diagnostics`. Three things worth recording from lifting them:
+
+* **F1 reproduced here exactly**, and F4 still warns without the new marker.
+  Both were verified against `src/` checked out at the audited pin, so the
+  before/after is measured rather than argued.
+* **F2 did NOT reproduce on this branch, at either pin.** Their `Index 16`
+  case depends on `Waveform (Index n)` requiring `1 <= n`, which is true of
+  Hackage `clash-shockwaves` (their pin) and false of the copy vendored here,
+  which already relaxes it to `KnownNat n`. So the lifted F2 guards their
+  SHAPE while `grounded` in `Test.PluginDiagnostics` guards the MECHANISM on a
+  payload carrying the `Assert` regardless of which shockwaves is in scope.
+  Neither alone would have caught it.
+* **Their F1 control was not controlling anything.** `direct = pure Plain{…}`
+  is a CLOSED binding, which the plugin skips to preserve GHC's
+  generalisation of polymorphic locals — so it was never wrapped, the oracle
+  was never asked, and the absence of a warning meant nothing. The lifted
+  version depends on the input, so it records and the control discriminates.
+
+And their methodological warning, which was worth more than any single case:
+**a module with a type error emits no `x-circuit-context` warning either**, so
+any assertion of the form "no warning appeared" passes on a module that never
+compiled. It cost them two retracted conclusions. `check.sh` had exactly that
+hole in two places — the `-Wno-` probe (an absence assertion) and the
+`-Werror=` probe (which asserted only a nonzero exit, and any type error is
+nonzero) — both now check that the compile succeeded, resp. that it failed
+naming the promoted category.
+
+Worth recording from the same audit: a blanket `-Werror` promotes custom
+warning categories, so the pin bump turned every warning into an error and
+broke their CI. That is GHC's behaviour rather than ours, and it is now called
+out in the README and in "Clash.CircuitContext.Plugin.Diagnostics".
+
+### F13 — the closed-binding silence, and double registration (2026-09-02) ✅ FIXED
+
+Both from the same consumer, after they bumped to the fixes above.
+
+**Closed bindings were silent in both channels.** A local binding with no free
+local variables is skipped before the oracle is consulted, so it yields neither
+a wire nor a warning — which is why their one genuine missing wire was found by
+diffing a VCD rather than by reading a build log. It also means "N warnings
+account for every missing wire" was never a safe reading.
+
+Their proposal, adopted: wrap a closed binding that carries **its own type
+signature**. The stated reason for the skip is that GHC generalises closed
+bindings and will not quantify the injected `CanTrace` application in an
+INFERRED type; an explicit signature pins the type, so the hazard is absent
+exactly where the author was explicit. Verified on the F9 hazard itself — a
+closed, *polymorphic*-signature binding used at two types compiles, is wrapped,
+and is declined by the oracle rather than monomorphising the binder. Unsigned
+closed bindings keep being skipped and are now documented as the remaining
+silent path.
+
+**Explicit calls started doubling wires.** Once the oracle began deciding
+payloads it used to decline, four hand-written `traceSignalC` calls in their
+design became redundant and each recorded its signal twice (`name_0`/`name_1`);
+they deleted them. They need not have: a binding whose right-hand side already
+applies `traceSignalC`/`probe` under the binder's own name no longer
+gets one injected on top. A different name still gets both — their `switch`
+keeps its `traceSignalC "out"`, which names a function's result rather than a
+where-binding.
+
+Their measured outcome across the whole series, for the record: 244 wires
+against 217 before, 243 of them ADT-described against 189, and one undescribed.
+The 27 new wires are the entire NoC packet path, most of which their triage had
+filed as "absent, and correctly so".
+
 ## Roadmap (priority order)
 
 1. **`withoutCircuitContext`** — ✅ shipped (F1).
@@ -642,8 +769,9 @@ The audit's coverage gap 1 (`wbStorage` invisible; protocol wiring binds no
    threading `HasCircuitContext` through its signature. Would make shared-core
    peripherals (things inside `processingElement`) traceable without repo-wide
    `withoutCircuitContext` churn. Biggest open lever.
-5. **Plugin warning for `HasCircuitContext` without `OPAQUE`** (F6) — cheap,
-   prevents a silent-flatten surprise.
+5. **Plugin warning for `HasCircuitContext` without `OPAQUE`** (F6) — ✅
+   shipped, as one of four custom warning categories, together with
+   constraint-synonym recognition and renamer idempotence.
 6. **Probe-mode: stop descending into multi-arg local helpers** (F5) — removes a
    correctness+perf footgun.
 7. **`Clash.CircuitContext.Hedgehog` test helpers** (F7) — package the waveform

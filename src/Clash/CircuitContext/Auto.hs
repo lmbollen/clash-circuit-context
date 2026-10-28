@@ -24,10 +24,12 @@ lives here; module path and export names are frozen interface.
 The 'CanTrace'\/'CanProbe' families have no equations — they are decided by
 the plugin's typechecker half, which answers /"is @'Traceable' t@ (resp.
 @'Probeable' t@) solvable right here?"/. All dictionary construction stays
-with ordinary instance resolution; a type whose payload isn't traceable
-(or a binding the context can't justify) silently falls back to identity
-instead of erroring — the property plain instance selection cannot provide
-(no backtracking on instance contexts).
+with ordinary instance resolution; a type whose payload isn't traceable (or a
+binding the context can't justify) falls back to identity instead of
+erroring — the property plain instance selection cannot provide (no
+backtracking on instance contexts). The fallback is not silent: the oracle
+reports it, and distinguishes a proof that no instance exists from its own
+inability to decide (see "Clash.CircuitContext.Plugin.Diagnostics").
 
 'Traceable' is also the user-facing extension point: give your protocol
 type an instance and plugin-instrumented bindings of that type get traced.

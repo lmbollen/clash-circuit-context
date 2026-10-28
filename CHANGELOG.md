@@ -22,6 +22,83 @@ Initial version.
   binder is traced via an injected sibling binding. Traceability is
   decided by a typechecker-plugin oracle (`CanTrace`/`CanProbe`), so
   untraceable types fall back to identity without errors.
+* Every decision that costs a wire or a scope is a **GHC warning**, in one
+  of four custom categories, so it is tuned with the flags a project
+  already uses — `-Wno-x-circuit-context-untraced` to silence,
+  `-Werror=x-circuit-context-undecided` to make it fatal. There is no
+  "strict mode" option because `-Werror=` is one.
+  `x-circuit-context` is the plugin failing to honour something
+  unambiguous; `x-circuit-context-uninstrumented` a signature asking for
+  instrumentation somewhere the pass does not reach or does not scope
+  (`HasCircuitContext` without `OPAQUE`, `OPAQUE` without a signature,
+  both constraints at once, a class or instance method body);
+  `x-circuit-context-undecided` the oracle admitting it could not decide;
+  `x-circuit-context-untraced` the oracle proving there is no instance.
+  The fallback to identity is unchanged — instrumented code still never
+  fails to compile because something cannot be traced.
+* The oracle **reduces type families** before deciding. `KnownNat (BitSize
+  SomeRecord)` is a family application, not something it could read off, and
+  it used to be reported as a proved absence — a guess filed as a fact, with
+  the wire lost. It now normalises bottom-up (arguments first, since a
+  one-step match will not fire on an unreduced argument) and answers. Ground
+  `Assert` constraints go the same way: `1 <= 8` reduces to the empty
+  constraint and traces, where before "monomorphic" was no guarantee of
+  "decidable". A requirement that still will not reduce is `GaveUp`, never
+  `NoInstance` — `KnownNat` is exactly what the typelits solver plugins
+  discharge, and they run in the real compile while this walk does not.
+  Blame is reported as the designer WROTE it (`1 <= n`), not as the normal
+  form the oracle reduced it to.
+* A closed local binding that carries **its own type signature** is now
+  traced. Closed bindings are skipped because GHC generalises them and will
+  not quantify the injected `CanTrace` application in an *inferred* type — a
+  signature already pins the type, so the hazard is absent exactly where the
+  author was explicit. Unsigned closed bindings are still skipped, and are
+  the one remaining path that is silent in both channels: no wire and no
+  warning, because the oracle is never asked.
+* A binding whose right-hand side already applies `traceSignalC` or `probe`
+  under the binder's own name does not get an injected recorder on top. It used to record the signal twice, rendered `name_0`/`name_1`. A
+  different name still gets both, since that is two signals the author asked
+  for.
+* Regression tests lifted from a downstream consumer's reproducers
+  (`tests/Test/Downstream.hs`), inverted to assert the fixes rather than the
+  defects. Their F1 case reproduced here exactly against the audited pin;
+  their F2 case does not reproduce on this branch at all, because the
+  `clash-shockwaves` vendored here already relaxes `Waveform (Index n)` — so
+  the shape and the mechanism are now tested separately.
+* `{-# ANN f NoCircuitScope #-}` declares that a binder carries
+  `HasCircuitContext` and deliberately has no `OPAQUE` — a harness boundary
+  that wants the design tree rooted at the waveform top. It silences
+  `-Wx-circuit-context-uninstrumented` for that binder alone, so the
+  category stays live, and promotable to `-Werror`, for every binder nobody
+  vouched for. Recognised by the constructor's resolved `Name`, so a typo is
+  a compile error rather than a marker that quietly does not apply.
+* The oracle distinguishes a PROOF from a give-up. Six code paths used to
+  answer "no": only one (no matching instance) is an answer; the rest —
+  fuel exhausted, a predicate that is not a class (the `Assert` behind
+  `1 <= n`), an ambiguous instance match, a literal-only class at a
+  non-literal — are the approximation reaching its limit, and a wire lost
+  to one of those is as likely to be a plugin bug as a fact about the
+  design. They now say which they are, and can be promoted separately.
+  Custom warning categories need GHC 9.8; on 9.6 these are plain warnings,
+  promoted by a blanket `-Werror` but not individually controllable.
+* The renamer half sees through **constraint synonyms**: a signature
+  written against `type Ctx dom = (HiddenClockResetEnable dom,
+  HasCircuitContext)` now makes its `OPAQUE` function a component, whether
+  the synonym is declared in the module or imported. It used to keep
+  tracing but silently lose its `$scope`, because the renamer runs before
+  synonyms are expanded.
+* The renamer half is **idempotent**. Enabling the plugin twice
+  (package-wide plus an `OPTIONS_GHC` pragma) used to nest every component
+  wrap in itself (`switch.switch`); it is now a no-op, and a hand-written
+  `component "f"` on a binder the plugin would wrap is left alone rather
+  than doubled.
+* Documentation: the README's limitation "constraint synonyms bundling
+  `HasCircuitContext` are not recognized" is gone, because they are; what
+  replaces it is the pair that genuinely remain — a constraint-kinded type
+  family (nothing at renamer stage can reduce one), and instance-method and
+  class-default bodies (the pass rewrites value bindings only, and now says
+  so). GHC rejects an implicit parameter in a superclass context, so a
+  synonym was the only way to alias the constraint.
 * `Traceable` derives generically for records of traceable parts (signal
   bundles): derive `Generic` and write an empty instance. Fields trace as
   `name.field` sub-scopes in the VCD hierarchy; nested records nest. The

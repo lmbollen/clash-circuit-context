@@ -8,6 +8,12 @@ description:
   GHC plugin that instruments designs automatically: OPAQUE toplevel
   functions with a HasCircuitContext constraint become components, and named
   local declarations are traced/probed under their binder names.
+  .
+  Instrumentation never fails a build: a binding the plugin cannot trace
+  falls back to identity. It reports every such fallback as a GHC warning in
+  its own category, so a project silences what it has read
+  (-Wno-x-circuit-context-untraced) and promotes what it depends on
+  (-Werror=x-circuit-context-undecided).
 
 homepage: https://github.com/lmbollen/clash-circuit-context
 bug-reports: https://github.com/lmbollen/clash-circuit-context/issues
@@ -43,6 +49,7 @@ library
     Clash.CircuitContext.Auto
     Clash.CircuitContext.Core
     Clash.CircuitContext.Plugin
+    Clash.CircuitContext.Plugin.Diagnostics
     Clash.CircuitContext.Plugin.Names
     Clash.CircuitContext.Plugin.Oracle
     Clash.CircuitContext.Plugin.Rename
@@ -158,5 +165,27 @@ test-suite auto-instrumentation
     clash-prelude,
     containers,
     text,
+
+  ghc-options: -fplugin=Clash.CircuitContext.Plugin
+
+-- What the plugin used to lose silently (a constraint synonym hiding
+-- HasCircuitContext, a component wrap nested in itself when the plugin is
+-- enabled twice) and what it now reports. The reports are ordinary GHC
+-- warnings in custom categories, so they reach the build log with no flags
+-- at all for check.sh to grep.
+test-suite plugin-diagnostics
+  import: common-options
+  type: exitcode-stdio-1.0
+  main-is: Test/PluginDiagnostics.hs
+  other-modules:
+    Test.DesignCtx
+    Test.Downstream
+
+  hs-source-dirs: tests
+  build-depends:
+    base,
+    clash-circuit-context,
+    clash-prelude,
+    containers,
 
   ghc-options: -fplugin=Clash.CircuitContext.Plugin

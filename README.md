@@ -118,7 +118,8 @@ top
 ## What the plugin does
 
 Enable it per module (`{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}`)
-or project-wide (`ghc-options: -fplugin=Clash.CircuitContext.Plugin`).
+or project-wide (`ghc-options: -fplugin=Clash.CircuitContext.Plugin`). Doing
+both is harmless: the renamer pass then runs twice, and it is idempotent.
 
 1. **Component wrap** — a toplevel function with an `OPAQUE` pragma *and* a
    written `HasCircuitContext` constraint has its body wrapped in
@@ -126,17 +127,25 @@ or project-wide (`ghc-options: -fplugin=Clash.CircuitContext.Plugin`).
    `let` under the wrap (required: `where`-bindings would otherwise be
    elaborated against the *caller's* context and escape the new scope).
 2. **Auto-trace** — inside any function whose signature carries
-   `HasCircuitContext` (the synonym or a raw `?circuitContext`), every
-   named traceable binding becomes `autoTrace "<binder>" …`. This covers
+   `HasCircuitContext` — the synonym, a raw `?circuitContext`, or your own
+   constraint synonym that expands to either (`type Ctx dom =
+   (HiddenClockResetEnable dom, HasCircuitContext)` works, declared in the
+   module or imported) — every named traceable binding becomes
+   `autoTrace "<binder>" …`. This covers
    zero-argument `let`/`where` bindings *and* the binders of local
    **pattern** bindings — `(a, b) = unbundle …`, `Out{x, y} = f …` — the
    usual Clash idiom for multi-output circuits: each pattern binder `x` is
    traced via an injected `x = autoTrace "x" x'` sibling, so the rest of
-   the code is untouched. Untraceable types (no `BitPack`, unknown domain,
-   missing evidence for a polymorphic type) fall back to identity —
-   silently, by design, decided by a typechecker-plugin oracle
-   (`CanTrace`), so instrumented code never fails to compile because
-   something cannot be traced.
+   the code is untouched. A *closed* binding — one with no free local
+   variables — is traced only if it carries its own type signature; without
+   one it is skipped, because GHC generalises it and the injected constraint
+   cannot be quantified in an inferred type. Untraceable types (no `BitPack`,
+   unknown domain, missing evidence for a polymorphic type) fall back to
+   identity — by
+   design, decided by a typechecker-plugin oracle (`CanTrace`), so
+   instrumented code never fails to compile because something cannot be
+   traced. Every such fallback is reported as a warning; see
+   [When something isn't traced](#when-something-isnt-traced).
 3. **Auto-probe** — same rule for `HasProbe` signatures: bindings become
    `autoProbe "<binder>" …`, recording one value per simulated cycle from
    inside e.g. a mealy step function.
@@ -155,7 +164,9 @@ or project-wide (`ghc-options: -fplugin=Clash.CircuitContext.Plugin`).
 * A `HasCircuitContext` function *without* an `OPAQUE` pragma is not a
   component: its auto-traced bindings register under the **caller's**
   scope, because the implicit-parameter dictionary flows from the call
-  site. This is often exactly what you want for small helpers.
+  site. This is often exactly what you want for small helpers — which is
+  why it is a warning you can turn off
+  (`-Wno-x-circuit-context-uninstrumented`) rather than an error.
 * Traceable today: `Signal dom a` with `(KnownDomain dom, BitPack a,
   NFDataX a)`, and `Vec n` thereof (traced element-wise as `name_0`,
   `name_1`, …). No `Typeable` is required — that field of a trace only
@@ -191,6 +202,73 @@ or project-wide (`ghc-options: -fplugin=Clash.CircuitContext.Plugin`).
   `name_0`, `name_1`, …. Instances born at the *same* call site (e.g.
   `fmap acc`-style replication) cannot be design-ordered — name those by
   structural position with `imapComponents`.
+
+### When something isn't traced
+
+The fallback to identity is what makes project-wide enablement safe, and it
+is also what makes a missing wire look exactly like a wire nobody asked for.
+So the fallback stays and the silence does not: every decision that costs a
+wire or a scope is a **real GHC warning**, in a custom category you tune with
+the flags you already use.
+
+```
+tests/Test/PluginDiagnostics.hs:114:3: warning: [-Wx-circuit-context-undecided]
+    not traced: Signal dom (Awkward n)
+    the oracle could not decide: 1 <= n
+    This may be a limit of the approximation rather than a fact about the type.
+    Name the binding with traceSignalC, which takes Traceable as a real
+    constraint, to find out which.
+    |
+114 |   held = inp
+    |   ^^^^^^^^^^
+```
+
+Four categories, because they differ in how likely each is to be a defect:
+
+| Flag | Fires when |
+| --- | --- |
+| `-Wx-circuit-context` | The plugin could not honour something the source unambiguously asked for. Nothing benign lands here. |
+| `-Wx-circuit-context-uninstrumented` | A signature asks for instrumentation somewhere the pass does not reach or does not scope: `HasCircuitContext` without `OPAQUE`, `OPAQUE` without a signature, both constraints at once, a class or instance method body. |
+| `-Wx-circuit-context-undecided` | The oracle could not decide, and fell back to not tracing. **The one that matters**: this is the approximation admitting it may be wrong, not a fact about your types. |
+| `-Wx-circuit-context-untraced` | The oracle found no instance. A real answer, and the verbose one — it fires for every `Int` and `Bool` that was never going to trace. |
+
+Which means "strict mode" is not a plugin option, it is `-Werror`:
+
+```
+-Wno-x-circuit-context-untraced     -- I know, stop telling me
+-Werror=x-circuit-context-undecided -- a guess must not cost me a wire
+-Werror=x-circuit-context-untraced  -- a curated design: any lost wire fails CI
+```
+
+A blanket `-Werror` promotes these like any other warning — GHC's behaviour,
+not this plugin's, but worth knowing before a pin bump: a project already
+building with `-Werror` sees previously silent fallbacks become build
+failures on the first build after enabling them.
+
+For the one shape that is *deliberate* rather than a near-miss — a test
+harness or simulation driver that carries `HasCircuitContext` with no
+`OPAQUE`, so the design tree roots at the waveform top instead of under a
+driver's scope — say so on the binder instead of silencing the category:
+
+```haskell
+{-# ANN runSystem NoCircuitScope #-}
+runSystem :: HasCircuitContext => …   -- deliberately no OPAQUE
+```
+
+That keeps `-Wx-circuit-context-uninstrumented` live, and promotable to
+`-Werror`, for every binder you did *not* vouch for. A mistyped constructor
+is a compile error, which is the point: a marker that silently failed to
+register would reintroduce the silence these warnings exist to remove.
+
+Nothing here ever fails a build on its own, so promoting is a decision you
+make per project. The fallback itself is unchanged either way: instrumented
+code never fails to compile because something cannot be traced, and
+`traceSignalC` remains the way to demand tracing at compile time, since it
+takes `Traceable` as a real constraint.
+
+Custom warning categories are a GHC 9.8 feature. On 9.6 these are still real
+warnings — a blanket `-Werror` promotes them — but they cannot be silenced or
+promoted individually.
 
 ### Opting out
 
@@ -375,10 +453,17 @@ actually collects a waveform.
   `Clash.Signal.Trace` internals used are identical across these versions.
   The `cabal.project` here pins the 1.11 upstream commit this package is
   developed against (1.11 is not yet on Hackage).
-* Constraint synonyms bundling `HasCircuitContext` with other constraints
-  are not recognized at renamer stage; write the constraint (or the raw
-  implicit parameter) literally in the signature.
-* Instance-method and class-default bodies are not instrumented.
+* An **unsigned closed** local binding is skipped before the oracle is
+  consulted, so it produces neither a wire nor a warning — the one path that
+  is silent in both channels. Give it a type signature to have it traced.
+* Instance-method and class-default bodies are not instrumented: the
+  renamer pass rewrites value bindings only. A signature there carrying the
+  constraint is reported (`-Wx-circuit-context-uninstrumented`) rather than
+  quietly ignored.
+* A constraint synonym is followed, but a constraint-kinded *type family*
+  is not — nothing at renamer stage can reduce one. Superclasses need no
+  handling: GHC rejects an implicit parameter in a superclass context, so a
+  synonym is the only way to alias `HasCircuitContext`.
 * Constraint plumbing is at the type level: `HasCircuitContext` propagates
   to a function's callers. Supply the context once, at a boundary — a test
   does it with `withCircuitContext`; a synthesis entry point (or any caller
@@ -386,9 +471,15 @@ actually collects a waveform.
   `withoutCircuitContext` (see [Opting out](#opting-out)). This is a
   compile-time concern only; it does not affect the generated hardware
   (see below).
-* The traceability oracle is a conservative approximation: an exotic
-  instance context it cannot decide falls back to *not tracing* (never a
-  compile error). Golden-test your trace key sets if you depend on them.
+* The traceability oracle is a conservative approximation. It reduces type
+  families before deciding — so `KnownNat (BitSize SomeRecord)` and a ground
+  `1 <= 8` are answered rather than declined — but an instance context it
+  still cannot decide falls back to *not tracing* (never a compile error).
+  It says so — `-Wx-circuit-context-undecided`, kept apart
+  from the proved `-Wx-circuit-context-untraced` precisely because a wire
+  lost to the approximation is as likely to be a limitation here as a fact
+  about your types. Promote it with `-Werror=` on a design whose waveform
+  you depend on, or golden-test your trace key sets.
 
 ## Building and testing
 
@@ -397,17 +488,25 @@ actually collects a waveform.
 ./check.sh -w ghc-9.10.3         # or any other GHC ≥ 9.6
 ```
 
-`check.sh` builds everything and runs four suites — `manual-instrumentation`
+`check.sh` builds everything and runs five suites — `manual-instrumentation`
 (hand-instrumented reference), `oracle-fallback` (oracle decisions per type),
 `auto-instrumentation` (the same design written naturally, instrumented
-entirely by the plugin) and `waveform-tests` (the test suite in two levels:
+entirely by the plugin), `plugin-diagnostics` (constraint synonyms,
+idempotence under a deliberate double enable, one live example of every
+warning category, and [`tests/Test/Downstream.hs`](tests/Test/Downstream.hs)
+— the shapes a real consumer lost wires on, lifted from the reproducers they
+sent and inverted to assert the fix) and `waveform-tests` (the test suite in two levels:
 [`tests/Example/`](tests/Example/) is usage, kept honest by running, and
 [`tests/Test/`](tests/Test/) pins features — recorder properties, the capture
 contract, and the tasty-sequenced tests that decode the waveforms the Example
 level wrote) — then diffs the generated VCDs against the goldens in
-`goldens/` and asserts the fall-through warning fires. VCD output is fully
-deterministic by design, so the goldens are byte-identical across GHC 9.6,
-9.10 and 9.12.
+`goldens/`, asserts every warning category fired during the build, and
+compiles a one-binding module three ways to check that a decline warns by
+default, disappears under `-Wno-`, and is fatal under `-Werror=`. That last
+one is a claim about the compiler's behaviour rather than this package's,
+which is why it is checked rather than described.
+VCD output is fully deterministic by design, so the goldens are
+byte-identical across GHC 9.6, 9.10 and 9.12.
 ## Proof of concept: tracing a real design
 
 `main` is the plugin alone, and builds from a plain clone. Two branches carry
