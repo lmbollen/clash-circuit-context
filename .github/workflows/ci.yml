@@ -20,7 +20,11 @@ jobs:
         # 9.14.1, 9.12.4, 9.10.3 and 9.6.7 on every PR and 9.8.4 nightly). A
         # Clash user can be on any of these, so this package is tested on all
         # of them rather than on a hand-picked subset.
-        ghc: ["9.14.1", "9.12.4", "9.10.3", "9.8.4", "9.6.7"]
+        #
+        # Except 9.14.1, for now: the pinned clash-prelude stops at 9.12, and
+        # 9.14 also needs hedgehog 1.7 and a ghc-tcplugin-api past 0.19. Add it
+        # back once those move.
+        ghc: ["9.12.4", "9.10.3", "9.8.4", "9.6.7"]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
