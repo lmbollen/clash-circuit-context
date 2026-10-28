@@ -107,7 +107,7 @@ module Clash.CircuitContext.Core (
 
 import Data.Data (Data)
 
-import Clash.Annotations.Primitive (HDL (..), Primitive (InlineYamlPrimitive), hasBlackBox)
+import Clash.Annotations.Primitive (Primitive (InlineYamlPrimitive), hasBlackBox)
 import Clash.Explicit.Mealy (mealy)
 import Clash.Explicit.Moore (moore)
 import Clash.Explicit.Signal (delay, register)
