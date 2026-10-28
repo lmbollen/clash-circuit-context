@@ -42,12 +42,18 @@ jobs:
           ghc --version
           cabal --version
 
+      # Restore and save are separate steps so the dependency build is saved
+      # as soon as it exists. A single actions/cache step saves only when the
+      # whole job passes, so a red check.sh threw away a dependency build of
+      # up to 20 minutes.
+      #
       # The cabal version is in the key because `latest` moves: a store written
       # by one cabal is not one the next can read ("cannot read state cache"),
       # and an exact key hit is never saved over, so without it a stale entry
       # made every run rebuild every dependency until cabal.project changed.
-      - name: Cache cabal store
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+      - name: Restore cabal store
+        id: cache
+        uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: |
             ${{ steps.setup.outputs.cabal-store }}
@@ -62,6 +68,15 @@ jobs:
       # 120+ -Wderiving-typeable from haskell-src-exts on GHC 9.12).
       - name: Build dependencies
         run: cabal build all --only-dependencies -j
+
+      - name: Save cabal store
+        if: steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
+        with:
+          path: |
+            ${{ steps.setup.outputs.cabal-store }}
+            dist-newstyle
+          key: ${{ steps.cache.outputs.cache-primary-key }}
 
       - name: Build and run checks
         run: ./check.sh
