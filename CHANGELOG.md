@@ -129,6 +129,11 @@ Initial version.
   Surfer plugin decodes our output unmodified. The waveform
   lifecycle in `Clash.CircuitContext.Waveform` writes the pair through
   temp + rename, sidecar first: if the `.vcd` exists, its `.json` is complete.
+  `dumpVCDSW` renders each signal's description on its own, so one that
+  fails (`clash-shockwaves` calls `error` for a `Waveform` instance whose
+  width differs from `BitSize`) is left out of the sidecar and reported on
+  stderr; the VCD, every other description, and under
+  `withWaveformOnFailure` the test's own failure all survive it.
 * Describing is decided separately from recording (`CanDescribe`/
   `Describable` beside `CanTrace`/`CanProbe`), so a payload `Waveform`
   cannot describe is still traced or probed, as raw bits, exactly as before.

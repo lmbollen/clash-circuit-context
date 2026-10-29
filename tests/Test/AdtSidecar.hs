@@ -39,14 +39,22 @@ It also pins the two things a descriptor must NOT depend on:
   descriptors on names the VCD never wrote), and including the @logic@ scope
   a dot-free name is declared under. Both are checked against the @$var@
   declarations of the dumped VCD, not against a substring.
+
+And one thing a descriptor must never cost: the VCD. A broken 'Waveform'
+instance (@Skewed@) loses its own description and nothing else — the files
+are still written, and the test failure the capture was for still
+propagates.
 -}
 module Main where
 
 import qualified Prelude as P
 
-import Control.Exception (evaluate)
+import Control.Exception (Exception, SomeException, evaluate, fromException, throwIO, try)
+import Control.Monad (when)
 import Data.List (intercalate, isInfixOf, isSuffixOf)
+import System.Directory (doesFileExist, removeFile)
 import System.Exit (exitFailure)
+import System.FilePath ((-<.>))
 
 import qualified Data.Aeson as Json
 import qualified Data.ByteString.Lazy.Char8 as ByteStringLazyChar8
@@ -57,8 +65,13 @@ import Clash.Explicit.Prelude
 
 import Clash.CircuitContext
 import Clash.CircuitContext.Shockwaves (dumpVCDSW)
+import Clash.CircuitContext.Waveform (
+  newWaveformSlot,
+  waveformSlotPath,
+  withWaveformOnFailure,
+ )
 import Clash.Shockwaves.LUT (WaveformForLut (..), WaveformLUT)
-import Clash.Shockwaves.Waveform (Waveform)
+import Clash.Shockwaves.Waveform (Waveform (translator))
 
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KeyMap
@@ -97,6 +110,24 @@ newtype Ticks = Ticks (Unsigned 4)
 
 unTicks :: Ticks -> Unsigned 8
 unTicks (Ticks t) = resize t
+
+{- | A hand-written 'Waveform' instance that is WRONG: it borrows
+@Unsigned 8@'s translator, eight bits wide, for a four-bit type.
+@clash-shockwaves@ rejects that by calling 'error' when the descriptor is
+rendered, which is the failure the sidecar must contain rather than pass on.
+-}
+newtype Skewed = Skewed (Unsigned 4)
+  deriving (Generic, Show)
+  deriving anyclass (BitPack, NFDataX)
+
+instance Waveform Skewed where
+  translator = translator @(Unsigned 8)
+
+-- | The test failure a capture exists to show; it has to survive the capture.
+data Deliberate = Deliberate
+  deriving (Show)
+
+instance Exception Deliberate
 
 {- | A component: @OPAQUE@ + 'HasCircuitContext', so the plugin wraps it in its
 own VCD scope and auto-traces @packet@, @phase@ and @raw@ underneath.
@@ -291,4 +322,43 @@ main = do
       check
         "a value first occurring at the drained last cycle has its LUT entry"
         ("Opcode 3" `isInfixOf` lutsJson)
+
+  -- A broken descriptor, captured the way a failing test is: through
+  -- 'withWaveformOnFailure', whose rendering used to throw shockwaves' error
+  -- in place of the failure and before either file was written.
+  slot <- newWaveformSlot "adt-sidecar-broken"
+  let vcdFile = waveformSlotPath slot
+      jsonFile = vcdFile -<.> "json"
+  P.mapM_ (\f -> doesFileExist f >>= (`when` removeFile f)) [vcdFile, jsonFile]
+  outcome <-
+    try
+      $ withWaveformOnFailure
+        slot
+        maxBound
+        ( sampleN
+            4
+            ( bundle
+                ( traceSignalSW "skewed" (fromList (P.map Skewed (P.cycle [1, 2, 3])))
+                , traceSignalSW "phase" (fromList (P.cycle [Idle, Busy, Done]))
+                ) ::
+                Signal System (Skewed, Phase)
+            )
+        )
+        (\xs -> evaluate (xs `deepseqX` ()) >> throwIO Deliberate)
+  check
+    "the test's own failure propagates past a broken descriptor"
+    ( case outcome of
+        Left err -> P.maybe False (\Deliberate -> True) (fromException err)
+        Right () -> False
+    )
+  wroteVcd <- doesFileExist vcdFile
+  check "the VCD is written all the same" wroteVcd
+  vcd3 <- P.readFile vcdFile
+  check
+    "...and records the broken signal, as bits"
+    ("logic.skewed" `P.elem` declaredPaths vcd3)
+  meta3 <- Json.decodeFileStrict jsonFile :: IO (P.Maybe Json.Value)
+  check
+    "the sidecar leaves out the broken descriptor and keeps the rest"
+    (P.fmap signalPaths meta3 P.== P.Just ["logic.phase"])
   putStrLn "adt-sidecar passed"

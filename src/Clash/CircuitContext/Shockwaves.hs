@@ -51,9 +51,22 @@ module Clash.CircuitContext.Shockwaves (
 
 import Clash.Signal.Trace (Value)
 
+import Control.Exception (
+  SomeAsyncException,
+  SomeException,
+  displayException,
+  evaluate,
+  fromException,
+  throwIO,
+  try,
+ )
 import Data.List (foldl')
 import qualified Data.Map.Strict as Map
+import Data.Maybe (catMaybes)
 import Data.Text (Text)
+import System.IO (hPutStrLn, stderr)
+
+import qualified Data.ByteString.Lazy as ByteStringLazy
 
 import Data.Aeson ((.=))
 import qualified Data.Aeson as Json
@@ -74,10 +87,22 @@ import Clash.Shockwaves.Internal.Translator (
   addValueT,
   hasGeneratedLutT,
  )
-import Clash.Shockwaves.Internal.Types (LUTMap, SignalMap, TypeMap)
+import Clash.Shockwaves.Internal.Types (LUTMap, SignalMap, Translator, TypeMap)
 
 {- | 'dumpVCDC' plus the typed-waveform sidecar: a hierarchical VCD, and the
 ADT description of the signals in it ready for @Clash.Shockwaves.writeFileJSON@.
+
+The sidecar cannot take the VCD down with it. A descriptor is rendered by the
+payload type's 'Clash.Shockwaves.Waveform' instance, and @clash-shockwaves@
+reports a broken one by calling 'error' — a hand-written instance whose
+translator width differs from the type's 'BitSize', most plainly. Each
+signal's share of the sidecar is therefore forced here, on its own, and one
+that throws is left out and reported on stderr, naming the signal: the VCD
+still records its bits, every other signal keeps its description, and the
+result is safe to force. Without this, the error would surface wherever the
+sidecar is first forced — in "Clash.CircuitContext.Waveform", before either
+file is written, and in place of the test failure the capture was meant to
+show.
 -}
 dumpVCDSW ::
   (Int, Int) ->
@@ -86,7 +111,32 @@ dumpVCDSW ::
   IO (Either String (Text, Json.Value))
 dumpVCDSW slice@(offset, nSamples) traces probes = do
   vcd <- dumpVCDC slice traces probes
-  pure (fmap (\t -> (t, adtSidecar (offset + nSamples) traces probes)) vcd)
+  case vcd of
+    Left err -> pure (Left err)
+    Right txt -> do
+      parts <- mapM renderable (sidecarParts (offset + nSamples) traces probes)
+      pure (Right (txt, assemble (catMaybes parts)))
+ where
+  -- Encoding a part forces everything the final encoding of the sidecar will
+  -- read from it, and since the kept part IS the forced one (shared, not
+  -- rebuilt), the sidecar assembled from it cannot throw later.
+  renderable (path, part) = do
+    rendered <- try (evaluate (ByteStringLazy.length (Json.encode (partJson part))))
+    case rendered of
+      Right _ -> pure (Just part)
+      -- Cancellation is not a broken descriptor; let it through.
+      Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
+      Left (err :: SomeException) -> do
+        hPutStrLn
+          stderr
+          ( "clash-circuit-context: "
+              <> path
+              <> ": left out of the typed-waveform sidecar, because its"
+              <> " clash-shockwaves description failed to render (the VCD"
+              <> " still has its bits): "
+              <> takeWhile (/= '\n') (displayException err)
+          )
+        pure Nothing
 
 {- | The sidecar alone, in @clash-shockwaves@' schema:
 @{ signals, types, luts }@ — the same three keys its own @dumpVCD@ emits, so
@@ -103,6 +153,9 @@ one 'Clash.Shockwaves.Waveform' cannot describe at all, which
 'Clash.CircuitContext.Core.traceSignalC' and 'Clash.CircuitContext.Core.probe'
 record anyway (see 'Clash.CircuitContext.Core.traceSignalSW' and
 'Clash.CircuitContext.Core.probeSW').
+
+Unlike 'dumpVCDSW', this does not guard against a broken
+'Clash.Shockwaves.Waveform' instance: forcing the result throws its 'error'.
 -}
 adtSidecar ::
   {- | One past the last cycle the paired VCD emits (for a
@@ -114,8 +167,40 @@ adtSidecar ::
   TraceData ->
   ProbeMap ->
   Json.Value
-adtSidecar end traces probes =
-  Json.object ["signals" .= signals, "types" .= types, "luts" .= luts]
+adtSidecar end traces probes = assemble (map snd (sidecarParts end traces probes))
+
+{- | One described signal's share of the sidecar: its @signals@ entry, the
+types its translator references, and the LUT entries for the values it took.
+Kept apart per signal so that 'dumpVCDSW' can drop the share of a broken
+descriptor without losing the rest.
+-}
+data Part = Part SignalMap TypeMap LUTMap
+
+-- | The sidecar the parts make up together.
+assemble :: [Part] -> Json.Value
+assemble parts =
+  Json.object
+    [ "signals" .= Map.unions [s | Part s _ _ <- parts]
+    , "types" .= Map.unions [t | Part _ t _ <- parts]
+    , -- Left-biased at both levels, as 'addValueT' itself is within a
+      -- signal: the first translation of a pattern stands.
+      "luts" .= Map.unionsWith Map.union [l | Part _ _ l <- parts]
+    ]
+
+-- | One part on its own, in the sidecar's schema; encoding it forces it.
+partJson :: Part -> Json.Value
+partJson part = assemble [part]
+
+{- | The parts of every described signal, each with its full VCD scope path
+('vcdPath'): a viewer looks a var up by that path, which for a dot-free key
+includes the @logic@ scope 'dumpVCDC' declares it under.
+-}
+sidecarParts :: Int -> TraceData -> ProbeMap -> [(String, Part)]
+sidecarParts end traces probes =
+  [ (vcd, describe vcd adt width values)
+  | (path, (Just adt, width, values)) <- Map.toList recorded
+  , let vcd = vcdPath path
+  ]
  where
   -- The same key set and the same transform 'dumpVCDC' applies (left-biased
   -- union, traces first), so these ARE the VCD's names.
@@ -126,19 +211,11 @@ adtSidecar end traces probes =
   ofProbe entry =
     (peAdt entry, peWidth entry, [value | (_, _, value) <- peRuns entry])
 
-  described =
-    [ (path, adt, width, values)
-    | (path, (Just adt, width, values)) <- Map.toList recorded
-    ]
-
-  -- A viewer looks a var up by its full scope path, which for a dot-free key
-  -- includes the @logic@ scope 'dumpVCDC' declares it under.
-  signals :: SignalMap
-  signals =
-    Map.fromList [(vcdPath path, tyName) | (path, (tyName, _), _, _) <- described]
-
-  types :: TypeMap
-  types = foldl' (\acc (_, (_, tr), _, _) -> addTypesT tr acc) Map.empty described
+  describe vcd (tyName, tr) width values =
+    Part
+      (Map.singleton vcd tyName)
+      (addTypesT tr Map.empty)
+      (lut tr width values)
 
   {- LUT entries are value-driven: a translator using the lookup-table approach
   needs one per bit pattern the VCD shows. That is the committed runs PLUS the
@@ -150,17 +227,14 @@ adtSidecar end traces probes =
   fires on. Translators that are not LUT-shaped contribute nothing
   ('addValueT' returns no updates for them), so they are skipped before their
   history is walked at all. -}
-  luts :: LUTMap
-  luts =
-    foldl'
-      (\acc f -> f acc)
-      Map.empty
-      [ update
-      | (_, (_, tr), width, values) <- described
-      , hasGeneratedLutT tr
-      , value <- values
-      , update <- addValueT tr (toBitList width value)
-      ]
+  lut :: Translator -> Int -> [Value] -> LUTMap
+  lut tr width values
+    | hasGeneratedLutT tr =
+        foldl'
+          (\acc f -> f acc)
+          Map.empty
+          [update | value <- values, update <- addValueT tr (toBitList width value)]
+    | otherwise = Map.empty
 
   -- The values the paired VCD emits for one trace: committed runs, then the
   -- drained tail of @[0, end)@. Draining forces exactly the packed cells
