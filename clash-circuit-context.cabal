@@ -216,6 +216,8 @@ test-suite adt-sidecar
     clash-circuit-context,
     clash-prelude,
     clash-shockwaves,
+    directory,
+    filepath,
     ghc-typelits-knownnat,
     ghc-typelits-natnormalise,
     text,

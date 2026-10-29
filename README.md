@@ -459,7 +459,11 @@ Three things worth knowing:
   both through temp + rename with the sidecar landing first, so if the `.vcd`
   is there its `.json` is there and complete. Without the sidecar the VCD is
   still a complete untyped waveform, and `dumpVCDC` remains the VCD-only
-  dump. The sidecar is small: about 0.04 % of the VCD on real designs.
+  dump. A description cannot cost you the VCD either: one that fails to
+  render (a hand-written `Waveform` instance whose width disagrees with
+  `BitSize`, say) is left out of the sidecar and named on stderr, and the
+  signal stays in the VCD as bits. The sidecar is small: about 0.04 % of the
+  VCD on real designs.
 
 ## Manual API
 
