@@ -557,7 +557,7 @@ rewriteInside ctx mode0 = goM mode0
       -- A higher-rank binder is not wrapped at all, so it no longer counts
       -- as signed; 'wrappable' below keeps it out of the open case too.
       localSigned' = filter (`notElem` map fst rankN) localSigned
-    mapM_ (uncurry reportRankN) rankN
+    mapM_ (\(n, spn) -> reportRankN (fromMaybe m (lookup n localModes)) n spn) rankN
     groups' <- mapM (onGroup m localModes localSigned' (map fst rankN)) groups
     pure (XValBindsLR (NValBinds groups' sigs))
   onVB _ vb = pure vb
@@ -566,14 +566,14 @@ rewriteInside ctx mode0 = goM mode0
   wrappable nm localSigned rankN fvs =
     nm `notElem` rankN && signedOrOpen nm localSigned fvs
 
-  reportRankN nm spn =
+  reportRankN bm nm spn =
     Diag.report
       spn
       Diag.Untraced
       [ "'"
           <> GHC.getOccString nm
-          <> "' is not traced: its signature is"
-          <> " higher-rank."
+          <> (if bm == ProbeMode then "' is not probed" else "' is not traced")
+          <> ": its signature is higher-rank."
       , "A forall or constraint nested inside the type cannot be passed"
           <> " through a recorder, which would have to be instantiated at it."
       ]
@@ -854,8 +854,10 @@ constraints are fine — the right-hand side is checked against the skolemised
 type, so the wrapper only ever sees its body. GHC never infers a higher-rank
 type, so a signature is the only way to get one.
 
-Arrows hidden behind a type synonym are not peeled; a signature written that
-way is judged as if its patterns consumed nothing.
+This reads the signature as written, so a type synonym hides what it stands
+for: neither its arrows are peeled nor a polytype inside it seen. A synonym
+like @type WithRst dom r = (HiddenReset dom => r) -> r@ in the signature
+still gets the binding wrapped, and still fails to compile.
 -}
 higherRankAfter :: Int -> LHsSigWcType GhcRn -> Bool
 higherRankAfter n0 (HsWC _ (L _ (HsSig _ _ body))) =
