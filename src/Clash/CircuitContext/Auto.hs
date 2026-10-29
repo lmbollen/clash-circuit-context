@@ -64,8 +64,12 @@ module Clash.CircuitContext.Auto (
   CanDescribe,
   Describable (..),
   AutoDescribe (..),
+
+  -- * Never recorded
+  NonTranslatable,
 ) where
 
+import Clash.Magic (SimOnly)
 import Clash.Prelude (
   BitPack (..),
   DSignal,
@@ -87,8 +91,10 @@ import Clash.Prelude (
 import Data.Coerce (coerce)
 import Data.Int (Int64)
 import Data.Kind (Type)
-import Data.Word (Word64)
+import Data.List.NonEmpty (NonEmpty)
+import Data.Type.Bool (type (||))
 import Data.Tagged (Tagged (..))
+import Data.Word (Word64)
 import GHC.Generics (
   C,
   D,
@@ -515,6 +521,52 @@ autoProbe ::
   t
 autoProbe = autoProbeAt @(CanProbe t) @t
 {-# INLINE autoProbe #-}
+
+--------------------------------------------------------------------------------
+-- Never recorded
+--------------------------------------------------------------------------------
+
+{- | ''True' for a type Clash cannot translate to hardware, so no trace or
+probe can ever record it: a list, a function, anything recursive. The plugin
+does not warn about a binding it declined to record when the binding's type,
+or the requirement it stopped at, reduces to ''True' here — that warning
+would have no fix.
+
+Open, and only ever answered ''True' (or passed through a container): a type
+nobody declared stays unreduced, and a binding of it that cannot be recorded
+still warns, prompting for the instance it is missing. For a type of your
+own that Clash cannot translate, declare it next to the type —
+
+> data Config = Config {names :: [String], limit :: Int}
+>
+> type instance NonTranslatable Config = 'True
+
+'Integer' and 'Natural' are NOT in here: Clash translates both, to 64 bits,
+and they are recorded as such (see $integer).
+-}
+type family NonTranslatable (t :: Type) :: Bool
+
+type instance NonTranslatable [a] = 'True
+type instance NonTranslatable (NonEmpty a) = 'True
+type instance NonTranslatable (a -> b) = 'True
+type instance NonTranslatable (IO a) = 'True
+
+-- | Clash translates 'SimOnly' to nothing at all: it is not hardware.
+type instance NonTranslatable (SimOnly a) = 'True
+
+-- Containers Clash translates are untranslatable when their contents are.
+type instance NonTranslatable (Signal dom a) = NonTranslatable a
+type instance NonTranslatable (DSignal dom d a) = NonTranslatable a
+type instance NonTranslatable (Vec n a) = NonTranslatable a
+type instance NonTranslatable (Maybe a) = NonTranslatable a
+type instance NonTranslatable (Either a b) = NonTranslatable a || NonTranslatable b
+type instance NonTranslatable (a, b) = NonTranslatable a || NonTranslatable b
+type instance
+  NonTranslatable (a, b, c) =
+    NonTranslatable a || NonTranslatable b || NonTranslatable c
+type instance
+  NonTranslatable (a, b, c, d) =
+    NonTranslatable a || NonTranslatable b || NonTranslatable c || NonTranslatable d
 
 --------------------------------------------------------------------------------
 -- Describing a trace or probe

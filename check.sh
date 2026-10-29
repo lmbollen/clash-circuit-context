@@ -87,6 +87,8 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     "not traced: Pair dom" \
     "Give it a Traceable instance" \
     "not probed: Undescribed" \
+    "not traced: Signal dom Tags" \
+    "type instance NonTranslatable Tags = 'True" \
     "recorded as raw bits, not described: Bare" \
     "no instance for: Waveform Bare" \
     "the oracle could not decide: 1 <= n"
@@ -126,11 +128,12 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     [ -n "$quiet" ] && echo "ok: higher-rank bindings are instrumented or left alone, without a word"
   fi
   # Bindings no recorder could ever take are not reported: plain values in a
-  # traced component, payloads Clash cannot represent, signals inside a probed
-  # step (Test/PluginDiagnostics.hs neverWires and probedStep). A warning
-  # about them has no fix. Integer is NOT among them: Clash translates it, so
-  # the recorder records it, and must not report it either.
-  never=$(grep -E "not (traced|probed): (\[Char\]|Integer|Bool|Vec 4 Bool|Int -> Int|Signal dom \[Int\]|Signal dom Integer)$" "$log")
+  # traced component, types declared NonTranslatable (lists, functions, a
+  # user's Names), signals inside a probed step (Test/PluginDiagnostics.hs
+  # neverWires and probedStep). A warning about them has no fix. Integer is
+  # NOT among them: Clash translates it, so the recorder records it, and must
+  # not report it either.
+  never=$(grep -E "not (traced|probed): (\[Char\]|Integer|Bool|Vec 4 Bool|Int -> Int|Signal dom \[Int\]|Signal dom Integer|Signal dom Names)$" "$log")
   if [ -n "$never" ]; then
     echo "FAIL: reported a binding no recorder could take:"; echo "$never"; fail=1
   else
