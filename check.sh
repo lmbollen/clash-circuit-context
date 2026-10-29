@@ -89,8 +89,14 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     "the oracle could not decide: 1 <= n" \
     "'withComponentRst'' is not traced: its signature is higher-rank" \
     "'belowSyn' is not traced: its signature is higher-rank" \
+    "'belowImportedSyn' is not traced: its signature is higher-rank" \
+    "'belowOpSyn' is not traced: its signature is higher-rank" \
+    "'withRstProbe' is not probed: its signature is higher-rank" \
+    "skipping component wrap for an equation of 'topRankN'." \
     "skipping component wrap for an equation of 'topRankNLocalSyn'" \
     "skipping component wrap for an equation of 'topRankNImportedSyn'" \
+    "skipping component wrap for an equation of 'topRankNOpSyn'" \
+    "skipping component wrap for an equation of 'splitRst'" \
     "Its right-hand side has a higher-rank type"
   do
     if grep -qF "$want" "$log"; then
@@ -99,6 +105,16 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
       echo "FAIL: expected diagnostic missing: $want"; fail=1
     fi
   done
+  # Test/TypeAbstractions.hs is only built where @a patterns exist.
+  case "$ghcver" in
+    9.6.*|9.8.*) ;;
+    *)
+      if grep -qF "skipping component wrap for an equation of 'topRankNInvis'" "$log"; then
+        echo "ok: a type-abstraction pattern consumes no arrow"
+      else
+        echo "FAIL: topRankNInvis was not skipped (or did not build)"; fail=1
+      fi ;;
+  esac
   # A higher-rank local function that takes arguments was never going to be
   # wrapped, so skipping it is not worth a warning (Test/Downstream.hs rankN).
   if grep -qF "'withRst' is not traced" "$log"; then
