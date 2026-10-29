@@ -76,13 +76,15 @@ import qualified GHC.Builtin.Names as GHC (ipClassName, otherwiseIdName)
 import qualified GHC.Data.Bag as GHC
 #endif
 {- FOURMOLU_ENABLE -}
+import qualified GHC.Core.ConLike as GHC (ConLike (RealDataCon))
 import GHC.Hs
 import qualified GHC.Plugins as GHC
 import qualified GHC.Tc.Types as GHC
-import qualified GHC.Tc.Utils.Env as GHC (tcLookupTyCon)
+import qualified GHC.Tc.Utils.Env as GHC (tcLookupGlobal, tcLookupTyCon)
 import qualified GHC.Tc.Utils.Monad as GHC (tryTcDiscardingErrs)
 import GHC.Types.Basic (Origin)
 import GHC.Types.SrcLoc (GenLocated (..), unLoc)
+import qualified GHC.Types.TyThing as GHC (TyThing (AConLike, AnId))
 import GHC.Types.Unique.Supply (MonadUnique (getUniqueM))
 
 import qualified Clash.CircuitContext.Plugin.Diagnostics as Diag
@@ -91,16 +93,13 @@ import Clash.CircuitContext.Plugin.Names (AbiNames (..), lookupAbiNames)
 data Mode = TraceMode | ProbeMode
   deriving (Eq)
 
-{- | Everything the rewrite reads but never changes: the injection ABI, the
-module's own constraint synonyms (needed to see through one in a signature —
-the renamer runs before synonyms are expanded), and the module itself (to
-tell a local name, which must be resolved from the group, from an imported
-one, which is resolved from its interface).
+{- | Everything the rewrite reads but never changes: the injection ABI and
+the declaration group's own constraint synonyms (needed to see through one in
+a signature — the renamer runs before synonyms are expanded).
 -}
 data Ctx = Ctx
   { ctxAbi :: AbiNames
   , ctxSyns :: [(GHC.Name, LHsType GhcRn)]
-  , ctxMod :: GHC.Module
   }
 
 {- | One thing to say, and where. Rendered by
@@ -123,7 +122,6 @@ renamePass _opts env grp =
           Ctx
             { ctxAbi = abi
             , ctxSyns = localSynonyms grp
-            , ctxMod = GHC.tcg_mod env
             }
       (grp', notes) <- rewriteGroup ctx grp
       methods <- methodNotes ctx grp
@@ -239,12 +237,18 @@ tracing (the typechecker sees the expanded constraint) but silently lost its
 @$scope@, because only the renamer decides what is a component. Both kinds of
 synonym are followed here instead:
 
-* one declared in the module being compiled is not in the type environment
-  yet, so its right-hand side is read from the group itself ('ctxSyns') and
-  walked in the same surface syntax;
+* one declared in the declaration group being renamed is not in the type
+  environment yet, so its right-hand side is read from the group itself
+  ('ctxSyns') and walked in the same surface syntax;
 
-* an imported one IS resolvable, and its already-expanded 'GHC.Core.Type.Type'
-  right-hand side is searched for the implicit parameter directly.
+* any other one IS resolvable, and its already-expanded
+  'GHC.Core.Type.Type' right-hand side is searched for the implicit parameter
+  directly. That is an imported synonym, and also one declared in this
+  module ABOVE a top-level Template Haskell splice: the pass runs once per
+  declaration group, and a splice ends one, so the group it is handed does
+  not hold what came before (@createDomain@, @makeTopEntity@ and friends make
+  this the common case, not a curiosity). The earlier groups are already
+  type-checked, so their synonyms resolve like imported ones.
 
 The recursion is depth-bounded: a synonym cycle is a type error the
 typechecker will report properly, and this pass must not hang first.
@@ -276,20 +280,20 @@ ctxMentions ctx ip = go (5 :: Int)
 
   viaSynonym fuel n
     | Just rhs <- lookup n (ctxSyns ctx) = go (fuel - 1) rhs
-    | GHC.isExternalName n
-    , not (GHC.nameIsLocalOrFrom (ctxMod ctx) n) =
+    | GHC.isExternalName n =
         maybe False (coreMentions ip . GHC.expandTypeSynonyms)
-          <$> importedSynonymRhs n
+          <$> typedSynonymRhs n
     | otherwise = pure False
 
-{- | The right-hand side of an imported type synonym, or 'Nothing' for
-anything else (a class, a data type, a name that will not resolve). Errors
-from the lookup are discarded rather than added to the module's: failing to
-recognise a constraint is this pass's normal, silent outcome, never a reason
-to fail the build.
+{- | The right-hand side of a type synonym that is already type-checked —
+imported, or from an earlier declaration group of this module — or 'Nothing'
+for anything else (a class, a data type, a name from the group being renamed,
+a name that will not resolve). Errors from the lookup are discarded rather
+than added to the module's: failing to recognise a constraint is this pass's
+normal, silent outcome, never a reason to fail the build.
 -}
-importedSynonymRhs :: GHC.Name -> GHC.TcM (Maybe GHC.Type)
-importedSynonymRhs n =
+typedSynonymRhs :: GHC.Name -> GHC.TcM (Maybe GHC.Type)
+typedSynonymRhs n =
   GHC.tryTcDiscardingErrs
     (pure Nothing)
     (GHC.synTyConRhs_maybe <$> GHC.tcLookupTyCon n)
@@ -563,13 +567,14 @@ rewriteInside ctx mode0 = goM mode0
     FunBind{fun_id = L _ nm} -> do
       let m = fromMaybe inherited (lookup nm localModes)
       ms <- goM m (fun_matches b)
+      rankN <- inferredHigherRank localSigned nm (zeroArgGRHSs ms)
       pure
         ( L
             l
             ( wrapFunBind
                 abi
                 m
-                (signedOrOpen nm localSigned)
+                (\fvs -> not rankN && signedOrOpen nm localSigned fvs)
                 nm
                 (locA l)
                 b{fun_matches = ms}
@@ -579,13 +584,14 @@ rewriteInside ctx mode0 = goM mode0
     PatBind{pat_lhs = L _ (VarPat _ (L _ nm))} -> do
       let m = fromMaybe inherited (lookup nm localModes)
       rhs <- goM m (pat_rhs b)
+      rankN <- inferredHigherRank localSigned nm [rhs]
       pure
         ( L
             l
             ( wrapPatBind
                 abi
                 m
-                (signedOrOpen nm localSigned)
+                (\fvs -> not rankN && signedOrOpen nm localSigned fvs)
                 nm
                 (locA l)
                 b{pat_rhs = rhs}
@@ -707,6 +713,88 @@ and why a signature lifts the skip.
 signedOrOpen :: GHC.Name -> [GHC.Name] -> GHC.NameSet -> Bool
 signedOrOpen nm localSigned fvs =
   not (closedBind nm fvs) || nm `elem` localSigned
+
+{- | Would GHC infer a higher-rank type for this UNSIGNED binding, so that
+wrapping it breaks the build?
+
+The recorders are all @... -> a -> a@, and GHC will not instantiate @a@ at a
+type with a polytype inside it (that would be impredicative). A signature is
+not the only way to get such a type: GHC infers one for a partial
+application of a higher-rank function, which is how an eta-reduced helper
+looks,
+
+> withRst = withReset rst  -- (HiddenReset dom => r) -> r
+
+and the same for @withClockResetEnable clk rst en@. The renamer has no
+types, but the HEAD of the right-hand side is usually a name that is already
+type-checked (imported, or from an earlier declaration group), so its type
+is looked up and the arguments it is applied to are consumed from it. A head
+that is not resolvable yet (a local, or a binding of the group being
+renamed) answers 'False', and the binding is wrapped as before.
+
+A signed binding is decided by its signature, never by its right-hand side:
+GHC checks the right-hand side against it, so a rank-1 signature over a
+higher-rank head is fine to wrap.
+
+Not reported: a polytype below the spine needs an arrow to sit under (short
+of @ImpredicativeTypes@), so the binding is a function, and a function is no
+trace target. Leaving it alone costs no wire.
+-}
+inferredHigherRank ::
+  [GHC.Name] -> GHC.Name -> [GRHSs GhcRn (LHsExpr GhcRn)] -> GHC.TcM Bool
+inferredHigherRank localSigned nm rhss
+  | nm `elem` localSigned = pure False
+  | otherwise =
+      anyM
+        headHigherRank
+        [body | GRHSs _ alts _ <- rhss, L _ (GRHS _ _ body) <- alts]
+ where
+  headHigherRank body = case appHead body of
+    Just (f, n)
+      | GHC.isExternalName f ->
+          maybe False (higherRankAfterCore n) <$> typedIdType f
+    _ -> pure False
+
+-- | The right-hand sides of a function binding, if it takes no arguments.
+zeroArgGRHSs :: MatchGroup GhcRn (LHsExpr GhcRn) -> [GRHSs GhcRn (LHsExpr GhcRn)]
+zeroArgGRHSs (MG _ (L _ ms))
+  | all (null . matchPats . unLoc) ms = [m_grhss m | L _ m <- ms]
+zeroArgGRHSs _ = []
+
+{- | The type of an already type-checked value or data constructor, or
+'Nothing' for anything else. Lookup errors are discarded, as in
+'typedSynonymRhs'.
+-}
+typedIdType :: GHC.Name -> GHC.TcM (Maybe GHC.Type)
+typedIdType n =
+  GHC.tryTcDiscardingErrs (pure Nothing) (thingType <$> GHC.tcLookupGlobal n)
+ where
+  thingType = \case
+    GHC.AnId i -> Just (GHC.idType i)
+    GHC.AConLike (GHC.RealDataCon dc) -> Just (GHC.dataConWrapperType dc)
+    _ -> Nothing
+
+{- | Once @n@ visible arguments are consumed, does this type have a @forall@
+or a constraint BELOW its spine? The spine's own foralls and constraints are
+instantiated at the use site, so they are no obstacle; a constraint is an
+invisible arrow here, not a visible one to consume.
+-}
+higherRankAfterCore :: Int -> GHC.Type -> Bool
+higherRankAfterCore n0 = go n0 . GHC.expandTypeSynonyms
+ where
+  go n ty
+    | (_ : _, inner) <- GHC.splitForAllTyCoVars ty = go n inner
+    | Just (af, _, _, res) <- GHC.splitFunTy_maybe ty
+    , GHC.isInvisibleFunArg af =
+        go n res
+    | n > 0
+    , Just (_, _, _, res) <- GHC.splitFunTy_maybe ty =
+        go (n - 1) res
+    | otherwise = SYB.everything (||) (SYB.mkQ False isPoly) ty
+  isPoly :: GHC.Type -> Bool
+  isPoly ty =
+    GHC.isForAllTy ty
+      || maybe False (\(af, _, _, _) -> GHC.isInvisibleFunArg af) (GHC.splitFunTy_maybe ty)
 
 -- | Wrap a zero-argument local function binding's right-hand sides.
 wrapFunBind ::
@@ -868,6 +956,26 @@ appSpine = go [] . stripPars
   go args h = (h, args)
 
   stripPars (L l e) = L l (stripParensHsExpr e)
+
+{- FOURMOLU_DISABLE -}
+-- fourmolu cannot parse CPP inside a declaration; keep this region verbatim.
+
+-- | An application's head variable and how many visible arguments it is
+-- applied to, with parentheses and type applications seen through.
+appHead :: LHsExpr GhcRn -> Maybe (GHC.Name, Int)
+appHead = go 0
+ where
+  go :: Int -> LHsExpr GhcRn -> Maybe (GHC.Name, Int)
+  go n (L _ e) = case stripParensHsExpr e of
+    HsVar _ (L _ f) -> Just (f, n)
+    HsApp _ f _ -> go (n + 1) f
+#if __GLASGOW_HASKELL__ >= 910
+    HsAppType _ f _ -> go n f
+#else
+    HsAppType _ f _ _ -> go n f
+#endif
+    _ -> Nothing
+{- FOURMOLU_ENABLE -}
 
 -- | A string literal with this content ('OverloadedStrings' included).
 stringLitIs :: String -> LHsExpr GhcRn -> Bool

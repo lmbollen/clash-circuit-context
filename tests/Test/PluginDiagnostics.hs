@@ -51,6 +51,7 @@ import System.Exit (exitFailure)
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext
+import qualified Test.DeclGroups as DeclGroups
 import Test.DesignCtx (DesignCtx)
 import qualified Test.Downstream as Downstream
 
@@ -174,6 +175,8 @@ top inp =
     + noOpaque (unsigned inp)
     + (unAwkward <$> sized (Awkward . fromIntegral <$> inp :: Signal System (Awkward 8)))
     + (unAwkward <$> grounded (Awkward . fromIntegral <$> inp))
+    + DeclGroups.beforeSplice inp
+    + DeclGroups.etaReduced resetGen inp
 {-# OPAQUE top #-}
 
 main :: IO ()
@@ -212,6 +215,18 @@ main = do
       P.concat
         [ [ "constraint synonym not seen: expected " <> show p
           | p <- [["top", "viaLocalSyn", "out"], ["top", "viaImportedSyn", "out"]]
+          , p `P.notElem` paths
+          ]
+        , [ "a synonym from an earlier declaration group not seen: expected "
+              <> show p
+          | p <- [["top", "beforeSplice", "out"]]
+          , p `P.notElem` paths
+          ]
+        , -- 'DeclGroups.etaReduced': its higher-rank local is left alone (a
+          -- function is no wire), and the rest of the component still traces.
+          [ "a component with an inferred higher-rank local lost its wires: "
+              <> show p
+          | p <- [["top", "etaReduced", "out"]]
           , p `P.notElem` paths
           ]
         , [ "scope doubled (the pass is not idempotent): " <> show p
