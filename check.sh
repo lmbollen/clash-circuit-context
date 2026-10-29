@@ -96,6 +96,13 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
       echo "FAIL: expected diagnostic missing: $want"; fail=1
     fi
   done
+  # A higher-rank local function that takes arguments was never going to be
+  # wrapped, so skipping it is not worth a warning (Test/Downstream.hs rankN).
+  if grep -qF "'withRst' is not traced" "$log"; then
+    echo "FAIL: warned about a higher-rank local that is never wrapped"; fail=1
+  else
+    echo "ok: a higher-rank local with arguments is not reported"
+  fi
   # ...and the marker must silence exactly the binder it vouches for, while
   # the same shape without it still reports (Helios F4). Absence is the
   # assertion, so it is checked against the same fresh log -- fresh for

@@ -537,11 +537,21 @@ rewriteInside ctx mode0 = goM mode0
     localModes <- modesFromSigs ctx sigs
     let
       localSigned = [n | L _ (TypeSig _ ns _) <- sigs, L _ n <- ns]
+      -- A local function that takes arguments is never wrapped (see
+      -- 'wrapFunBind'), so a higher-rank signature on it blocks nothing and
+      -- is not worth a warning.
+      takesArgs =
+        [ n
+        | (_, bs) <- groups
+        , L _ FunBind{fun_id = L _ n, fun_matches = MG _ (L _ ms)} <- bindsToList bs
+        , any (not . null . matchPats . unLoc) ms
+        ]
       rankN =
         [ (n, locA l)
         | L _ (TypeSig _ ns ty) <- sigs
         , higherRankAfter 0 ty
         , L l n <- ns
+        , n `notElem` takesArgs
         , wantedBinder n (locA l)
         ]
       -- A higher-rank binder is not wrapped at all, so it no longer counts
@@ -560,7 +570,9 @@ rewriteInside ctx mode0 = goM mode0
     Diag.report
       spn
       Diag.Untraced
-      [ "'" <> GHC.getOccString nm <> "' is not traced: its signature is"
+      [ "'"
+          <> GHC.getOccString nm
+          <> "' is not traced: its signature is"
           <> " higher-rank."
       , "A forall or constraint nested inside the type cannot be passed"
           <> " through a recorder, which would have to be instantiated at it."
@@ -1077,8 +1089,9 @@ An equation already wrapped in @component "f"@ is left alone; see
 componentWrapMG ::
   AbiNames ->
   GHC.Name ->
-  -- | Is the right-hand side's type higher-rank, given the equation's
-  -- pattern count? See 'higherRankAfter'.
+  {- | Is the right-hand side's type higher-rank, given the equation's
+  pattern count? See 'higherRankAfter'.
+  -}
   (Int -> Bool) ->
   MatchGroup GhcRn (LHsExpr GhcRn) ->
   (MatchGroup GhcRn (LHsExpr GhcRn), [Note])

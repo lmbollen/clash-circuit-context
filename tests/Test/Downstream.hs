@@ -322,6 +322,8 @@ skipped for being closed.
 
 The module compiling is most of the assertion. @rankN.out@ must still be
 recorded: skipping one binding must not cost its siblings their wires.
+@withRst@ has the same kind of signature but takes an argument, and a local
+function with arguments is never wrapped, so it must not warn.
 -}
 rankN :: (HasCircuitContext) => Signal System Int -> Signal System Int
 rankN inp = out
@@ -329,10 +331,17 @@ rankN inp = out
   out =
     withClock
       clockGen
-      (withEnable enableGen (topRankN (withComponentRst' (register 0 inp))))
+      ( withEnable
+          enableGen
+          (topRankN @System (withComponentRst' @System (withRst @System (register 0 inp))))
+      )
 
-  withComponentRst' :: (KnownDomain dom) => (HiddenReset dom => r) -> r
+  withComponentRst' :: (KnownDomain dom) => ((HiddenReset dom) => r) -> r
   withComponentRst' = withReset (unsafeFromActiveHigh (pure False))
+
+  -- Takes an argument, so it was never going to be wrapped: no warning.
+  withRst :: (KnownDomain dom) => ((HiddenReset dom) => r) -> r
+  withRst r = withReset (unsafeFromActiveHigh (pure False)) r
 {-# OPAQUE rankN #-}
 
 {- | The same shape at the top level. @component "topRankN"@ is @... -> r -> r@
@@ -340,7 +349,7 @@ and hits the same impredicativity, so this equation is not wrapped: it is
 reported under @x-circuit-context@, like the guard fall-through skip, since an
 OPAQUE @HasCircuitContext@ function asked for a component unambiguously.
 -}
-topRankN :: (HasCircuitContext, KnownDomain dom) => (HiddenReset dom => r) -> r
+topRankN :: (HasCircuitContext, KnownDomain dom) => ((HiddenReset dom) => r) -> r
 topRankN = withReset (unsafeFromActiveHigh (pure False))
 {-# OPAQUE topRankN #-}
 
