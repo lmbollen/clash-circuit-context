@@ -55,6 +55,17 @@ Initial version.
   author was explicit. Unsigned closed bindings are still skipped, and are
   the one remaining path that is silent in both channels: no wire and no
   warning, because the oracle is never asked.
+* A binding with a **higher-rank signature** no longer breaks the build.
+  Tracing it would instantiate the recorder at a type with a polytype inside
+  (`(HiddenReset dom => r) -> r`), which GHC refuses as impredicative: a
+  module that compiled without the plugin failed with it, over a unification
+  variable the author never wrote. Signing closed bindings (above) is what
+  exposed the shape, since GHC never infers such a type. A local binding like
+  that is left alone with an `x-circuit-context-untraced` warning (it is a
+  function; there is nothing to trace), and an `OPAQUE` component whose
+  right-hand side is higher-rank after its patterns skips the component wrap
+  with an `x-circuit-context` warning. Its bindings still trace, at the
+  enclosing scope.
 * A binding whose right-hand side already applies `traceSignalC`,
   `traceSignalSW`, `probe` or `probeSW` under the binder's own name does not
   get an injected recorder on top. It used to record the signal twice, rendered `name_0`/`name_1`. A
