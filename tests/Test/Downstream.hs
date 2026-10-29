@@ -4,8 +4,10 @@
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE LiberalTypeSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 
@@ -58,19 +60,24 @@ module Test.Downstream (
   topRankN,
   topRankNLocalSyn,
   topRankNImportedSyn,
+  topRankNOpSyn,
   synArrow,
+  synArrowImported,
   rankNArg,
+  rankNArgOp,
+  probedRankN,
 ) where
 
 import qualified Clash.Explicit.Prelude as E
 import Clash.Prelude
 import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (Proxy))
-import Test.DesignCtx (ImportedRst)
+import Test.DesignCtx (ImportedFn, ImportedRst)
 
 import Clash.CircuitContext (
   CircuitContextAnnotation (NoCircuitScope),
   HasCircuitContext,
+  HasProbe,
   traceSignalC,
  )
 import Clash.Shockwaves.Waveform (Waveform)
@@ -320,9 +327,10 @@ plugin into one that did not, with an error about a unification variable the
 author never wrote. It is left alone, with an @x-circuit-context-untraced@
 warning; there is nothing to trace in a function anyway.
 
-GHC never INFERS a higher-rank type, so only a signed binding can have one:
-before signed closed bindings were wrapped (F6 above), this shape was
-skipped for being closed.
+GHC does infer such a type for some UNSIGNED bindings too, the eta-reduced
+@withRst = withReset rst@; that case is decided from the right-hand side
+instead, and tested in "Test.DeclGroups". Here, before signed closed bindings
+were wrapped (F6 above), this shape was skipped for being closed.
 
 The module compiling is most of the assertion. @rankN.out@ must still be
 recorded: skipping one binding must not cost its siblings their wires.
@@ -341,6 +349,8 @@ rankN inp = out
               + topRankNLocalSyn @System (pure False) (register 0 inp)
               + topRankNImportedSyn @System (pure False) (register 0 inp)
               + belowSyn @System 0 (register 0 inp)
+              + belowImportedSyn @System 0 (register 0 inp)
+              + belowOpSyn @System 0 (register 0 inp)
           )
       )
 
@@ -354,6 +364,14 @@ rankN inp = out
   -- The polytype is behind a synonym, below the spine: skipped all the same.
   belowSyn :: (KnownDomain dom) => Int -> LocalRst dom r
   belowSyn = \_ -> withReset (unsafeFromActiveHigh (pure False))
+
+  -- ...behind an imported synonym, read from its interface...
+  belowImportedSyn :: (KnownDomain dom) => Int -> ImportedRst dom r
+  belowImportedSyn = \_ -> withReset (unsafeFromActiveHigh (pure False))
+
+  -- ...and behind an operator, whose name is no type-variable node.
+  belowOpSyn :: (KnownDomain dom) => Int -> dom :=> r
+  belowOpSyn = \_ -> withReset (unsafeFromActiveHigh (pure False))
 {-# OPAQUE rankN #-}
 
 {- | The same shape at the top level. @component "topRankN"@ is @... -> r -> r@
@@ -383,6 +401,26 @@ topRankNImportedSyn ::
 topRankNImportedSyn active = withReset (unsafeFromActiveLow active)
 {-# OPAQUE topRankNImportedSyn #-}
 
+-- | ...and behind a type operator, @dom :=> r@.
+type dom :=> r = ((HiddenReset dom) => r) -> r
+
+topRankNOpSyn ::
+  (HasCircuitContext, KnownDomain dom) => Signal dom Bool -> dom :=> r
+topRankNOpSyn active = withReset (unsafeFromActiveLow active)
+{-# OPAQUE topRankNOpSyn #-}
+
+{- | A higher-rank local in a PROBED step is reported as not probed, not as
+not traced: the message names the recorder the binding would have had.
+Compiling is the test; the wording is checked in the build log.
+-}
+probedRankN :: (HasProbe) => Int -> Int -> (Int, Int)
+probedRankN s i = (s', s')
+ where
+  s' = withRstProbe (s + i)
+
+  withRstProbe :: ((HiddenReset System) => r) -> r
+  withRstProbe = withReset (unsafeFromActiveHigh (pure False))
+
 {- | The control for synonyms: an arrow behind one is consumed by the pattern,
 and what remains is an ordinary @Signal@, so the component wrap applies.
 @synArrow.out@ must be recorded, under a scope of its own.
@@ -394,6 +432,13 @@ synArrow inp = out
  where
   out = inp + 1
 {-# OPAQUE synArrow #-}
+
+-- | The same control, behind a synonym imported from "Test.DesignCtx".
+synArrowImported :: (HasCircuitContext) => ImportedFn
+synArrowImported inp = out
+ where
+  out = inp + 1
+{-# OPAQUE synArrowImported #-}
 
 {- | The control: here the higher-rank argument is consumed by a PATTERN, so
 the right-hand side is an ordinary @Signal@ and the component wrap applies.
@@ -408,3 +453,20 @@ rankNArg f inp = out
  where
   out = f inp
 {-# OPAQUE rankNArg #-}
+
+{- | The same control, with the arrows behind an operator synonym: they are
+peeled like written ones, so the polytype is the consumed argument's, and the
+wrap applies. Looking past the operator instead would find that polytype
+and skip the wrap for nothing. (A polytype as a synonym's argument needs
+@LiberalTypeSynonyms@, which is why this module enables it.)
+-}
+type a :-> b = a -> b
+
+rankNArgOp ::
+  (HasCircuitContext) =>
+  (forall a. Signal System a -> Signal System a)
+    :-> (Signal System Int -> Signal System Int)
+rankNArgOp f inp = out
+ where
+  out = f inp
+{-# OPAQUE rankNArgOp #-}

@@ -7,7 +7,7 @@ ANOTHER module — the half of the synonym question the plugin cannot answer
 from the group it is handed, because an imported synonym's right-hand side
 lives in an interface.
 -}
-module Test.DesignCtx (DesignCtx, ImportedRst) where
+module Test.DesignCtx (DesignCtx, ImportedRst, ImportedFn) where
 
 import Clash.Explicit.Prelude
 import Clash.Signal (HiddenReset)
@@ -23,3 +23,9 @@ type DesignCtx dom = (KnownDomain dom, HasCircuitContext)
 own reset. See @topRankNImportedSyn@ in "Test.Downstream".
 -}
 type ImportedRst dom r = ((HiddenReset dom) => r) -> r
+
+{- | An ordinary, rank-1 function type behind an imported synonym: its arrow
+is consumed by a pattern like a written one. See @synArrowImported@ in
+"Test.Downstream".
+-}
+type ImportedFn = Signal System Int -> Signal System Int

@@ -60,14 +60,18 @@ Initial version.
   (`(HiddenReset dom => r) -> r`), which GHC refuses as impredicative: a
   module that compiled without the plugin failed with it, over a unification
   variable the author never wrote. Signing closed bindings (above) is what
-  exposed the shape, since GHC never infers such a type. A local binding like
+  exposed the shape. (GHC also infers such a type for some unsigned bindings,
+  which is decided from the right-hand side instead; see the entry on
+  inferred higher-rank locals.) A local binding like
   that is left alone with an `x-circuit-context-untraced` warning (it is a
   function; there is nothing to trace), and an `OPAQUE` component whose
   right-hand side is higher-rank after its patterns skips the component wrap
   with an `x-circuit-context` warning. Its bindings still trace, at the
-  enclosing scope. Type synonyms are seen through, declared locally or
-  imported: `type WithRst dom r = (HiddenReset dom => r) -> r` in a signature
-  is recognised like the type it stands for.
+  enclosing scope. Type synonyms are seen through, declared locally (above a
+  Template Haskell splice too), imported, or written as an operator:
+  `type WithRst dom r = (HiddenReset dom => r) -> r` in a signature is
+  recognised like the type it stands for. A type-abstraction pattern
+  (`f @dom x = …`) binds a forall, so it consumes no arrow.
 * A binding whose right-hand side already applies `traceSignalC`,
   `traceSignalSW`, `probe` or `probeSW` under the binder's own name does not
   get an injected recorder on top. It used to record the signal twice, rendered `name_0`/`name_1`. A

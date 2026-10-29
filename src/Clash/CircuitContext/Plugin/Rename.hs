@@ -512,10 +512,21 @@ onTopBind ctx modes opaques sigTypes lb@(L l b) = case b of
           else pure (L l b{fun_matches = mg1}, [])
   _ -> pure (lb, [])
 
--- | The number of patterns each equation of this group has.
+{- FOURMOLU_DISABLE -}
+-- fourmolu cannot parse CPP inside a declaration; keep this region verbatim.
+
+-- | The number of VISIBLE patterns each equation of this group has: what
+-- 'higherRankAfter' consumes arrows for. A type-abstraction pattern (@f \@a x@,
+-- GHC 9.10 and up) binds a forall, which 'higherRankAfter' skips anyway.
 mgArity :: MatchGroup GhcRn (LHsExpr GhcRn) -> Int
-mgArity (MG _ (L _ (L _ m : _))) = length (matchPats m)
+mgArity (MG _ (L _ (L _ m : _))) = length (filter visible (matchPats m))
+ where
+#if __GLASGOW_HASKELL__ >= 910
+  visible (L _ InvisPat{}) = False
+#endif
+  visible _ = True
 mgArity _ = 0
+{- FOURMOLU_ENABLE -}
 
 {- | Top-down generic traversal threading the current 'Mode'; intercepts
 local binding groups (where their signatures live) so an inner
@@ -842,7 +853,12 @@ higherRankAfterCore n0 = go n0 . GHC.expandTypeSynonyms
     | n > 0
     , Just (_, _, _, res) <- GHC.splitFunTy_maybe ty =
         go (n - 1) res
-    | otherwise = SYB.everything (||) (SYB.mkQ False isPoly) ty
+    | otherwise = hasPolytype ty
+
+-- | Is there a @forall@ or a constraint anywhere in this type?
+hasPolytype :: GHC.Type -> Bool
+hasPolytype = SYB.everything (||) (SYB.mkQ False isPoly)
+ where
   isPoly :: GHC.Type -> Bool
   isPoly ty =
     GHC.isForAllTy ty
@@ -856,8 +872,9 @@ Such a right-hand side cannot be wrapped: the recorders and 'component' are
 all @... -> a -> a@, and GHC will not instantiate @a@ at a type containing a
 polytype (that would be impredicative). The spine's own foralls and
 constraints are fine — the right-hand side is checked against the skolemised
-type, so the wrapper only ever sees its body. GHC never infers a higher-rank
-type, so a signature is the only way to get one.
+type, so the wrapper only ever sees its body. This decides SIGNED bindings;
+GHC also infers a higher-rank type for some unsigned ones, which
+'inferredHigherRank' decides from the right-hand side instead.
 
 Type synonyms are followed the way 'ctxMentions' follows them, with the same
 fuel: one declared in the group being renamed through its right-hand side as
@@ -883,7 +900,7 @@ higherRankAfter ctx n0 (HsWC _ (L _ (HsSig _ _ body))) = peel (5 :: Int) n0 body
     _
       | fuel > 0
       , Just syn <- synonymHead t ->
-          synonym syn (peel (fuel - 1) n) (pure . peelCore n) (below fuel t)
+          synonym syn (peel (fuel - 1) n) (pure . higherRankAfterCore n) (below fuel t)
       | otherwise -> below fuel t
 
   -- Below the spine: a polytype anywhere, written or behind a synonym.
@@ -893,13 +910,18 @@ higherRankAfter ctx n0 (HsWC _ (L _ (HsSig _ _ body))) = peel (5 :: Int) n0 body
     HsQualTy{} -> pure True
     HsTyVar _ _ (L _ n)
       | fuel > 0 ->
-          synonym n (below (fuel - 1) . unLoc) (pure . polyCore) (pure False)
+          synonym n (below (fuel - 1) . unLoc) (pure . hasPolytype) (pure False)
+    -- An operator's name is not a 'HsTyVar' node, so 'below' never meets it.
+    HsOpTy _ _ _ (L _ n) _
+      | fuel > 0 ->
+          synonym n (below (fuel - 1) . unLoc) (pure . hasPolytype) (pure False)
     _ -> pure False
 
   synonymHead = \case
     HsTyVar _ _ (L _ n) -> Just n
     HsAppTy _ (L _ f) _ -> synonymHead f
-    _ -> Nothing
+    HsOpTy _ _ _ (L _ n) _ -> Just n
+    t -> synonymHead =<< appKindHead t
 
   -- A synonym of the group being renamed through its right-hand side as
   -- written, any other (imported, or from an earlier declaration group)
@@ -911,21 +933,19 @@ higherRankAfter ctx n0 (HsWC _ (L _ (HsSig _ _ body))) = peel (5 :: Int) n0 body
         maybe none (onImported . GHC.expandTypeSynonyms) =<< typedSynonymRhs n
     | otherwise = none
 
-  -- 'peel' and 'below' for core, where a constraint is an invisible arrow.
-  peelCore n ty
-    | (_ : _, inner) <- GHC.splitForAllTyCoVars ty = peelCore n inner
-    | Just (af, _, _, res) <- GHC.splitFunTy_maybe ty
-    , GHC.isInvisibleFunArg af =
-        peelCore n res
-    | n > 0
-    , Just (_, _, _, res) <- GHC.splitFunTy_maybe ty =
-        peelCore (n - 1) res
-    | otherwise = polyCore ty
-  polyCore = SYB.everything (||) (SYB.mkQ False isPolyCore)
-  isPolyCore :: GHC.Type -> Bool
-  isPolyCore ty =
-    GHC.isForAllTy ty
-      || maybe False (\(af, _, _, _) -> GHC.isInvisibleFunArg af) (GHC.splitFunTy_maybe ty)
+{- FOURMOLU_DISABLE -}
+-- fourmolu cannot parse CPP inside a declaration; keep this region verbatim.
+
+-- | The head of a kind application, @Syn \@k a@: the synonym is still @Syn@.
+appKindHead :: HsType GhcRn -> Maybe (HsType GhcRn)
+appKindHead = \case
+#if __GLASGOW_HASKELL__ >= 908 && __GLASGOW_HASKELL__ < 910
+  HsAppKindTy _ (L _ f) _ _ -> Just f
+#else
+  HsAppKindTy _ (L _ f) _ -> Just f
+#endif
+  _ -> Nothing
+{- FOURMOLU_ENABLE -}
 
 -- | Wrap a zero-argument local function binding's right-hand sides.
 wrapFunBind ::

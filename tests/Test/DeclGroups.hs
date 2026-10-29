@@ -15,10 +15,10 @@ handed, and that used to cost a scope or break the build. Both compile
 without the plugin; this module is compiled with it, so building it is half
 the test, and "Test.PluginDiagnostics" asserts the wires.
 -}
-module Test.DeclGroups (beforeSplice, etaReduced) where
+module Test.DeclGroups (beforeSplice, splitRst, etaReduced) where
 
 import Clash.Explicit.Prelude
-import Clash.Signal (withClock, withEnable, withReset)
+import Clash.Signal (HiddenReset, withClock, withEnable, withReset)
 import qualified Clash.Signal as Hidden (register)
 
 import Clash.CircuitContext (HasCircuitContext)
@@ -30,6 +30,11 @@ environment, like an imported one.
 -}
 type SplitCtx dom = (KnownDomain dom, HasCircuitContext)
 
+{- | The same for a higher-rank synonym: 'splitRst' below is skipped by the
+component wrap only if this is seen through, and fails to compile if not.
+-}
+type SplitRst dom r = ((HiddenReset dom) => r) -> r
+
 -- The splice that ends the group. @createDomain@ and @makeTopEntity@ do the
 -- same thing in a real design.
 $(pure [])
@@ -40,6 +45,12 @@ beforeSplice inp = out
  where
   out = inp + 8
 {-# OPAQUE beforeSplice #-}
+
+-- | Higher-rank behind a synonym from an earlier declaration group.
+splitRst ::
+  (HasCircuitContext, KnownDomain dom) => Signal dom Bool -> SplitRst dom r
+splitRst active = withReset (unsafeFromActiveLow active)
+{-# OPAQUE splitRst #-}
 
 {- | An UNSIGNED local whose inferred type is higher-rank: GHC gives
 @withRst@ the type @(HiddenReset System => r) -> r@ from 'withReset'. A

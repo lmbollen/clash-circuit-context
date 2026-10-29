@@ -213,7 +213,9 @@ main = do
                 , Downstream.handWritten (pure 1)
                 , Downstream.rankN (pure 1)
                 , Downstream.rankNArg id (pure 1)
+                , Downstream.rankNArgOp id (pure 1)
                 , Downstream.synArrow (pure 1)
+                , Downstream.synArrowImported (pure 1)
                 )
             )
     _ <- evaluate (deepseqX ys ys)
@@ -310,7 +312,13 @@ main = do
           , p `P.notElem` downstreamPaths
           ]
         , [ "a higher-rank binding's sibling was not traced: " <> show p
-          | p <- [["rankN", "out"], ["rankNArg", "out"], ["synArrow", "out"]]
+          | p <-
+              [ ["rankN", "out"]
+              , ["rankNArg", "out"]
+              , ["rankNArgOp", "out"]
+              , ["synArrow", "out"]
+              , ["synArrowImported", "out"]
+              ]
           , p `P.notElem` downstreamPaths
           ]
         , -- F4: both harnesses still TRACE, at the root, since the annotation
