@@ -56,6 +56,9 @@ module Test.Downstream (
   -- * Higher-rank signatures
   rankN,
   topRankN,
+  topRankNLocalSyn,
+  topRankNImportedSyn,
+  synArrow,
   rankNArg,
 ) where
 
@@ -63,6 +66,7 @@ import qualified Clash.Explicit.Prelude as E
 import Clash.Prelude
 import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (Proxy))
+import Test.DesignCtx (ImportedRst)
 
 import Clash.CircuitContext (
   CircuitContextAnnotation (NoCircuitScope),
@@ -333,7 +337,11 @@ rankN inp = out
       clockGen
       ( withEnable
           enableGen
-          (topRankN @System (withComponentRst' @System (withRst @System (register 0 inp))))
+          ( topRankN @System (withComponentRst' @System (withRst @System (register 0 inp)))
+              + topRankNLocalSyn @System (pure False) (register 0 inp)
+              + topRankNImportedSyn @System (pure False) (register 0 inp)
+              + belowSyn @System 0 (register 0 inp)
+          )
       )
 
   withComponentRst' :: (KnownDomain dom) => ((HiddenReset dom) => r) -> r
@@ -342,6 +350,10 @@ rankN inp = out
   -- Takes an argument, so it was never going to be wrapped: no warning.
   withRst :: (KnownDomain dom) => ((HiddenReset dom) => r) -> r
   withRst r = withReset (unsafeFromActiveHigh (pure False)) r
+
+  -- The polytype is behind a synonym, below the spine: skipped all the same.
+  belowSyn :: (KnownDomain dom) => Int -> LocalRst dom r
+  belowSyn = \_ -> withReset (unsafeFromActiveHigh (pure False))
 {-# OPAQUE rankN #-}
 
 {- | The same shape at the top level. @component "topRankN"@ is @... -> r -> r@
@@ -352,6 +364,36 @@ OPAQUE @HasCircuitContext@ function asked for a component unambiguously.
 topRankN :: (HasCircuitContext, KnownDomain dom) => ((HiddenReset dom) => r) -> r
 topRankN = withReset (unsafeFromActiveHigh (pure False))
 {-# OPAQUE topRankN #-}
+
+{- | The same shape behind a synonym declared in this module, whose arrow the
+pattern consumes. The renamer reads the synonym's right-hand side from the
+group it is handed, as it does for a local constraint synonym, so this
+equation is skipped like 'topRankN' instead of failing to compile.
+-}
+type LocalRst dom r = ((HiddenReset dom) => r) -> r
+
+topRankNLocalSyn ::
+  (HasCircuitContext, KnownDomain dom) => Signal dom Bool -> LocalRst dom r
+topRankNLocalSyn active = withReset (unsafeFromActiveLow active)
+{-# OPAQUE topRankNLocalSyn #-}
+
+-- | ...and behind one imported from "Test.DesignCtx", read from its interface.
+topRankNImportedSyn ::
+  (HasCircuitContext, KnownDomain dom) => Signal dom Bool -> ImportedRst dom r
+topRankNImportedSyn active = withReset (unsafeFromActiveLow active)
+{-# OPAQUE topRankNImportedSyn #-}
+
+{- | The control for synonyms: an arrow behind one is consumed by the pattern,
+and what remains is an ordinary @Signal@, so the component wrap applies.
+@synArrow.out@ must be recorded, under a scope of its own.
+-}
+type SignalFn = Signal System Int -> Signal System Int
+
+synArrow :: (HasCircuitContext) => SignalFn
+synArrow inp = out
+ where
+  out = inp + 1
+{-# OPAQUE synArrow #-}
 
 {- | The control: here the higher-rank argument is consumed by a PATTERN, so
 the right-hand side is an ordinary @Signal@ and the component wrap applies.

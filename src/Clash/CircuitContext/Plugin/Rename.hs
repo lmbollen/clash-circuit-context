@@ -66,6 +66,7 @@ Supports GHC 9.6 and 9.10 (CPP at the few AST churn points).
 -}
 module Clash.CircuitContext.Plugin.Rename (renamePass) where
 
+import Control.Monad (filterM)
 import qualified Data.Generics as SYB
 import Data.List (isPrefixOf)
 import Data.Maybe (fromMaybe, mapMaybe)
@@ -502,18 +503,19 @@ onTopBind ctx modes opaques sigTypes lb@(L l b) = case b of
   FunBind{fun_id = L _ nm}
     | Just mode <- lookup nm modes -> do
         mg1 <- rewriteInside ctx mode (fun_matches b)
-        let
-          (mg2, ws)
-            | mode == TraceMode
-            , nm `elem` opaques =
-                componentWrapMG
-                  (ctxAbi ctx)
-                  nm
-                  (\n -> maybe False (higherRankAfter n) (lookup nm sigTypes))
-                  mg1
-            | otherwise = (mg1, [])
-        pure (L l b{fun_matches = mg2}, ws)
+        if mode == TraceMode && nm `elem` opaques
+          then do
+            rhsHigherRank <-
+              maybe (pure False) (higherRankAfter ctx (mgArity mg1)) (lookup nm sigTypes)
+            let (mg2, ws) = componentWrapMG (ctxAbi ctx) nm rhsHigherRank mg1
+            pure (L l b{fun_matches = mg2}, ws)
+          else pure (L l b{fun_matches = mg1}, [])
   _ -> pure (lb, [])
+
+-- | The number of patterns each equation of this group has.
+mgArity :: MatchGroup GhcRn (LHsExpr GhcRn) -> Int
+mgArity (MG _ (L _ (L _ m : _))) = length (matchPats m)
+mgArity _ = 0
 
 {- | Top-down generic traversal threading the current 'Mode'; intercepts
 local binding groups (where their signatures live) so an inner
@@ -546,14 +548,17 @@ rewriteInside ctx mode0 = goM mode0
         , L _ FunBind{fun_id = L _ n, fun_matches = MG _ (L _ ms)} <- bindsToList bs
         , any (not . null . matchPats . unLoc) ms
         ]
-      rankN =
-        [ (n, locA l)
-        | L _ (TypeSig _ ns ty) <- sigs
-        , higherRankAfter 0 ty
-        , L l n <- ns
-        , n `notElem` takesArgs
-        , wantedBinder n (locA l)
-        ]
+    rankN <-
+      map (\(n, spn, _) -> (n, spn))
+        <$> filterM
+          (\(_, _, ty) -> higherRankAfter ctx 0 ty)
+          [ (n, locA l, ty)
+          | L _ (TypeSig _ ns ty) <- sigs
+          , L l n <- ns
+          , n `notElem` takesArgs
+          , wantedBinder n (locA l)
+          ]
+    let
       -- A higher-rank binder is not wrapped at all, so it no longer counts
       -- as signed; 'wrappable' below keeps it out of the open case too.
       localSigned' = filter (`notElem` map fst rankN) localSigned
@@ -854,26 +859,73 @@ constraints are fine — the right-hand side is checked against the skolemised
 type, so the wrapper only ever sees its body. GHC never infers a higher-rank
 type, so a signature is the only way to get one.
 
-This reads the signature as written, so a type synonym hides what it stands
-for: neither its arrows are peeled nor a polytype inside it seen. A synonym
-like @type WithRst dom r = (HiddenReset dom => r) -> r@ in the signature
-still gets the binding wrapped, and still fails to compile.
+Type synonyms are followed the way 'ctxMentions' follows them, with the same
+fuel: one declared in the group being renamed through its right-hand side as
+written ('ctxSyns'), any other (imported, or above a Template Haskell splice)
+through its expanded core type. On the spine a
+synonym's arrows are peeled and its foralls and constraints skipped like
+written ones; below it, a polytype a synonym stands for counts like a written
+one (@Int -> WithRst dom r@, with @type WithRst dom r = (HiddenReset dom => r)
+-> r@). A synonym's parameters are not substituted: one instantiated AT a
+polytype would be impredicative in its own right.
 -}
-higherRankAfter :: Int -> LHsSigWcType GhcRn -> Bool
-higherRankAfter n0 (HsWC _ (L _ (HsSig _ _ body))) =
-  SYB.everything (||) (SYB.mkQ False nested) (peel n0 body)
+higherRankAfter :: Ctx -> Int -> LHsSigWcType GhcRn -> GHC.TcM Bool
+higherRankAfter ctx n0 (HsWC _ (L _ (HsSig _ _ body))) = peel (5 :: Int) n0 body
  where
-  peel n (L _ t) = case t of
-    HsForAllTy _ _ inner -> peel n inner
-    HsQualTy _ _ inner -> peel n inner
-    HsParTy _ inner -> peel n inner
-    HsFunTy _ _ _ res | n > 0 -> peel (n - 1) res
-    _ -> t
-  nested :: HsType GhcRn -> Bool
-  nested = \case
-    HsForAllTy{} -> True
-    HsQualTy{} -> True
-    _ -> False
+  -- The spine: foralls and constraints are fine, @n@ arrows are consumed by
+  -- the equation's patterns.
+  peel fuel n (L _ t) = case t of
+    HsForAllTy _ _ inner -> peel fuel n inner
+    HsQualTy _ _ inner -> peel fuel n inner
+    HsParTy _ inner -> peel fuel n inner
+    HsKindSig _ inner _ -> peel fuel n inner
+    HsFunTy _ _ _ res | n > 0 -> peel fuel (n - 1) res
+    _
+      | fuel > 0
+      , Just syn <- synonymHead t ->
+          synonym syn (peel (fuel - 1) n) (pure . peelCore n) (below fuel t)
+      | otherwise -> below fuel t
+
+  -- Below the spine: a polytype anywhere, written or behind a synonym.
+  below fuel t = anyM (poly fuel) (SYB.listify (const True :: HsType GhcRn -> Bool) t)
+  poly fuel = \case
+    HsForAllTy{} -> pure True
+    HsQualTy{} -> pure True
+    HsTyVar _ _ (L _ n)
+      | fuel > 0 ->
+          synonym n (below (fuel - 1) . unLoc) (pure . polyCore) (pure False)
+    _ -> pure False
+
+  synonymHead = \case
+    HsTyVar _ _ (L _ n) -> Just n
+    HsAppTy _ (L _ f) _ -> synonymHead f
+    _ -> Nothing
+
+  -- A synonym of the group being renamed through its right-hand side as
+  -- written, any other (imported, or from an earlier declaration group)
+  -- expanded; anything else (a type variable, a data type, a family) is not
+  -- a synonym and hides nothing.
+  synonym n onLocal onImported none
+    | Just rhs <- lookup n (ctxSyns ctx) = onLocal rhs
+    | GHC.isExternalName n =
+        maybe none (onImported . GHC.expandTypeSynonyms) =<< typedSynonymRhs n
+    | otherwise = none
+
+  -- 'peel' and 'below' for core, where a constraint is an invisible arrow.
+  peelCore n ty
+    | (_ : _, inner) <- GHC.splitForAllTyCoVars ty = peelCore n inner
+    | Just (af, _, _, res) <- GHC.splitFunTy_maybe ty
+    , GHC.isInvisibleFunArg af =
+        peelCore n res
+    | n > 0
+    , Just (_, _, _, res) <- GHC.splitFunTy_maybe ty =
+        peelCore (n - 1) res
+    | otherwise = polyCore ty
+  polyCore = SYB.everything (||) (SYB.mkQ False isPolyCore)
+  isPolyCore :: GHC.Type -> Bool
+  isPolyCore ty =
+    GHC.isForAllTy ty
+      || maybe False (\(af, _, _, _) -> GHC.isInvisibleFunArg af) (GHC.splitFunTy_maybe ty)
 
 -- | Wrap a zero-argument local function binding's right-hand sides.
 wrapFunBind ::
@@ -1091,10 +1143,8 @@ An equation already wrapped in @component "f"@ is left alone; see
 componentWrapMG ::
   AbiNames ->
   GHC.Name ->
-  {- | Is the right-hand side's type higher-rank, given the equation's
-  pattern count? See 'higherRankAfter'.
-  -}
-  (Int -> Bool) ->
+  -- | Is the right-hand side's type higher-rank? See 'higherRankAfter'.
+  Bool ->
   MatchGroup GhcRn (LHsExpr GhcRn) ->
   (MatchGroup GhcRn (LHsExpr GhcRn), [Note])
 componentWrapMG abi nm rhsHigherRank (MG ext (L la ms)) =
@@ -1108,7 +1158,7 @@ componentWrapMG abi nm rhsHigherRank (MG ext (L la ms)) =
 
   wrapMatch spn isLast m0@(Match mx mc pats (GRHSs gx galts localBinds))
     -- 'component' cannot be instantiated at a higher-rank type.
-    | rhsHigherRank (length (matchPats m0)) =
+    | rhsHigherRank =
         ( m0
         ,
           [
