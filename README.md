@@ -56,7 +56,8 @@ still enable it per module with
 both, or the plugin runs twice.
 
 Requires GHC 9.6, 9.10 or 9.12, `clash-prelude >= 1.9 && < 1.12` and
-`clash-shockwaves >= 1.1.3` (from Hackage). Nothing else, and in particular no
+`clash-shockwaves` 1.1.3 (from Hackage; pinned to that release because the
+sidecar uses its internal modules). Nothing else, and in particular no
 patched `clash-prelude`.
 
 Then instrument a function with the two annotations above, and see
