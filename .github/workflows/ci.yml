@@ -66,8 +66,18 @@ jobs:
       # package's compiler output in a log and prints it only on failure. Under
       # check.sh's -j1 it would stream third-party warnings into our log (e.g.
       # 120+ -Wderiving-typeable from haskell-src-exts on GHC 9.12).
+      #
+      # The other side of that: a FAILING package's output is also only in a
+      # log, under ~/.cabal/logs, which leaves with the runner. So on failure
+      # build again on one job, where the error streams into this step's log,
+      # and fail the step whatever that second build does.
       - name: Build dependencies
-        run: cabal build all --only-dependencies -j
+        run: |
+          cabal build all --only-dependencies -j && exit 0
+          echo "::group::Dependency build failed; again on one job, for its output"
+          cabal build all --only-dependencies -j1 || true
+          echo "::endgroup::"
+          exit 1
 
       - name: Save cabal store
         if: steps.cache.outputs.cache-hit != 'true'
