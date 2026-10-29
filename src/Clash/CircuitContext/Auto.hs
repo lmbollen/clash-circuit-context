@@ -74,14 +74,21 @@ import Clash.Prelude (
   BitPack (..),
   DSignal,
   Enable,
+  Index,
   KnownDomain,
   KnownNat,
   NFDataX,
   Reset,
+  SNat (..),
+  SNatLE (..),
   Signal,
   Vec,
+  compareSNat,
+  d1,
   fromEnable,
   imap,
+  snatToInteger,
+  succSNat,
   toEnable,
   toSignal,
   unsafeFromReset,
@@ -92,8 +99,8 @@ import Data.Coerce (coerce)
 import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty)
-import Data.Type.Bool (type (||))
 import Data.Tagged (Tagged (..))
+import Data.Type.Bool (type (||))
 import Data.Word (Word64)
 import GHC.Generics (
   C,
@@ -109,6 +116,7 @@ import GHC.Generics (
   (:+:) (..),
  )
 import GHC.Stack (HasCallStack, withFrozenCallStack)
+import GHC.TypeLits (type (+))
 import Numeric.Natural (Natural)
 
 import Clash.CircuitContext.Core (
@@ -500,6 +508,22 @@ instance {-# INCOHERENT #-} Probeable Integer where
 -- | See $integer.
 instance {-# INCOHERENT #-} Probeable Natural where
   probeNamed nm = coerce . probeSW @Natural64 nm . coerce
+
+{- | An 'SNat' has no 'BitPack' (it is a type-level constant), but its value
+is a number: it is probed as the @'Index' (n + 1)@ holding @n@, the narrowest
+type that can. @SNat 0@ would be zero bits wide and is not recorded.
+
+There is no instance context: the 'KnownNat' comes out of the 'SNat' itself,
+so the oracle has nothing to prove, and an @SNat (len - tap)@ in a step
+polymorphic in both probes as readily as a literal one. INCOHERENT for the
+same reason as the 'Integer' instance (see $integer).
+-}
+instance {-# INCOHERENT #-} Probeable (SNat n) where
+  probeNamed nm s@SNat = case (compareSNat d1 s, succSNat s) of
+    (SNatLE, n1@SNat) -> case compareSNat d1 n1 of
+      SNatLE -> probeSW @(Index (n + 1)) nm (fromInteger (snatToInteger s)) `seq` s
+      SNatGT -> s
+    (SNatGT, _) -> s
 
 class AutoProbe (flag :: Bool) t where
   autoProbeAt :: (HasProbe) => String -> t -> t

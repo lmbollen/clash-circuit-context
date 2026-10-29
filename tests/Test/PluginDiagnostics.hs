@@ -7,6 +7,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -184,14 +185,24 @@ otherWires inp = out
 {-# OPAQUE otherWires #-}
 
 {- | What a probe can and cannot record: any value Clash can represent that is
-not itself sequential. @total@ is an 'Integer', probed as Clash's 64 bits;
-@shown@ (a 'String') and @scale@ (a function) are not probe targets and may
-not warn. @wrapped@ only lacks a 'BitPack' instance, so it must warn.
+not itself sequential. @total@ is an 'Integer', probed as Clash's 64 bits,
+and @tap@ an 'SNat', probed as the 'Index' holding it (@none@, an @SNat 0@,
+has no bits to record); @shown@ (a 'String') and @scale@ (a function) are
+not probe targets and may not warn. @wrapped@ only lacks a 'BitPack'
+instance, so it must warn.
 -}
 probedStep :: (HasProbe) => Integer -> Int -> (Integer, Int)
-probedStep acc x = (total, P.length shown + scale 2 + unwrap wrapped)
+probedStep acc x =
+  ( total
+  , P.length shown + scale 2 + unwrap wrapped + snatToNum tap + snatToNum none
+  )
  where
   total = acc + toInteger x
+  -- Signed, or the closed-binding skip would leave them alone.
+  tap :: SNat 5
+  tap = SNat
+  none :: SNat 0
+  none = SNat
   shown = P.show total
   scale = (* x)
   wrapped = Undescribed x
@@ -386,6 +397,16 @@ main = do
           | (nm, ps) <- [("bigs", paths), ("total", probePaths)]
           , P.null [p | p <- ps, P.last p == nm]
           ]
+        , -- An SNat probes as the Index holding it; an SNat 0 has no bits.
+          [ "an SNat was not probed as Index 6 (3 bits): tap " <> show ws
+          | let ws =
+                  [ peWidth e
+                  | (k, e) <- Map.toList probes
+                  , P.last (P.map segmentName (splitOn '.' k)) == "tap"
+                  ]
+          , ws /= [3]
+          ]
+        , ["a zero-width SNat was probed: " <> show p | p <- probePaths, P.last p == "none"]
         , [ "a reset, enable or delayed signal was not traced: " <> show p
           | p <- [["top", "otherWires", nm] | nm <- ["rst", "ena", "dsig"]]
           , p `P.notElem` paths

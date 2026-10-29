@@ -272,7 +272,9 @@ type instance NonTranslatable Config = 'True
 ```
 
 `Integer` and `Natural` are not in that family: Clash translates them to 64
-bits, and a signal or probe of either records exactly that.
+bits, and a signal or probe of either records exactly that. An `SNat n` in a
+probed step is a number too, and probes as the `Index (n + 1)` holding it
+(`SNat 0` has no bits, so it records nothing).
 
 Which means "strict mode" is not a plugin option, it is `-Werror`:
 

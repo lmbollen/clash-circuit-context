@@ -184,6 +184,10 @@ Initial version.
   to: `Signal dom Integer` traces and an `Integer` in a mealy step probes.
   (Inside a composite payload there is still no `BitPack`; use `Signed 64`
   there.)
+* An `SNat n` in a probed step is probed, as the `Index (n + 1)` holding
+  `n`. It takes nothing from the context (the `KnownNat` comes out of the
+  `SNat`), so an `SNat (len - tap)` in a polymorphic step probes too. `SNat 0`
+  has no bits and is not recorded.
 * `DSignal`, `Reset` and `Enable` are `Traceable`, each as the signal
   underneath it (a reset as its raw level). They were wires the plugin
   declined for want of an instance no user could reasonably write.
