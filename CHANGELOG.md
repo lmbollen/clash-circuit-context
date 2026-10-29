@@ -86,7 +86,20 @@ Initial version.
   HasCircuitContext)` now makes its `OPAQUE` function a component, whether
   the synonym is declared in the module or imported. It used to keep
   tracing but silently lose its `$scope`, because the renamer runs before
-  synonyms are expanded.
+  synonyms are expanded. That includes a synonym declared above a top-level
+  Template Haskell splice (`createDomain`, `makeTopEntity`): the renamer
+  pass is handed one declaration group at a time, and the splice ends one,
+  so such a synonym is resolved from the type environment like an imported
+  one.
+* An unsigned local binding whose **inferred type is higher-rank** is left
+  alone instead of breaking the build. GHC infers one for a partial
+  application of a higher-rank function, `withRst = withReset rst` being the
+  usual case (`(HiddenReset dom => r) -> r`), and no recorder can be
+  instantiated at it. The renamer has no types, so the right-hand side's
+  head is looked up when it is already type-checked (imported, or from an
+  earlier declaration group) and its arguments are consumed from its type.
+  Such a binding is a function, so leaving it alone costs no wire and is not
+  reported.
 * The renamer half is **idempotent**. Enabling the plugin twice
   (package-wide plus an `OPTIONS_GHC` pragma) used to nest every component
   wrap in itself (`switch.switch`); it is now a no-op, and a hand-written

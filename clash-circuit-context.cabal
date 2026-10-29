@@ -178,6 +178,7 @@ test-suite plugin-diagnostics
   type: exitcode-stdio-1.0
   main-is: Test/PluginDiagnostics.hs
   other-modules:
+    Test.DeclGroups
     Test.DesignCtx
     Test.Downstream
 
