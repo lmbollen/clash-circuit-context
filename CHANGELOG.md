@@ -171,12 +171,15 @@ Initial version.
   records wires, so a plain value in a traced component (a `Bool` inside a
   lambda, a `MemoryMap`, a function) is not a trace target; a probe records
   representable values, so a `Signal`, a list or a function inside a probed
-  step is not a probe target; and a signal or probe whose payload has no
-  finite bit width (`[a]`, a function, anything recursive) cannot be
-  recorded. The oracle decides this from the type's constructors, and
-  whatever it cannot see into still warns. What remains in
+  step is not a probe target; and a type Clash cannot translate is not
+  recorded by either. The last is declared by the new open type family
+  `NonTranslatable` (exported from `Clash.CircuitContext`), which answers
+  `'True` for lists, functions, `IO`, `SimOnly`, and the `Signal`, `Vec`,
+  `Maybe`, `Either` and tuples holding them; declare your own types next to
+  them. A type nobody declared still warns. What remains in
   `-Wx-circuit-context-untraced` could have been recorded, and each message
-  now ends with the fix: the instance to derive, or the constraint to add.
+  now ends with the fix: the instance to derive, the `NonTranslatable`
+  declaration to write, or the constraint to add.
 * `Integer` and `Natural` are recorded, as the 64 bits Clash translates them
   to: `Signal dom Integer` traces and an `Integer` in a mealy step probes.
   (Inside a composite payload there is still no `BitPack`; use `Signed 64`

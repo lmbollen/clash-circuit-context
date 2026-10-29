@@ -34,10 +34,10 @@ Two halves, both exercised by this one module:
 * what the plugin now SAYS — every near-miss below is a GHC warning at
   compile time, and this module holds one live example of each category:
   @x-circuit-context-uninstrumented@ (@noOpaque@, @unsigned@, @bothModes@),
-  @x-circuit-context-untraced@ (@untraceable@, and in 'neverWires' a plain
-  @Vec 4 Bool@ and a record of signals without an instance; its 'String',
-  'Integer' and function bindings, which no hardware could carry, must NOT
-  warn),
+  @x-circuit-context-untraced@ (@untraceable@, and in 'neverWires' a record
+  of signals without an instance and a signal of 'Tags', which Clash cannot
+  translate but nobody declared; its plain values, its signal of lists and
+  its signal of the declared 'Names' must NOT warn),
   @x-circuit-context-undecided@ (@held@, whose 'Awkward' payload has a
   'BitPack' instance the oracle cannot recurse into) and
   @x-circuit-context-undescribed@ (@bare@, recorded as raw bits for want of
@@ -126,11 +126,22 @@ viaImportedSyn k inp = out
 -- | Signals with no 'Traceable' instance: see 'neverWires'.
 data Pair dom = Pair (Signal dom Int) (Signal dom Int)
 
+-- | Clash cannot translate either, but only 'Names' says so: see 'neverWires'.
+newtype Names = Names [String]
+
+type instance NonTranslatable Names = 'True
+
+newtype Tags = Tags [Int]
+
 {- | What a trace can and cannot record. A trace records wires, so the plain
 values here (@label@, @big@, @flags@, @step@) are not trace targets, whatever
 their type; and @lists@ is a signal whose payload Clash cannot represent. A
 warning about any of them would have no fix, so none may warn, and
 @check.sh@ checks that none does.
+
+@named@ is a signal of a type its author declared 'NonTranslatable', so it
+may not warn either. @tagged@ is the same shape undeclared: the plugin cannot
+know, so it must warn, and offer the declaration.
 
 @bigs@ IS recorded: Clash translates 'Integer' to 64 bits, and so does the
 recorder. @pair@ holds signals and only lacks an instance, so it must still
@@ -145,6 +156,7 @@ neverWires k inp = out
       + (P.length <$> lists)
       + (fromInteger <$> bigs)
       + pairSum
+      + ((\(Names ns) (Tags ts) -> P.length ns + P.length ts) <$> named <*> tagged)
   label = P.replicate k 'x'
   big = toInteger k
   flag = k > 3
@@ -155,6 +167,8 @@ neverWires k inp = out
   pair = Pair inp lists'
   lists' = P.sum <$> lists
   pairSum = case pair of Pair a b -> a + b
+  named = Names . pure . P.show <$> inp
+  tagged = Tags . pure <$> inp
 {-# OPAQUE neverWires #-}
 
 {- | The wires that are not a bare 'Signal': a reset, an enable and a

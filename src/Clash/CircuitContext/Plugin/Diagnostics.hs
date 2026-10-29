@@ -41,7 +41,7 @@ Five categories, because they differ in how likely each is to be a defect:
   found no instance for a binding that could have been recorded. A real
   answer, and the message names the instance or constraint that would fix it.
   A binding no recorder could ever take (a plain value in a traced component,
-  a signal in a probed step, a payload with no finite bit width) is not
+  a signal in a probed step, a type declared @NonTranslatable@) is not
   reported at all: see @neverRecordable@ in
   "Clash.CircuitContext.Plugin.Oracle".
 
