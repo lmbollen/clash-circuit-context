@@ -146,13 +146,17 @@ Initial version.
   nothing was lost, so it is not `untraced`, and
   `-Werror=x-circuit-context-untraced` does not promote it.
 * `ProbeMap` holds `ProbeEntry` records (period, width, runs and the ADT
-  descriptor) instead of tuples, mirroring `TraceEntry`. `Core` also exports
+  descriptor) instead of tuples, mirroring `TraceEntry`, which gains the same
+  descriptor as `teAdt` (`Nothing` for a `traceSignalC`). `Core` also exports
   `disambiguate` and `vcdPath`, the key transforms a dump applies, for
   anything that has to name the VCD's vars from outside it.
 * Tracing a `Signal dom a` requires `(KnownDomain dom, BitPack a,
   NFDataX a)` — no `Typeable`, and no `Waveform`. Registration stores an
   empty `TypeRep` encoding (unused by `dumpVCDC`), so size-polymorphic payloads
   (`Unsigned n`, `BitVector n`) trace inside polymorphic components.
+  Describing one is the separate requirement `Waveform a`, whose superclass
+  is `(Typeable a, BitPack a)`: where a polymorphic component has no
+  `Typeable` for its payload, the payload is traced as raw bits.
 * Supported GHCs: 9.6, 9.10, 9.12; clash-prelude `>=1.9 && <1.12` (the trace
   internals used are identical across these versions).
 * Instrumentation is transparent to HDL generation. All recording

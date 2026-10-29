@@ -183,9 +183,12 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
   `name_1`, …). No `Typeable` is required — that field of a trace only
   feeds clash's replay machinery, which these maps don't use, and
   requiring it would exclude size-polymorphic payloads (`Unsigned n` under
-  a `KnownNat n` given) from tracing inside polymorphic components. Extend
-  by adding `Traceable` instances — and for records of traceable parts
-  (signal bundles), derive `Generic` and write an **empty instance**:
+  a `KnownNat n` given) from tracing inside polymorphic components.
+  Describing a payload does need `Typeable`, a superclass of `Waveform`;
+  without it the payload is traced as raw bits (see
+  [Typed waveforms](#typed-waveforms)). Extend by adding `Traceable`
+  instances — and for records of traceable parts (signal bundles), derive
+  `Generic` and write an **empty instance**:
 
   ```haskell
   data Bus dom = Bus
