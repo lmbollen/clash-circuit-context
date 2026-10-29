@@ -65,7 +65,9 @@ Initial version.
   function; there is nothing to trace), and an `OPAQUE` component whose
   right-hand side is higher-rank after its patterns skips the component wrap
   with an `x-circuit-context` warning. Its bindings still trace, at the
-  enclosing scope.
+  enclosing scope. Type synonyms are seen through, declared locally or
+  imported: `type WithRst dom r = (HiddenReset dom => r) -> r` in a signature
+  is recognised like the type it stands for.
 * A binding whose right-hand side already applies `traceSignalC`,
   `traceSignalSW`, `probe` or `probeSW` under the binder's own name does not
   get an injected recorder on top. It used to record the signal twice, rendered `name_0`/`name_1`. A

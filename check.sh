@@ -88,6 +88,9 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     "no instance for: Waveform Bare" \
     "the oracle could not decide: 1 <= n" \
     "'withComponentRst'' is not traced: its signature is higher-rank" \
+    "'belowSyn' is not traced: its signature is higher-rank" \
+    "skipping component wrap for an equation of 'topRankNLocalSyn'" \
+    "skipping component wrap for an equation of 'topRankNImportedSyn'" \
     "Its right-hand side has a higher-rank type"
   do
     if grep -qF "$want" "$log"; then
