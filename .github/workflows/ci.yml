@@ -42,15 +42,19 @@ jobs:
           ghc --version
           cabal --version
 
+      # The cabal version is in the key because `latest` moves: a store written
+      # by one cabal is not one the next can read ("cannot read state cache"),
+      # and an exact key hit is never saved over, so without it a stale entry
+      # made every run rebuild every dependency until cabal.project changed.
       - name: Cache cabal store
         uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830  # v4.3.0
         with:
           path: |
             ${{ steps.setup.outputs.cabal-store }}
             dist-newstyle
-          key: ${{ runner.os }}-ghc-${{ matrix.ghc }}-${{ hashFiles('cabal.project', '*.cabal') }}
+          key: ${{ runner.os }}-ghc-${{ matrix.ghc }}-cabal-${{ steps.setup.outputs.cabal-version }}-${{ hashFiles('cabal.project', '*.cabal') }}
           restore-keys: |
-            ${{ runner.os }}-ghc-${{ matrix.ghc }}-
+            ${{ runner.os }}-ghc-${{ matrix.ghc }}-cabal-${{ steps.setup.outputs.cabal-version }}-
 
       - name: Build and run checks
         run: ./check.sh
