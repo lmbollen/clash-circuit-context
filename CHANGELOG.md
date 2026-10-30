@@ -141,6 +141,9 @@ Initial version.
   bundles): derive `Generic` and write an empty instance. Fields trace as
   `name.field` sub-scopes in the VCD hierarchy; nested records nest. The
   umbrella module re-exports `Traceable`.
+* `clash-shockwaves` 1.1.1 and 1.1.2 are accepted as well as 1.1.3, except on
+  GHC 9.6, where only 1.1.3 builds. A project whose freeze file pins 1.1.1
+  (found on Helios) can take this package without moving its index-state.
 * Typed waveforms, from `clash-shockwaves`: every traced or probed signal
   whose payload type has a `Waveform` instance carries that type's ADT
   description (constructors, fields, bit ranges, styles), captured at

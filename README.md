@@ -55,10 +55,10 @@ still enable it per module with
 `{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}` — but do not do
 both, or the plugin runs twice.
 
-Requires GHC 9.6, 9.10 or 9.12, `clash-prelude >= 1.9 && < 1.12` and
-`clash-shockwaves` 1.1.3 (from Hackage; pinned to that release because the
-sidecar uses its internal modules). Nothing else, and in particular no
-patched `clash-prelude`.
+Requires GHC 9.6, 9.8, 9.10 or 9.12, `clash-prelude >= 1.9 && < 1.12` and
+`clash-shockwaves` 1.1.1 to 1.1.3 (from Hackage; 1.1.3 on GHC 9.6, and no
+later release until it is checked, because the sidecar uses its internal
+modules). Nothing else, and in particular no patched `clash-prelude`.
 
 Then instrument a function with the two annotations above, and see
 [Waveforms from your test suite](#waveforms-from-your-test-suite) for getting
