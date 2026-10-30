@@ -63,8 +63,9 @@ Initial version.
   exposed the shape. (GHC also infers such a type for some unsigned bindings,
   which is decided from the right-hand side instead; see the entry on
   inferred higher-rank locals.) A local binding like
-  that is left alone with an `x-circuit-context-untraced` warning (it is a
-  function; there is nothing to trace), and an `OPAQUE` component whose
+  that is left alone and not reported: a polytype has to sit under an arrow,
+  so the binding is a function, and a function is never a trace or probe
+  target. An `OPAQUE` component whose
   right-hand side is higher-rank after its patterns skips the component wrap
   with an `x-circuit-context` warning. Its bindings still trace, at the
   enclosing scope. Type synonyms are seen through, declared locally (above a

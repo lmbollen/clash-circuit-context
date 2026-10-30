@@ -548,51 +548,24 @@ rewriteInside ctx mode0 = goM mode0
   onVB :: Mode -> HsValBindsLR GhcRn GhcRn -> GHC.TcM (HsValBindsLR GhcRn GhcRn)
   onVB m (XValBindsLR (NValBinds groups sigs)) = do
     localModes <- modesFromSigs ctx sigs
-    let
-      localSigned = [n | L _ (TypeSig _ ns _) <- sigs, L _ n <- ns]
-      -- A local function that takes arguments is never wrapped (see
-      -- 'wrapFunBind'), so a higher-rank signature on it blocks nothing and
-      -- is not worth a warning.
-      takesArgs =
-        [ n
-        | (_, bs) <- groups
-        , L _ FunBind{fun_id = L _ n, fun_matches = MG _ (L _ ms)} <- bindsToList bs
-        , any (not . null . matchPats . unLoc) ms
-        ]
+    -- A higher-rank signature is a function's: a polytype has to sit under an
+    -- arrow. A function is no trace target, so such a binder is left alone and
+    -- nothing is said; wrapping it would ask GHC to instantiate the recorder at
+    -- a polytype, which breaks the build. One that takes arguments is never
+    -- wrapped anyway (see 'wrapFunBind'), so listing it changes nothing.
     rankN <-
-      map (\(n, spn, _) -> (n, spn))
+      map fst
         <$> filterM
-          (\(_, _, ty) -> higherRankAfter ctx 0 ty)
-          [ (n, locA l, ty)
-          | L _ (TypeSig _ ns ty) <- sigs
-          , L l n <- ns
-          , n `notElem` takesArgs
-          , wantedBinder n (locA l)
-          ]
-    let
-      -- A higher-rank binder is not wrapped at all, so it no longer counts
-      -- as signed; 'wrappable' below keeps it out of the open case too.
-      localSigned' = filter (`notElem` map fst rankN) localSigned
-    mapM_ (\(n, spn) -> reportRankN (fromMaybe m (lookup n localModes)) n spn) rankN
-    groups' <- mapM (onGroup m localModes localSigned' (map fst rankN)) groups
+          (higherRankAfter ctx 0 . snd)
+          [(n, ty) | L _ (TypeSig _ ns ty) <- sigs, L _ n <- ns]
+    let localSigned = [n | L _ (TypeSig _ ns _) <- sigs, L _ n <- ns]
+    groups' <- mapM (onGroup m localModes localSigned rankN) groups
     pure (XValBindsLR (NValBinds groups' sigs))
   onVB _ vb = pure vb
 
   wrappable :: GHC.Name -> [GHC.Name] -> [GHC.Name] -> GHC.NameSet -> Bool
   wrappable nm localSigned rankN fvs =
     nm `notElem` rankN && signedOrOpen nm localSigned fvs
-
-  reportRankN bm nm spn =
-    Diag.report
-      spn
-      Diag.Untraced
-      [ "'"
-          <> GHC.getOccString nm
-          <> (if bm == ProbeMode then "' is not probed" else "' is not traced")
-          <> ": its signature is higher-rank."
-      , "A forall or constraint nested inside the type cannot be passed"
-          <> " through a recorder, which would have to be instantiated at it."
-      ]
 
   -- A bind that expands (pattern binders renamed + sibling trace binds)
   -- makes the group recursive: the extra binds reference binders of their
