@@ -22,3 +22,11 @@ dist-hackage/
 /manual-instrumentation.json
 /auto-instrumentation.json
 *.spill
+
+# The book (book/): the output, the work directory of mdbook-clash, the
+# exported diagrams, the build of its clash, and the files its examples write.
+/_build/
+/book/_build/
+/book/src/gen/
+/book/dist-newstyle/
+/book/waveforms/
