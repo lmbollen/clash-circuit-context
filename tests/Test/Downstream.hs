@@ -324,8 +324,9 @@ would need @a := (HiddenReset dom => r) -> r@, a type with a polytype
 inside it, and GHC does not instantiate a type variable at one (that would be
 impredicative). Wrapping it turned a module that compiled without the
 plugin into one that did not, with an error about a unification variable the
-author never wrote. It is left alone, with an @x-circuit-context-untraced@
-warning; there is nothing to trace in a function anyway.
+author never wrote. It is left alone, and nothing is said: a polytype has
+to sit under an arrow, so a higher-rank binding is a function, and a function
+is no trace target.
 
 GHC does infer such a type for some UNSIGNED bindings too, the eta-reduced
 @withRst = withReset rst@; that case is decided from the right-hand side
@@ -334,8 +335,9 @@ were wrapped (F6 above), this shape was skipped for being closed.
 
 The module compiling is most of the assertion. @rankN.out@ must still be
 recorded: skipping one binding must not cost its siblings their wires.
-@withRst@ has the same kind of signature but takes an argument, and a local
-function with arguments is never wrapped, so it must not warn.
+None of these locals may be named in a diagnostic; @check.sh@ asserts that
+against the build log. @withRst@ takes an argument, which is the case a
+downstream design hit.
 -}
 rankN :: (HasCircuitContext) => Signal System Int -> Signal System Int
 rankN inp = out
@@ -357,7 +359,7 @@ rankN inp = out
   withComponentRst' :: (KnownDomain dom) => ((HiddenReset dom) => r) -> r
   withComponentRst' = withReset (unsafeFromActiveHigh (pure False))
 
-  -- Takes an argument, so it was never going to be wrapped: no warning.
+  -- Takes an argument, so it was never going to be wrapped either.
   withRst :: (KnownDomain dom) => ((HiddenReset dom) => r) -> r
   withRst r = withReset (unsafeFromActiveHigh (pure False)) r
 
@@ -409,9 +411,9 @@ topRankNOpSyn ::
 topRankNOpSyn active = withReset (unsafeFromActiveLow active)
 {-# OPAQUE topRankNOpSyn #-}
 
-{- | A higher-rank local in a PROBED step is reported as not probed, not as
-not traced: the message names the recorder the binding would have had.
-Compiling is the test; the wording is checked in the build log.
+{- | A higher-rank local in a PROBED step: left alone and not reported, as in
+a traced one. A function is no probe target either. Compiling is the test;
+@check.sh@ asserts the silence.
 -}
 probedRankN :: (HasProbe) => Int -> Int -> (Int, Int)
 probedRankN s i = (s', s')

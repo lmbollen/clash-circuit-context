@@ -87,11 +87,6 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     "recorded as raw bits, not described: Bare" \
     "no instance for: Waveform Bare" \
     "the oracle could not decide: 1 <= n" \
-    "'withComponentRst'' is not traced: its signature is higher-rank" \
-    "'belowSyn' is not traced: its signature is higher-rank" \
-    "'belowImportedSyn' is not traced: its signature is higher-rank" \
-    "'belowOpSyn' is not traced: its signature is higher-rank" \
-    "'withRstProbe' is not probed: its signature is higher-rank" \
     "skipping component wrap for an equation of 'topRankN'." \
     "skipping component wrap for an equation of 'topRankNLocalSyn'" \
     "skipping component wrap for an equation of 'topRankNImportedSyn'" \
@@ -115,13 +110,19 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
         echo "FAIL: topRankNInvis was not skipped (or did not build)"; fail=1
       fi ;;
   esac
-  # A higher-rank local function that takes arguments was never going to be
-  # wrapped, so skipping it is not worth a warning (Test/Downstream.hs rankN).
-  if grep -qF "'withRst' is not traced" "$log"; then
-    echo "FAIL: warned about a higher-rank local that is never wrapped"; fail=1
-  else
-    echo "ok: a higher-rank local with arguments is not reported"
-  fi
+  # A higher-rank local is a function, so it is no trace target: it is left
+  # alone and nothing is said (Test/Downstream.hs rankN, probedRankN). Absence
+  # is the assertion; topRankN's warning above, from the same module, is what
+  # shows the module was compiled with the plugin at all.
+  quiet=ok
+  for local in "'withComponentRst''" "'belowSyn'" "'belowImportedSyn'" \
+               "'belowOpSyn'" "'withRstProbe'" "'withRst'"; do
+    if grep -qF "$local" "$log"; then
+      echo "FAIL: a diagnostic names the higher-rank local $local"; fail=1
+      quiet=
+    fi
+  done
+  [ -n "$quiet" ] && echo "ok: higher-rank locals are left alone without a word"
   # ...and the marker must silence exactly the binder it vouches for, while
   # the same shape without it still reports (Helios F4). Absence is the
   # assertion, so it is checked against the same fresh log -- fresh for
