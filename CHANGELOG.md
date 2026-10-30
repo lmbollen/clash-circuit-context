@@ -175,15 +175,16 @@ Initial version.
   recorded by either. The last is declared by the new open type family
   `NonTranslatable` (exported from `Clash.CircuitContext`), which answers
   `'True` for lists, functions, `IO`, `SimOnly`, and the `Signal`, `Vec`,
-  `Maybe`, `Either` and tuples holding them; declare your own types next to
+  `Maybe`, `Either` and tuples (up to eight components) holding them; declare your own types next to
   them. A type nobody declared still warns. What remains in
   `-Wx-circuit-context-untraced` could have been recorded, and each message
   now ends with the fix: the instance to derive, the `NonTranslatable`
   declaration to write, or the constraint to add.
 * `Integer` and `Natural` are recorded, as the 64 bits Clash translates them
   to: `Signal dom Integer` traces and an `Integer` in a mealy step probes.
-  (Inside a composite payload there is still no `BitPack`; use `Signed 64`
-  there.)
+  (Inside a composite payload there is still no `BitPack`; the warning says
+  to use `Signed 64` / `Unsigned 64` there, never to declare `Integer`
+  `NonTranslatable`.)
 * An `SNat n` in a probed step is probed, as the `Index (n + 1)` holding
   `n`. It takes nothing from the context (the `KnownNat` comes out of the
   `SNat`), so an `SNat (len - tap)` in a polymorphic step probes too. `SNat 0`

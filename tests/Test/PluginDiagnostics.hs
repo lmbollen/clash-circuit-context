@@ -52,6 +52,7 @@ import qualified Prelude as P
 
 import Control.Exception (evaluate)
 import qualified Data.Map.Strict as Map
+import Numeric.Natural (Natural)
 import System.Exit (exitFailure)
 
 import Clash.Explicit.Prelude
@@ -144,10 +145,15 @@ warning about any of them would have no fix, so none may warn, and
 may not warn either. @tagged@ is the same shape undeclared: the plugin cannot
 know, so it must warn, and offer the declaration.
 
-@bigs@ IS recorded: Clash translates 'Integer' to 64 bits, and so does the
-recorder. @pair@ holds signals and only lacks an instance, so it must still
-warn, and name the fix.
+@bigs@ and @nats@ ARE recorded: Clash translates 'Integer' and 'Natural' to
+64 bits, and so does the recorder. @maybes@ is an 'Integer' inside a 'Maybe',
+where there is no 'BitPack' for it: it must warn, and say to use @Signed 64@,
+never to declare 'Integer' 'NonTranslatable'. @pair@ holds signals and only
+lacks an instance, so it must still warn, and name the fix.
 -}
+toNatural :: Int -> Natural
+toNatural = fromIntegral
+
 neverWires :: (DesignCtx dom) => Int -> Signal dom Int -> Signal dom Int
 neverWires k inp = out
  where
@@ -156,6 +162,8 @@ neverWires k inp = out
       + pure (P.length label + fromInteger big + step (P.length (P.filter id (toList flags))))
       + (P.length <$> lists)
       + (fromInteger <$> bigs)
+      + (fromIntegral <$> nats)
+      + (maybe 0 fromInteger <$> maybes)
       + pairSum
       + ((\(Names ns) (Tags ts) -> P.length ns + P.length ts) <$> named <*> tagged)
   label = P.replicate k 'x'
@@ -165,12 +173,29 @@ neverWires k inp = out
   step = (+ k)
   lists = (: []) <$> inp
   bigs = toInteger <$> inp
+  nats = toNatural <$> inp
+  maybes = Just . toInteger <$> inp
   pair = Pair inp lists'
   lists' = P.sum <$> lists
   pairSum = case pair of Pair a b -> a + b
   named = Names . pure . P.show <$> inp
   tagged = Tags . pure <$> inp
 {-# OPAQUE neverWires #-}
+
+{- | Two types the walk must keep apart although they differ only in a
+promoted argument: @Picked 'True@ holds a signal, @Picked 'False@ does not.
+'Both' holds one of each, so it is a trace target that only lacks a
+'Traceable' instance, and @both@ in 'otherWires' must warn. Remembering
+@Picked@ without its argument saw it once, as the signal-free kind, and
+silenced the warning.
+-}
+type family Pick (b :: Bool) where
+  Pick 'True = Signal System Int
+  Pick 'False = Int
+
+newtype Picked b = Picked (Pick b)
+
+data Both = Both (Picked 'False) (Picked 'True)
 
 {- | The wires that are not a bare 'Signal': a reset, an enable and a
 delayed signal each trace as the signal underneath them.
@@ -181,20 +206,35 @@ otherWires inp = out
   rst = unsafeToReset ((> 1) <$> inp) :: Reset System
   ena = toEnable ((> 0) <$> inp)
   dsig = fromSignal inp :: DSignal System 0 Int
-  out = mux (unsafeFromReset rst .&&. fromEnable ena) (toSignal dsig) inp
+  out = mux (unsafeFromReset rst .&&. fromEnable ena) (toSignal dsig) inp + bothSig
+  both = Both (Picked 0) (Picked inp)
+  bothSig = case both of Both _ (Picked s) -> s
 {-# OPAQUE otherWires #-}
 
 {- | What a probe can and cannot record: any value Clash can represent that is
 not itself sequential. @total@ is an 'Integer', probed as Clash's 64 bits,
 and @tap@ an 'SNat', probed as the 'Index' holding it (@none@, an @SNat 0@,
 has no bits to record); @shown@ (a 'String') and @scale@ (a function) are
-not probe targets and may not warn. @wrapped@ only lacks a 'BitPack'
-instance, so it must warn.
+not probe targets and may not warn. Neither are @ticks@ (a 'Signal') and
+@clk@ (a 'Clock'): they have no single value per step. @wrapped@ only lacks
+a 'BitPack' instance, so it must warn.
+
+@below@, @above@ and @natural@ pin what is recorded for an 'Integer' or a
+'Natural': Clash's 64 bits, two's complement, wrapping where the hardware
+would. @below@ is @-total@, so it records @2^64 - total@; @above@ and
+@natural@ are @total + 2^64@, so they record @total@ itself.
 -}
 probedStep :: (HasProbe) => Integer -> Int -> (Integer, Int)
 probedStep acc x =
   ( total
-  , P.length shown + scale 2 + unwrap wrapped + snatToNum tap + snatToNum none
+  , P.length shown
+      + scale 2
+      + unwrap wrapped
+      + snatToNum tap
+      + snatToNum none
+      + fromInteger (below + above)
+      + fromIntegral natural
+      + P.sum ticked
   )
  where
   total = acc + toInteger x
@@ -204,6 +244,14 @@ probedStep acc x =
   none :: SNat 0
   none = SNat
   shown = P.show total
+  below = negate total
+  above = total + 2 P.^ (64 :: Int)
+  natural = fromInteger above :: Natural
+  ticks = pure x :: Signal System Int
+  -- Signed, or the closed-binding skip would leave it alone.
+  clk :: Clock System
+  clk = clockGen
+  ticked = sampleN 2 (register clk resetGen enableGen 0 ticks)
   scale = (* x)
   wrapped = Undescribed x
   unwrap (Undescribed y) = y
@@ -316,6 +364,14 @@ main = do
   let
     paths = P.map (P.map segmentName . splitOn '.') (Map.keys traces)
     probePaths = P.map (P.map segmentName . splitOn '.') (Map.keys probes)
+    -- A probe's recorded values, cycle by cycle (a run covers its cycles).
+    probeValues nm =
+      [ toInteger val
+      | (k, ProbeEntry{peRuns = runs}) <- Map.toList probes
+      , P.last (P.map segmentName (splitOn '.' k)) == nm
+      , (cs, ce, (_, val)) <- P.reverse runs
+      , _ <- [cs .. ce]
+      ]
     downstreamPaths =
       P.map (P.map segmentName . splitOn '.') (Map.keys downstream)
   putStrLn "recorded paths:"
@@ -407,6 +463,29 @@ main = do
           , ws /= [3]
           ]
         , ["a zero-width SNat was probed: " <> show p | p <- probePaths, P.last p == "none"]
+        , [ "a Natural was not recorded: nats"
+          | P.null [p | p <- paths, P.last p == "nats"]
+          ]
+        , -- Clash's 64 bits, two's complement, wrapping like the hardware.
+          [ "an Integer or Natural was not recorded as 64 wrapping bits: "
+              <> nm
+              <> " recorded "
+              <> show got
+              <> ", expected "
+              <> show want
+          | let totals = probeValues "total"
+          , (nm, want) <-
+              [ ("below", P.map (\t -> 2 P.^ (64 :: Int) - t) totals)
+              , ("above", totals)
+              , ("natural", totals)
+              ]
+          , let got = probeValues nm
+          , P.null totals P.|| got /= want
+          ]
+        , [ "recorded a sequential value in a probed step: " <> show p
+          | p <- probePaths
+          , P.last p `P.elem` ["ticks", "clk"]
+          ]
         , [ "a reset, enable or delayed signal was not traced: " <> show p
           | p <- [["top", "otherWires", nm] | nm <- ["rst", "ena", "dsig"]]
           , p `P.notElem` paths

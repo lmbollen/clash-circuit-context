@@ -89,6 +89,9 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     "not probed: Undescribed" \
     "not traced: Signal dom Tags" \
     "type instance NonTranslatable Tags = 'True" \
+    "not traced: Both" \
+    "not traced: Signal dom (Maybe Integer)" \
+    "use Signed 64 in its place" \
     "recorded as raw bits, not described: Bare" \
     "no instance for: Waveform Bare" \
     "the oracle could not decide: 1 <= n"
@@ -127,13 +130,18 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     done
     [ -n "$quiet" ] && echo "ok: higher-rank bindings are instrumented or left alone, without a word"
   fi
+  # Integer inside a composite: no BitPack, and the fix is Signed 64, never a
+  # NonTranslatable declaration (that would silence every later real fix).
+  if grep -qF "NonTranslatable Integer" "$log"; then
+    echo "FAIL: offered to declare Integer NonTranslatable"; fail=1
+  fi
   # Bindings no recorder could ever take are not reported: plain values in a
   # traced component, types declared NonTranslatable (lists, functions, a
-  # user's Names), signals inside a probed step (Test/PluginDiagnostics.hs
-  # neverWires and probedStep). A warning about them has no fix. Integer is
-  # NOT among them: Clash translates it, so the recorder records it, and must
-  # not report it either.
-  never=$(grep -E "not (traced|probed): (\[Char\]|Integer|Bool|Vec 4 Bool|Int -> Int|Signal dom \[Int\]|Signal dom Integer|Signal dom Names|SNat [0-9]+)$" "$log")
+  # String, a user's Names), a signal or a clock inside a probed step
+  # (Test/PluginDiagnostics.hs neverWires and probedStep). A warning about
+  # them has no fix. Integer and Natural are NOT among them: Clash translates
+  # them, so the recorder records them, and must not report them either.
+  never=$(grep -E "not (traced|probed): (\[Char\]|String|Integer|Natural|Bool|Vec 4 Bool|Int -> Int|Signal dom \[Int\]|Signal dom Integer|Signal dom Natural|Signal dom Names|Signal System Int|Clock System|SNat [0-9]+)$" "$log")
   if [ -n "$never" ]; then
     echo "FAIL: reported a binding no recorder could take:"; echo "$never"; fail=1
   else

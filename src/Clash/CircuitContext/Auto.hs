@@ -551,7 +551,7 @@ autoProbe = autoProbeAt @(CanProbe t) @t
 --------------------------------------------------------------------------------
 
 {- | ''True' for a type Clash cannot translate to hardware, so no trace or
-probe can ever record it: a list, a function, anything recursive. The plugin
+probe can ever record it: a list, a function, @IO@, 'SimOnly'. The plugin
 does not warn about a binding it declined to record when the binding's type,
 or the requirement it stopped at, reduces to ''True' here — that warning
 would have no fix.
@@ -567,6 +567,10 @@ own that Clash cannot translate, declare it next to the type —
 
 'Integer' and 'Natural' are NOT in here: Clash translates both, to 64 bits,
 and they are recorded as such (see $integer).
+
+The containers below pass the question on to their contents. Tuples do so up
+to eight components; a wider tuple holding a list still warns, and a
+@type instance@ for it settles that.
 -}
 type family NonTranslatable (t :: Type) :: Bool
 
@@ -591,6 +595,18 @@ type instance
 type instance
   NonTranslatable (a, b, c, d) =
     NonTranslatable a || NonTranslatable b || NonTranslatable c || NonTranslatable d
+type instance
+  NonTranslatable (a, b, c, d, e) =
+    NonTranslatable a || NonTranslatable (b, c, d, e)
+type instance
+  NonTranslatable (a, b, c, d, e, f) =
+    NonTranslatable a || NonTranslatable (b, c, d, e, f)
+type instance
+  NonTranslatable (a, b, c, d, e, f, g) =
+    NonTranslatable a || NonTranslatable (b, c, d, e, f, g)
+type instance
+  NonTranslatable (a, b, c, d, e, f, g, h) =
+    NonTranslatable a || NonTranslatable (b, c, d, e, f, g, h)
 
 --------------------------------------------------------------------------------
 -- Describing a trace or probe
