@@ -194,7 +194,17 @@ Initial version.
   has no bits and is not recorded.
 * `DSignal`, `Reset` and `Enable` are `Traceable`, each as the signal
   underneath it (a reset as its raw level). They were wires the plugin
-  declined for want of an instance no user could reasonably write.
+  declined for want of an instance that only an orphan could supply.
+  **Migration:** a project that wrote that orphan itself must delete it, or
+  GHC reports duplicate instances. If the orphan did more than trace (one
+  downstream design forced each value, to stop a space leak in runs that
+  record nothing), move that work to where the signal is made: this
+  instance only records.
+* The 64-bit `BitPack` instances behind `Integer` and `Natural` build
+  against clash-prelude `master` too, which added the class method
+  `maybeUnpack` while keeping the version number 1.11.0. A Template Haskell
+  check asks `BitPack` whether it has the method, so one instance serves
+  both; CPP could not tell the two apart.
 * `ProbeMap` holds `ProbeEntry` records (period, width, runs and the ADT
   descriptor) instead of tuples, mirroring `TraceEntry`, which gains the same
   descriptor as `teAdt` (`Nothing` for a `traceSignalC`). `Core` also exports

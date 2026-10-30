@@ -57,6 +57,10 @@ library
     Clash.CircuitContext.Waveform
     Clash.CircuitContext.Waveform.Hedgehog
 
+  other-modules:
+    Clash.CircuitContext.Internal.BitPackCompat
+    Clash.CircuitContext.Internal.Wide64
+
   -- On `clash-shockwaves`: supplies the ADT description (constructors, fields,
   -- bit ranges, styles) that this recorder's hierarchy does not model, for
   -- every recorded payload whose type has a `Waveform` instance; see
@@ -71,6 +75,11 @@ library
   -- the Traceable instance for Tagged lives in Auto.hs. Same range
   -- clash-prelude pins. (Kept out of the list itself: cabal-gild hoists
   -- interior comments to the top, where they read as being about `base`.)
+  --
+  -- On `template-haskell`: Internal.BitPackCompat asks BitPack whether it
+  -- has `maybeUnpack` (clash-prelude master does, its releases do not), so
+  -- one hand-written instance compiles against both. clash-prelude depends
+  -- on it already; the range is GHC 9.6's to 9.12's.
   build-depends:
     aeson >=2.1 && <2.3,
     base >=4.18 && <4.22,
@@ -85,6 +94,7 @@ library
     hedgehog >=1.4 && <1.6,
     syb >=0.7 && <0.8,
     tagged >=0.8 && <0.9,
+    template-haskell >=2.20 && <2.24,
     text >=2.0 && <2.2,
     time >=1.12 && <1.15,
 
