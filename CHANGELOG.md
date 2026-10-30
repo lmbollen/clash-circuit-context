@@ -139,8 +139,9 @@ Initial version.
   synonym was the only way to alias the constraint.
 * `Traceable` derives generically for records of traceable parts (signal
   bundles): derive `Generic` and write an empty instance. Fields trace as
-  `name.field` sub-scopes in the VCD hierarchy; nested records nest. The
-  umbrella module re-exports `Traceable`.
+  siblings named `name_field` (nested records `name_inner_field`), not as
+  sub-scopes: see the entry on VCD scopes below. The umbrella module
+  re-exports `Traceable`.
 * Typed waveforms, from `clash-shockwaves`: every traced or probed signal
   whose payload type has a `Waveform` instance carries that type's ADT
   description (constructors, fields, bit ranges, styles), captured at
