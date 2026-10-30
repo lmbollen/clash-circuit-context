@@ -108,7 +108,9 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
                 "'topRankN'" "'topRankNLocalSyn'" "'topRankNImportedSyn'" \
                 "'topRankNOpSyn'" "'withSyncReset'" "'withPickedReset'" \
                 "'splitRst'" \
-                "'topRankNInvis'" "'impredicative'"; do
+                "'topRankNInvis'" "'impredicative'" "'impredGuarded'" \
+                "'impredTwoEqs'" "'impredIf'" "'impredList'" \
+                "'impredLambda'" "'impredPointFree'"; do
     if grep -qF "$binder" "$log"; then
       echo "FAIL: a diagnostic names the higher-rank binder $binder"; fail=1
       quiet=
