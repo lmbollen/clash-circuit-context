@@ -405,26 +405,50 @@ read off the requirement that stopped it. A requirement on a data type
 for a type Clash cannot translate, a @NonTranslatable@ declaration; one on a
 type variable or a type family that did not reduce (@BitPack a@,
 @Traceable (Fwd p)@) wants a constraint.
+
+'Integer' and 'Natural' are the exception: Clash translates both, so a
+@NonTranslatable@ declaration would be wrong, and would silence every later
+decline that has a real fix. A payload of either is recorded on its own;
+inside a composite (@Maybe Integer@) there is no 'BitPack' for it, so the
+fix is the 64-bit type Clash would have used.
 -}
 remedy :: API.PredType -> String
 remedy blame = case GHC.classifyPredType blame of
+  GHC.ClassPred _ [arg]
+    | Just wide <- sixtyFourBits arg ->
+        "Clash translates "
+          <> Diag.renderPlain arg
+          <> " as 64 bits, but there is no BitPack for it inside another"
+          <> " type: use "
+          <> wide
+          <> " in its place to record this binding."
   GHC.ClassPred cls args
-    | all onDataType args ->
+    | not (null args)
+    , all onDataType args ->
         if GHC.getOccString (GHC.getName cls) == "Traceable"
           then
             "Give it a Traceable instance: for a record of signals, derive"
               <> " Generic and write an empty instance."
           else
-            "Derive or write that instance to record this binding. If Clash"
-              <> " cannot translate the type, say so instead: type instance"
-              <> " NonTranslatable "
-              <> unwords (map (parens . Diag.renderPlain) args)
-              <> " = 'True."
+            "Derive or write that instance to record this binding."
+              <> case args of
+                -- NonTranslatable takes exactly one type.
+                [arg] ->
+                  " If Clash cannot translate the type, say so instead: type"
+                    <> " instance NonTranslatable "
+                    <> parens (Diag.renderPlain arg)
+                    <> " = 'True."
+                _ -> ""
   _ -> "Add that constraint to the enclosing signature to record this binding."
  where
   onDataType arg = case GHC.tcSplitTyConApp_maybe arg of
     Just (tc, _) -> not (GHC.isTypeFamilyTyCon tc)
     Nothing -> False
+  sixtyFourBits arg = case GHC.tcSplitTyConApp_maybe arg of
+    Just (tc, [])
+      | GHC.getName tc == GHC.integerTyConName -> Just "Signed 64"
+      | GHC.getName tc == GHC.naturalTyConName -> Just "Unsigned 64"
+    _ -> Nothing
   parens ty
     | ' ' `elem` ty = "(" <> ty <> ")"
     | otherwise = ty
@@ -550,10 +574,12 @@ walkFuel = 400
 Where the walk cannot see (a type variable, an abstract type, the budget run
 out) the answer is @blind@: whichever answer keeps the binding reported.
 
-Every visited type is remembered so a recursive type is seen once. Arguments
-that cannot hold data (a @Nat@ index, a domain) are left out of what is
-remembered, or @Vec n Bool@ would unfold into @Vec n1 Bool@, @Vec n2 Bool@, …
-until the budget ran out.
+Every visited type is remembered so a recursive type is seen once. A @Nat@ or
+@Symbol@ argument (a length, a domain) is left out of what is remembered, or
+@Vec n Bool@ would unfold into @Vec n1 Bool@, @Vec n2 Bool@, … until the
+budget ran out. Any other argument is kept, a promoted one included: a type
+family can choose a field's type by it (@X 'True@ holding a signal where
+@X 'False@ does not), so the two are different types to the walk.
 -}
 reaches :: (API.MonadTcPlugin m) => Bool -> (Layer -> Bool) -> API.Type -> m Bool
 reaches blind hit t0 = go walkFuel [] [t0]
@@ -578,11 +604,11 @@ reaches blind hit t0 = go walkFuel [] [t0]
   sameKey (a, as) (b, bs) =
     a == b && length as == length bs && and (zipWith GHC.eqType as bs)
 
-  -- A ground kind that is neither @Type@ nor an arrow: @Nat@, @Symbol@, a
-  -- promoted data kind. Nothing of such a kind is ever a field.
+  -- Unbounded, and never deciding a field's type in practice: a length or a
+  -- domain.
   mayHoldData arg =
     let k = GHC.typeKind arg
-     in GHC.isLiftedTypeKind k || GHC.isFunTy k || not (GHC.noFreeVarsOfType k)
+     in not (k `GHC.eqType` GHC.naturalTy || k `GHC.eqType` GHC.typeSymbolKind)
 
 --------------------------------------------------------------------------------
 -- Solvability approximation

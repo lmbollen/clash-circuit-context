@@ -260,7 +260,7 @@ target.
 Neither mode can record a type Clash cannot translate, and that is
 *declared*, not guessed: the open type family `NonTranslatable` answers
 `'True` for lists, functions, `IO`, `SimOnly`, and any `Signal`, `Vec`,
-`Maybe`, `Either` or tuple holding one. A binding whose type (or whose
+`Maybe`, `Either` or tuple (up to eight components) holding one. A binding whose type (or whose
 missing `BitPack`) is declared that way is not reported. A type nobody
 declared still warns, offering both fixes; for a type of your own that Clash
 cannot translate, declare it next to the type:
@@ -272,7 +272,9 @@ type instance NonTranslatable Config = 'True
 ```
 
 `Integer` and `Natural` are not in that family: Clash translates them to 64
-bits, and a signal or probe of either records exactly that. An `SNat n` in a
+bits, and a signal or probe of either records exactly that. Inside a
+composite (`Maybe Integer`) there is no `BitPack` for them, and the warning
+says to use `Signed 64` / `Unsigned 64` there. An `SNat n` in a
 probed step is a number too, and probes as the `Index (n + 1)` holding it
 (`SNat 0` has no bits, so it records nothing).
 
