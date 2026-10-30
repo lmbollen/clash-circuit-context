@@ -98,25 +98,30 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
   # no trace target and is left alone (Test/Downstream.hs rankN, probedRankN).
   # A component is eta-expanded, or under ImpredicativeTypes wrapped as
   # written, so it keeps its scope; plugin-diagnostics asserts the scopes. No
-  # diagnostic may name any of them. Absence is the assertion: the
-  # runHarnessUnvouched check below, from the same module, is what shows
-  # Test/Downstream.hs was compiled with the plugin at all.
-  # (Test/TypeAbstractions.hs, with topRankNInvis, is built on GHC >= 9.10.)
-  quiet=ok
-  for binder in "'withComponentRst''" "'belowSyn'" "'belowImportedSyn'" \
-                "'belowOpSyn'" "'withRstProbe'" "'withRst'" \
-                "'topRankN'" "'topRankNLocalSyn'" "'topRankNImportedSyn'" \
-                "'topRankNOpSyn'" "'withSyncReset'" "'withPickedReset'" \
-                "'splitRst'" \
-                "'topRankNInvis'" "'impredicative'" "'impredGuarded'" \
-                "'impredTwoEqs'" "'impredIf'" "'impredList'" \
-                "'impredLambda'" "'impredPointFree'"; do
-    if grep -qF "$binder" "$log"; then
-      echo "FAIL: a diagnostic names the higher-rank binder $binder"; fail=1
-      quiet=
-    fi
-  done
-  [ -n "$quiet" ] && echo "ok: higher-rank bindings are instrumented or left alone, without a word"
+  # diagnostic may name any of them. Absence is the assertion, so it is only
+  # made where it means something: when Test/Downstream.hs, which holds most
+  # of these binders, was recompiled into this log. The others are in
+  # Test/DeclGroups.hs, Test/Impredicative.hs and (GHC >= 9.10)
+  # Test/TypeAbstractions.hs, which are recompiled with it on a fresh build.
+  if ! grep -q "Compiling Test.Downstream" "$log"; then
+    echo "skip: Test/Downstream.hs was not recompiled, so silence about higher-rank bindings proves nothing"
+  else
+    quiet=ok
+    for binder in "'withComponentRst''" "'belowSyn'" "'belowImportedSyn'" \
+                  "'belowOpSyn'" "'withRstProbe'" "'withRst'" \
+                  "'topRankN'" "'topRankNLocalSyn'" "'topRankNImportedSyn'" \
+                  "'topRankNOpSyn'" "'withSyncReset'" "'withPickedReset'" \
+                  "'splitRst'" \
+                  "'topRankNInvis'" "'impredicative'" "'impredGuarded'" \
+                  "'impredTwoEqs'" "'impredIf'" "'impredList'" \
+                  "'impredLambda'" "'impredPointFree'"; do
+      if grep -qF "$binder" "$log"; then
+        echo "FAIL: a diagnostic names the higher-rank binder $binder"; fail=1
+        quiet=
+      fi
+    done
+    [ -n "$quiet" ] && echo "ok: higher-rank bindings are instrumented or left alone, without a word"
+  fi
   # ...and the marker must silence exactly the binder it vouches for, while
   # the same shape without it still reports (Helios F4). Absence is the
   # assertion, so it is checked against the same fresh log -- fresh for
