@@ -1,0 +1,26 @@
+[book]
+title = "clash-circuit-context"
+authors = ["QBayLogic B.V."]
+language = "en"
+src = "src"
+
+[build]
+build-dir = "../_build/book"
+
+# Diagrams: book/diagrams/*.drawio, exported to SVG on each build.
+[preprocessor.drawio]
+command = "mdbook-drawio"
+result-dir = "gen/drawio"
+drawio-args = ["--no-sandbox"]
+
+# Every `haskell,clash` block is compiled, and its `>>>` examples are run, by
+# the Clash of book/cabal.project (scripts/clash). See
+# src/contributing/build-the-book.md.
+[preprocessor.clash]
+command = "mdbook-clash"
+clash-cmd = ["scripts/clash"]
+clash-args = ["-fclash-clear"]
+work-dir = "_build/mdbook-clash"
+
+[output.html]
+git-repository-url = "https://github.com/lmbollen/clash-circuit-context"
