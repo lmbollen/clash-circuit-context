@@ -199,9 +199,11 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
   instance KnownDomain dom => Traceable (Bus dom)
   ```
 
-  A binding of this type auto-traces field-wise, the record becoming a
-  sub-scope in the VCD (`bus.busAddr`, `bus.busStrobe`); nested records
-  nest. Fields are tolerated **individually**: an untraceable field falls
+  A binding of this type auto-traces field-wise, each field a signal named
+  after the binding and the field (`bus_busAddr`, `bus_busStrobe`) in the
+  scope of the enclosing component; a nested record joins its field names
+  the same way (`port_req_addr`). A VCD scope is only ever a component, never
+  a data structure. Fields are tolerated **individually**: an untraceable field falls
   back to identity on its own and its traceable siblings still record, so a
   composite is never all-or-nothing. That matters most for protocol ports,
   whose `Fwd`/`Bwd` halves routinely mix signals with non-signal payloads —
