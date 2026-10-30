@@ -95,13 +95,25 @@ import Clash.Prelude (
   unsafeFromSignal,
   unsafeToReset,
  )
+import Control.Concurrent (ThreadId)
+import Control.Concurrent.Chan (Chan)
+import Control.Concurrent.MVar (MVar)
+import Control.Exception (SomeException)
+import Control.Monad.ST (ST)
 import Data.Coerce (coerce)
+import Data.Dynamic (Dynamic)
+import Data.IORef (IORef)
 import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty)
+import Data.STRef (STRef)
 import Data.Tagged (Tagged (..))
 import Data.Type.Bool (type (||))
+import Data.Typeable (TypeRep)
 import Data.Word (Word64)
+import Foreign.ForeignPtr (ForeignPtr)
+import Foreign.Ptr (FunPtr, Ptr)
+import Foreign.StablePtr (StablePtr)
 import GHC.Generics (
   C,
   D,
@@ -118,6 +130,9 @@ import GHC.Generics (
 import GHC.Stack (HasCallStack, withFrozenCallStack)
 import GHC.TypeLits (type (+))
 import Numeric.Natural (Natural)
+import System.IO (Handle)
+import System.Mem.StableName (StableName)
+import System.Mem.Weak (Weak)
 
 import Clash.CircuitContext.Core (
   HasCircuitContext,
@@ -581,6 +596,32 @@ type instance NonTranslatable (IO a) = 'True
 
 -- | Clash translates 'SimOnly' to nothing at all: it is not hardware.
 type instance NonTranslatable (SimOnly a) = 'True
+
+{- $base
+The rest of @base@ that can never be hardware: mutable references, pointers,
+handles, threads, state threads, and values that describe the running
+program rather than data. Types @base@ defines as plain data ('Data.Ratio.Ratio',
+'Data.Complex.Complex', 'Data.Fixed.Fixed', 'Data.Void.Void') are NOT here:
+Clash translates an algebraic type field by field, whether or not it has a
+'BitPack' instance, so a binding of one that is declined has a fix.
+-}
+
+type instance NonTranslatable (IORef a) = 'True
+type instance NonTranslatable (STRef s a) = 'True
+type instance NonTranslatable (MVar a) = 'True
+type instance NonTranslatable (Chan a) = 'True
+type instance NonTranslatable (ST s a) = 'True
+type instance NonTranslatable ThreadId = 'True
+type instance NonTranslatable Handle = 'True
+type instance NonTranslatable (Ptr a) = 'True
+type instance NonTranslatable (FunPtr a) = 'True
+type instance NonTranslatable (ForeignPtr a) = 'True
+type instance NonTranslatable (StablePtr a) = 'True
+type instance NonTranslatable (StableName a) = 'True
+type instance NonTranslatable (Weak a) = 'True
+type instance NonTranslatable TypeRep = 'True
+type instance NonTranslatable Dynamic = 'True
+type instance NonTranslatable SomeException = 'True
 
 -- Containers Clash translates are untranslatable when their contents are.
 type instance NonTranslatable (Signal dom a) = NonTranslatable a

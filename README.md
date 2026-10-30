@@ -259,7 +259,9 @@ target.
 
 Neither mode can record a type Clash cannot translate, and that is
 *declared*, not guessed: the open type family `NonTranslatable` answers
-`'True` for lists, functions, `IO`, `SimOnly`, and any `Signal`, `Vec`,
+`'True` for lists, functions, `IO`, `SimOnly`, the rest of `base` that is
+never hardware (`IORef`, `MVar`, `ST`, `Ptr`, `Handle`, `ThreadId`, `TypeRep`,
+`Dynamic`, `SomeException`, …), and any `Signal`, `Vec`,
 `Maybe`, `Either` or tuple (up to eight components) holding one. A binding whose type (or whose
 missing `BitPack`) is declared that way is not reported. A type nobody
 declared still warns, offering both fixes; for a type of your own that Clash

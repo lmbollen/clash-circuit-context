@@ -141,7 +141,7 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
   # (Test/PluginDiagnostics.hs neverWires and probedStep). A warning about
   # them has no fix. Integer and Natural are NOT among them: Clash translates
   # them, so the recorder records them, and must not report them either.
-  never=$(grep -E "not (traced|probed): (\[Char\]|String|Integer|Natural|Bool|Vec 4 Bool|Int -> Int|Signal dom \[Int\]|Signal dom Integer|Signal dom Natural|Signal dom Names|Signal System Int|Clock System|SNat [0-9]+)$" "$log")
+  never=$(grep -E "not (traced|probed): (\[Char\]|String|Integer|Natural|Bool|Vec 4 Bool|Int -> Int|Signal dom \[Int\]|Signal dom Integer|Signal dom Natural|Signal dom Names|Signal System Int|Clock System|SNat [0-9]+|Ptr Int|FunPtr \(Int -> Int\)|TypeRep|Dynamic|SomeException|Signal dom \(Ptr Int\))$" "$log")
   if [ -n "$never" ]; then
     echo "FAIL: reported a binding no recorder could take:"; echo "$never"; fail=1
   else
