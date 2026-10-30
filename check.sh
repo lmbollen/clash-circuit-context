@@ -92,8 +92,13 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
   done
   # ...and the marker must silence exactly the binder it vouches for, while
   # the same shape without it still reports (Helios F4). Absence is the
-  # assertion, so it is checked against the same fresh log.
-  if grep -qF "'runHarness'" "$log"; then
+  # assertion, so it is checked against the same fresh log -- fresh for
+  # Test/Downstream.hs, where both harnesses live. Main recompiling does not
+  # mean it did: a change to another module of the suite recompiles Main
+  # alone, and a cached Downstream says nothing either way.
+  if ! grep -q "Compiling Test.Downstream" "$log"; then
+    echo "skip: Test/Downstream.hs was not recompiled, so its warnings are not in the log"
+  elif grep -qF "'runHarness'" "$log"; then
     echo "FAIL: {-# ANN … NoCircuitScope #-} did not silence its binder"; fail=1
   elif grep -qF "'runHarnessUnvouched'" "$log"; then
     echo "ok: NoCircuitScope silences only the binder it vouches for"
