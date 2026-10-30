@@ -86,13 +86,7 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     "no instance for: BitPack Undescribed" \
     "recorded as raw bits, not described: Bare" \
     "no instance for: Waveform Bare" \
-    "the oracle could not decide: 1 <= n" \
-    "skipping component wrap for an equation of 'topRankN'." \
-    "skipping component wrap for an equation of 'topRankNLocalSyn'" \
-    "skipping component wrap for an equation of 'topRankNImportedSyn'" \
-    "skipping component wrap for an equation of 'topRankNOpSyn'" \
-    "skipping component wrap for an equation of 'splitRst'" \
-    "Its right-hand side has a higher-rank type"
+    "the oracle could not decide: 1 <= n"
   do
     if grep -qF "$want" "$log"; then
       echo "ok: diagnostic fired: $want"
@@ -100,29 +94,27 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
       echo "FAIL: expected diagnostic missing: $want"; fail=1
     fi
   done
-  # Test/TypeAbstractions.hs is only built where @a patterns exist.
-  case "$ghcver" in
-    9.6.*|9.8.*) ;;
-    *)
-      if grep -qF "skipping component wrap for an equation of 'topRankNInvis'" "$log"; then
-        echo "ok: a type-abstraction pattern consumes no arrow"
-      else
-        echo "FAIL: topRankNInvis was not skipped (or did not build)"; fail=1
-      fi ;;
-  esac
-  # A higher-rank local is a function, so it is no trace target: it is left
-  # alone and nothing is said (Test/Downstream.hs rankN, probedRankN). Absence
-  # is the assertion; topRankN's warning above, from the same module, is what
-  # shows the module was compiled with the plugin at all.
+  # Higher-rank bindings are never reported. A local is a function, so it is
+  # no trace target and is left alone (Test/Downstream.hs rankN, probedRankN).
+  # A component is eta-expanded, or under ImpredicativeTypes wrapped as
+  # written, so it keeps its scope; plugin-diagnostics asserts the scopes. No
+  # diagnostic may name any of them. Absence is the assertion: the
+  # runHarnessUnvouched check below, from the same module, is what shows
+  # Test/Downstream.hs was compiled with the plugin at all.
+  # (Test/TypeAbstractions.hs, with topRankNInvis, is built on GHC >= 9.10.)
   quiet=ok
-  for local in "'withComponentRst''" "'belowSyn'" "'belowImportedSyn'" \
-               "'belowOpSyn'" "'withRstProbe'" "'withRst'"; do
-    if grep -qF "$local" "$log"; then
-      echo "FAIL: a diagnostic names the higher-rank local $local"; fail=1
+  for binder in "'withComponentRst''" "'belowSyn'" "'belowImportedSyn'" \
+                "'belowOpSyn'" "'withRstProbe'" "'withRst'" \
+                "'topRankN'" "'topRankNLocalSyn'" "'topRankNImportedSyn'" \
+                "'topRankNOpSyn'" "'withSyncReset'" "'withPickedReset'" \
+                "'splitRst'" \
+                "'topRankNInvis'" "'impredicative'"; do
+    if grep -qF "$binder" "$log"; then
+      echo "FAIL: a diagnostic names the higher-rank binder $binder"; fail=1
       quiet=
     fi
   done
-  [ -n "$quiet" ] && echo "ok: higher-rank locals are left alone without a word"
+  [ -n "$quiet" ] && echo "ok: higher-rank bindings are instrumented or left alone, without a word"
   # ...and the marker must silence exactly the binder it vouches for, while
   # the same shape without it still reports (Helios F4). Absence is the
   # assertion, so it is checked against the same fresh log -- fresh for

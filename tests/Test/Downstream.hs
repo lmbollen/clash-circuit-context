@@ -61,6 +61,8 @@ module Test.Downstream (
   topRankNLocalSyn,
   topRankNImportedSyn,
   topRankNOpSyn,
+  withSyncReset,
+  withPickedReset,
   synArrow,
   synArrowImported,
   rankNArg,
@@ -353,6 +355,8 @@ rankN inp = out
               + belowSyn @System 0 (register 0 inp)
               + belowImportedSyn @System 0 (register 0 inp)
               + belowOpSyn @System 0 (register 0 inp)
+              + withSyncReset @System (pure False) (register 0 inp)
+              + withPickedReset @System False (pure False) (register 0 inp)
           )
       )
 
@@ -376,10 +380,12 @@ rankN inp = out
   belowOpSyn = \_ -> withReset (unsafeFromActiveHigh (pure False))
 {-# OPAQUE rankN #-}
 
-{- | The same shape at the top level. @component "topRankN"@ is @... -> r -> r@
-and hits the same impredicativity, so this equation is not wrapped: it is
-reported under @x-circuit-context@, like the guard fall-through skip, since an
-OPAQUE @HasCircuitContext@ function asked for a component unambiguously.
+{- | The same shape at the top level, where it DOES get its component.
+@component "topRankN"@ is @... -> r -> r@ and hits the same impredicativity
+on the equation as written, so the equation is eta-expanded first:
+@topRankN eta:0 = component "topRankN" (withReset … eta:0)@, where @eta:0@
+takes its polytype from the signature and the wrap sees an ordinary @r@.
+'withSyncReset' below asserts the scope this buys.
 -}
 topRankN :: (HasCircuitContext, KnownDomain dom) => ((HiddenReset dom) => r) -> r
 topRankN = withReset (unsafeFromActiveHigh (pure False))
@@ -388,7 +394,7 @@ topRankN = withReset (unsafeFromActiveHigh (pure False))
 {- | The same shape behind a synonym declared in this module, whose arrow the
 pattern consumes. The renamer reads the synonym's right-hand side from the
 group it is handed, as it does for a local constraint synonym, so this
-equation is skipped like 'topRankN' instead of failing to compile.
+equation is eta-expanded like 'topRankN' instead of failing to compile.
 -}
 type LocalRst dom r = ((HiddenReset dom) => r) -> r
 
@@ -402,6 +408,43 @@ topRankNImportedSyn ::
   (HasCircuitContext, KnownDomain dom) => Signal dom Bool -> ImportedRst dom r
 topRankNImportedSyn active = withReset (unsafeFromActiveLow active)
 {-# OPAQUE topRankNImportedSyn #-}
+
+{- | A reset provider with a wire of its own: the shape a design actually
+writes around 'withReset'. Its right-hand side is higher-rank after the
+@clear@ pattern, so the component wrap cannot go around it as written; it
+must still be a component, with @rstSig@ recorded under it as
+@rankN.withSyncReset.rstSig@, not flattened into its caller as
+@rankN.rstSig@. The register keeps the reset from being a constant, and
+the caller's own register is what evaluates it: a where-binding records when
+it is used, not when it is defined.
+-}
+withSyncReset ::
+  (HasCircuitContext, KnownDomain dom) =>
+  Signal dom Bool ->
+  ((HiddenReset dom) => r) ->
+  r
+withSyncReset clear = withReset (unsafeFromActiveHigh rstSig)
+ where
+  rstSig = E.register clockGen resetGen enableGen False clear
+{-# OPAQUE withSyncReset #-}
+
+{- | The same through the other branch of the wrap: two equations, each
+eta-expanded with an argument of its own, and the last one guarded, so its
+guards are case-encoded inside the wrap with every alternative applied to
+the argument. @rankN.withPickedReset.rstSig@ must be recorded.
+-}
+withPickedReset ::
+  (HasCircuitContext, KnownDomain dom) =>
+  Bool ->
+  Signal dom Bool ->
+  ((HiddenReset dom) => r) ->
+  r
+withPickedReset True clear = withReset (unsafeFromActiveLow clear)
+withPickedReset False clear
+  | otherwise = withReset (unsafeFromActiveHigh rstSig)
+ where
+  rstSig = not <$> clear
+{-# OPAQUE withPickedReset #-}
 
 -- | ...and behind a type operator, @dom :=> r@.
 type dom :=> r = ((HiddenReset dom) => r) -> r

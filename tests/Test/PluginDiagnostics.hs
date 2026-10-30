@@ -57,6 +57,7 @@ import Clash.CircuitContext
 import qualified Test.DeclGroups as DeclGroups
 import Test.DesignCtx (DesignCtx)
 import qualified Test.Downstream as Downstream
+import qualified Test.Impredicative as Impredicative
 
 {- | A constraint synonym declared in the module being compiled: its
 right-hand side is read from the group, since it is not in the type
@@ -214,6 +215,7 @@ main = do
                 , Downstream.rankN (pure 1)
                 , Downstream.rankNArg id (pure 1)
                 , Downstream.rankNArgOp id (pure 1)
+                , Impredicative.impredicativeOut (pure 1)
                 , Downstream.synArrow (pure 1)
                 , Downstream.synArrowImported (pure 1)
                 )
@@ -309,6 +311,16 @@ main = do
           ]
         , [ "a differently-named hand-written trace was dropped: " <> show p
           | p <- [["handWritten", "inner"], ["handWritten", "renamed"]]
+          , p `P.notElem` downstreamPaths
+          ]
+        , -- A higher-rank component keeps its scope (Downstream.withSyncReset):
+          -- flattened, the wire would be recorded as rankN.rstSig instead.
+          [ "a higher-rank component lost its scope: expected " <> show p
+          | p <-
+              [ ["rankN", "withSyncReset", "rstSig"]
+              , ["rankN", "withPickedReset", "rstSig"]
+              , ["impredicativeOut", "impredicative", "out"]
+              ]
           , p `P.notElem` downstreamPaths
           ]
         , [ "a higher-rank binding's sibling was not traced: " <> show p
