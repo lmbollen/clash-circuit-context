@@ -1,0 +1,20 @@
+-- The Clash compiler that checks the examples of this book (mdbook-clash):
+-- clash-ghc at the commit of the clash-prelude this package is pinned to, so
+-- that `clash` sees clash-circuit-context and its plugin. See
+-- src/contributing/build-the-book.md.
+packages: ..
+
+source-repository-package
+  type: git
+  location: https://github.com/clash-lang/clash-compiler.git
+  tag: e16599387a68d6361134b4fe7e63bf4ad3ae8408
+  subdir:
+    clash-prelude
+    clash-lib
+    clash-ghc
+
+index-state: 2026-09-23T00:00:00Z
+
+tests: False
+
+with-compiler: ghc-9.10.3
