@@ -103,14 +103,12 @@ import Control.Monad.ST (ST)
 import Data.Coerce (coerce)
 import Data.Dynamic (Dynamic)
 import Data.IORef (IORef)
-import Data.Int (Int64)
 import Data.Kind (Type)
 import Data.List.NonEmpty (NonEmpty)
 import Data.STRef (STRef)
 import Data.Tagged (Tagged (..))
 import Data.Type.Bool (type (||))
 import Data.Typeable (TypeRep)
-import Data.Word (Word64)
 import Foreign.ForeignPtr (ForeignPtr)
 import Foreign.Ptr (FunPtr, Ptr)
 import Foreign.StablePtr (StablePtr)
@@ -142,12 +140,8 @@ import Clash.CircuitContext.Core (
   traceSignalC,
   traceSignalSW,
  )
-import Clash.Shockwaves.Waveform (
-  DecSpacer,
-  NumberFormat (NFSig, NFUns),
-  Waveform,
-  WaveformForNumber (..),
- )
+import Clash.CircuitContext.Internal.Wide64 (Integer64 (..), Natural64 (..))
+import Clash.Shockwaves.Waveform (Waveform)
 
 --------------------------------------------------------------------------------
 -- Tracing
@@ -228,34 +222,6 @@ and 'Natural' themselves, and a payload polymorphic in @a@ keeps the general
 instance and its 'BitPack' requirement. Inside a composite payload (@Maybe
 Integer@) there is still no 'BitPack', so use @Signed 64@ there.
 -}
-
--- | 'Integer' as Clash's hardware carries it.
-newtype Integer64 = Integer64 Integer
-  deriving newtype (NFDataX)
-
-instance BitPack Integer64 where
-  type BitSize Integer64 = 64
-  pack (Integer64 i) = pack (fromInteger i :: Int64)
-  unpack = Integer64 . toInteger . unpack @Int64
-
-deriving via
-  WaveformForNumber 'NFSig DecSpacer Integer64
-  instance
-    Waveform Integer64
-
--- | 'Natural' as Clash's hardware carries it.
-newtype Natural64 = Natural64 Natural
-  deriving newtype (NFDataX)
-
-instance BitPack Natural64 where
-  type BitSize Natural64 = 64
-  pack (Natural64 n) = pack (fromIntegral n :: Word64)
-  unpack = Natural64 . fromIntegral . unpack @Word64
-
-deriving via
-  WaveformForNumber 'NFUns DecSpacer Natural64
-  instance
-    Waveform Natural64
 
 -- | See $integer.
 instance {-# INCOHERENT #-} (KnownDomain dom) => Traceable (Signal dom Integer) where
