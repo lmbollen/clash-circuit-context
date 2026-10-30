@@ -1,0 +1,29 @@
+<mxfile host="mdbook-drawio">
+  <diagram id="pipeline" name="Pipeline">
+    <mxGraphModel grid="1" gridSize="10" page="0">
+      <root>
+        <mxCell id="0"/>
+        <mxCell id="l0" value="You write a design" parent="0"/>
+        <mxCell id="design" value="&lt;b&gt;Design module&lt;/b&gt;&lt;br&gt;HasCircuitContext + OPAQUE" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;fillColor=#dae8fc;strokeColor=#666666;" vertex="1" parent="l0"><mxGeometry x="0" y="0" width="200" height="70" as="geometry"/></mxCell>
+        <mxCell id="l1" value="The plugin rewrites it when GHC compiles it" parent="0"/>
+        <mxCell id="rename" value="&lt;b&gt;Renamer pass&lt;/b&gt;&lt;br&gt;component &quot;f&quot; around the body,&lt;br&gt;autoTrace &quot;x&quot; around each named local" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;fillColor=#d5e8d4;strokeColor=#666666;" vertex="1" parent="l1"><mxGeometry x="280" y="0" width="260" height="70" as="geometry"/></mxCell>
+        <mxCell id="oracle" value="&lt;b&gt;Oracle&lt;/b&gt;&lt;br&gt;can this binding be recorded?&lt;br&gt;If not: identity, and a warning" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;fillColor=#d5e8d4;strokeColor=#666666;" vertex="1" parent="l1"><mxGeometry x="280" y="110" width="260" height="70" as="geometry"/></mxCell>
+        <mxCell id="e1" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#6c8ebf;" edge="1" parent="l1" source="design" target="rename"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e2" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#82b366;" edge="1" parent="l1" source="rename" target="oracle"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="l2" value="A simulation records the signals" parent="0"/>
+        <mxCell id="sim" value="&lt;b&gt;Simulation&lt;/b&gt;&lt;br&gt;under withCircuitContext&lt;br&gt;(or a Waveform helper)" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;fillColor=#fff2cc;strokeColor=#666666;" vertex="1" parent="l2"><mxGeometry x="620" y="0" width="220" height="70" as="geometry"/></mxCell>
+        <mxCell id="maps" value="&lt;b&gt;Trace and probe maps&lt;/b&gt;&lt;br&gt;one entry per signal, keyed by its path" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;fillColor=#fff2cc;strokeColor=#666666;" vertex="1" parent="l2"><mxGeometry x="620" y="110" width="220" height="70" as="geometry"/></mxCell>
+        <mxCell id="e3" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#82b366;" edge="1" parent="l2" source="rename" target="sim"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e4" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#d6b656;flowAnimation=1;" edge="1" parent="l2" source="sim" target="maps"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="l3" value="The dump writes two files, which a viewer reads" parent="0"/>
+        <mxCell id="vcd" value="&lt;b&gt;.vcd&lt;/b&gt;&lt;br&gt;where each signal is:&lt;br&gt;one scope per component" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;fillColor=#e1d5e7;strokeColor=#666666;" vertex="1" parent="l3"><mxGeometry x="520" y="250" width="200" height="70" as="geometry"/></mxCell>
+        <mxCell id="json" value="&lt;b&gt;.json&lt;/b&gt;&lt;br&gt;what each signal is:&lt;br&gt;constructors and fields" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;fillColor=#e1d5e7;strokeColor=#666666;" vertex="1" parent="l3"><mxGeometry x="740" y="250" width="200" height="70" as="geometry"/></mxCell>
+        <mxCell id="viewer" value="&lt;b&gt;Surfer&lt;/b&gt;&lt;br&gt;with the clash-shockwaves plugin" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;fillColor=#f5f5f5;strokeColor=#666666;" vertex="1" parent="l3"><mxGeometry x="620" y="370" width="220" height="60" as="geometry"/></mxCell>
+        <mxCell id="e5" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#9673a6;" edge="1" parent="l3" source="maps" target="vcd"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e6" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#9673a6;" edge="1" parent="l3" source="maps" target="json"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e7" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="l3" source="vcd" target="viewer"><mxGeometry relative="1" as="geometry"/></mxCell>
+        <mxCell id="e8" style="endArrow=classic;html=1;strokeWidth=2;strokeColor=#666666;" edge="1" parent="l3" source="json" target="viewer"><mxGeometry relative="1" as="geometry"/></mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

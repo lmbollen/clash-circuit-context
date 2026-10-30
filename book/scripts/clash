@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# The `clash` of book/cabal.project, for mdbook-clash. It runs from any
+# directory and passes every argument through, after the flags that every
+# example of the book needs: clash-circuit-context and its plugin's
+# dependencies exposed, and book/examples (BookSupport) on the search path.
+set -euo pipefail
+book=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+exec cabal --project-file="$book/cabal.project" exec -v0 -- clash \
+  -package clash-circuit-context -package clash-shockwaves -package containers -package text \
+  -i"$book/examples" "$@"
