@@ -30,8 +30,8 @@ environment, like an imported one.
 -}
 type SplitCtx dom = (KnownDomain dom, HasCircuitContext)
 
-{- | The same for a higher-rank synonym: 'splitRst' below is skipped by the
-component wrap only if this is seen through, and fails to compile if not.
+{- | The same for a higher-rank synonym: 'splitRst' below is eta-expanded
+into a component only if this is seen through, and fails to compile if not.
 -}
 type SplitRst dom r = ((HiddenReset dom) => r) -> r
 

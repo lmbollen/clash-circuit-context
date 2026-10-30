@@ -505,9 +505,15 @@ onTopBind ctx modes opaques sigTypes lb@(L l b) = case b of
         mg1 <- rewriteInside ctx mode (fun_matches b)
         if mode == TraceMode && nm `elem` opaques
           then do
-            rhsHigherRank <-
-              maybe (pure False) (higherRankAfter ctx (mgArity mg1)) (lookup nm sigTypes)
-            let (mg2, ws) = componentWrapMG (ctxAbi ctx) nm rhsHigherRank mg1
+            arity <-
+              maybe (pure (Just 0)) (etaArity ctx (mgArity mg1)) (lookup nm sigTypes)
+            -- Fresh arguments per equation: each binds its own. With no
+            -- arity at all ('etaArity'), the equations are wrapped as written.
+            etaVars <-
+              mapM
+                (\_ -> mapM (freshEta (locA l)) [0 .. fromMaybe 0 arity - 1])
+                (mgEquations mg1)
+            let (mg2, ws) = componentWrapMG (ctxAbi ctx) nm etaVars mg1
             pure (L l b{fun_matches = mg2}, ws)
           else pure (L l b{fun_matches = mg1}, [])
   _ -> pure (lb, [])
@@ -516,8 +522,8 @@ onTopBind ctx modes opaques sigTypes lb@(L l b) = case b of
 -- fourmolu cannot parse CPP inside a declaration; keep this region verbatim.
 
 -- | The number of VISIBLE patterns each equation of this group has: what
--- 'higherRankAfter' consumes arrows for. A type-abstraction pattern (@f \@a x@,
--- GHC 9.10 and up) binds a forall, which 'higherRankAfter' skips anyway.
+-- 'etaArity' consumes arrows for. A type-abstraction pattern (@f \@a x@,
+-- GHC 9.10 and up) binds a forall, which 'etaArity' skips anyway.
 mgArity :: MatchGroup GhcRn (LHsExpr GhcRn) -> Int
 mgArity (MG _ (L _ (L _ m : _))) = length (filter visible (matchPats m))
  where
@@ -527,6 +533,18 @@ mgArity (MG _ (L _ (L _ m : _))) = length (filter visible (matchPats m))
   visible _ = True
 mgArity _ = 0
 {- FOURMOLU_ENABLE -}
+
+-- | The equations of a group.
+mgEquations :: MatchGroup GhcRn (LHsExpr GhcRn) -> [LMatch GhcRn (LHsExpr GhcRn)]
+mgEquations (MG _ (L _ ms)) = ms
+
+{- | A fresh argument for an eta-expanded equation. The colon marks it
+synthesised, per the contract in 'wantedBinder'.
+-}
+freshEta :: GHC.SrcSpan -> Int -> GHC.TcM GHC.Name
+freshEta spn i = do
+  u <- getUniqueM
+  pure (GHC.mkInternalName u (GHC.mkVarOcc ("eta:" <> show i)) spn)
 
 {- | Top-down generic traversal threading the current 'Mode'; intercepts
 local binding groups (where their signatures live) so an inner
@@ -556,7 +574,7 @@ rewriteInside ctx mode0 = goM mode0
     rankN <-
       map fst
         <$> filterM
-          (higherRankAfter ctx 0 . snd)
+          (fmap (/= Just 0) . etaArity ctx 0 . snd)
           [(n, ty) | L _ (TypeSig _ ns ty) <- sigs, L _ n <- ns]
     let localSigned = [n | L _ (TypeSig _ ns _) <- sigs, L _ n <- ns]
     groups' <- mapM (onGroup m localModes localSigned rankN) groups
@@ -816,17 +834,23 @@ instantiated at the use site, so they are no obstacle; a constraint is an
 invisible arrow here, not a visible one to consume.
 -}
 higherRankAfterCore :: Int -> GHC.Type -> Bool
-higherRankAfterCore n0 = go n0 . GHC.expandTypeSynonyms
+higherRankAfterCore n = (/= Just 0) . etaArityCore n 0
+
+-- | 'etaArity' for core, with @k@ arguments added so far.
+etaArityCore :: Int -> Int -> GHC.Type -> Maybe Int
+etaArityCore n0 k0 = go n0 k0 . GHC.expandTypeSynonyms
  where
-  go n ty
-    | (_ : _, inner) <- GHC.splitForAllTyCoVars ty = go n inner
-    | Just (af, _, _, res) <- GHC.splitFunTy_maybe ty
+  go n k ty
+    | (_ : _, inner) <- GHC.splitForAllTyCoVars ty = go n k inner
+    | Just (af, _, _, res) <- arrow
     , GHC.isInvisibleFunArg af =
-        go n res
-    | n > 0
-    , Just (_, _, _, res) <- GHC.splitFunTy_maybe ty =
-        go (n - 1) res
-    | otherwise = hasPolytype ty
+        go n k res
+    | Just (_, _, _, res) <- arrow, n > 0 = go (n - 1) k res
+    | Just (_, _, _, res) <- arrow, hasPolytype ty = go 0 (k + 1) res
+    | hasPolytype ty = Nothing
+    | otherwise = Just k
+   where
+    arrow = GHC.splitFunTy_maybe ty
 
 -- | Is there a @forall@ or a constraint anywhere in this type?
 hasPolytype :: GHC.Type -> Bool
@@ -837,44 +861,67 @@ hasPolytype = SYB.everything (||) (SYB.mkQ False isPoly)
     GHC.isForAllTy ty
       || maybe False (\(af, _, _, _) -> GHC.isInvisibleFunArg af) (GHC.splitFunTy_maybe ty)
 
-{- | Once an equation's @n@ patterns have consumed their arguments, does what
-remains of this signature have a @forall@ or a constraint BELOW its spine, as
-in @(HiddenReset dom => r) -> r@?
+{- | How many arguments the equations of a signed binding still have to take
+before their right-hand sides can be wrapped, given that each already has
+@n@ patterns: @Just 0@ in the ordinary case.
 
-Such a right-hand side cannot be wrapped: the recorders and 'component' are
-all @... -> a -> a@, and GHC will not instantiate @a@ at a type containing a
-polytype (that would be impredicative). The spine's own foralls and
-constraints are fine — the right-hand side is checked against the skolemised
-type, so the wrapper only ever sees its body. This decides SIGNED bindings;
-GHC also infers a higher-rank type for some unsigned ones, which
-'inferredHigherRank' decides from the right-hand side instead.
+The recorders and 'component' are all @... -> a -> a@, and GHC will not
+instantiate @a@ at a type with a @forall@ or a constraint nested inside it
+(that would be impredicative). So a right-hand side of type
+@(HiddenReset dom => r) -> r@ cannot be wrapped as it stands, but it can once
+it is eta-expanded: in @f x eta:0 = component "f" (withReset rst eta:0)@ the
+wrap sees an ordinary @r@, and @eta:0@ takes its polytype from the signature
+the equation is checked against. The answer is the number of arrows to peel,
+after the @n@ the patterns consume, until what remains is rank-1. The
+spine's own foralls and constraints are fine at every step, since the
+right-hand side is checked against the skolemised signature.
+
+'Nothing' when no number of arguments would do: the polytype sits somewhere
+other than under an arrow, as in @Maybe (forall a. a -> a)@. That takes
+@ImpredicativeTypes@ to write, and under it GHC's Quick Look instantiates the
+wrap at the polytype directly, so such an equation is wrapped as written. A
+local with such a signature is left alone like any other higher-rank one: it
+holds no wire either, a polytype having no 'BitPack' instance.
+
+This decides SIGNED bindings; GHC also infers a higher-rank type for some
+unsigned ones, which 'inferredHigherRank' decides from the right-hand side
+instead.
 
 Type synonyms are followed the way 'ctxMentions' follows them, with the same
 fuel: one declared in the group being renamed through its right-hand side as
 written ('ctxSyns'), any other (imported, or above a Template Haskell splice)
-through its expanded core type. On the spine a
-synonym's arrows are peeled and its foralls and constraints skipped like
-written ones; below it, a polytype a synonym stands for counts like a written
-one (@Int -> WithRst dom r@, with @type WithRst dom r = (HiddenReset dom => r)
--> r@). A synonym's parameters are not substituted: one instantiated AT a
-polytype would be impredicative in its own right.
+through its expanded core type. On the spine a synonym's arrows are peeled
+and its foralls and constraints skipped like written ones; below it, a
+polytype a synonym stands for counts like a written one (@Int -> WithRst dom
+r@, with @type WithRst dom r = (HiddenReset dom => r) -> r@). A synonym's
+parameters are not substituted: one instantiated AT a polytype would be
+impredicative in its own right.
 -}
-higherRankAfter :: Ctx -> Int -> LHsSigWcType GhcRn -> GHC.TcM Bool
-higherRankAfter ctx n0 (HsWC _ (L _ (HsSig _ _ body))) = peel (5 :: Int) n0 body
+etaArity :: Ctx -> Int -> LHsSigWcType GhcRn -> GHC.TcM (Maybe Int)
+etaArity ctx n0 (HsWC _ (L _ (HsSig _ _ body))) = peel (5 :: Int) n0 0 body
  where
   -- The spine: foralls and constraints are fine, @n@ arrows are consumed by
-  -- the equation's patterns.
-  peel fuel n (L _ t) = case t of
-    HsForAllTy _ _ inner -> peel fuel n inner
-    HsQualTy _ _ inner -> peel fuel n inner
-    HsParTy _ inner -> peel fuel n inner
-    HsKindSig _ inner _ -> peel fuel n inner
-    HsFunTy _ _ _ res | n > 0 -> peel fuel (n - 1) res
+  -- the equation's patterns, and @k@ counts the arguments added so far. An
+  -- arrow with a polytype anywhere in it takes one more argument.
+  peel fuel n k (L _ t) = case t of
+    HsForAllTy _ _ inner -> peel fuel n k inner
+    HsQualTy _ _ inner -> peel fuel n k inner
+    HsParTy _ inner -> peel fuel n k inner
+    HsKindSig _ inner _ -> peel fuel n k inner
+    HsFunTy _ _ _ res
+      | n > 0 -> peel fuel (n - 1) k res
+      | otherwise ->
+          below fuel t >>= \case
+            True -> peel fuel 0 (k + 1) res
+            False -> pure (Just k)
     _
       | fuel > 0
       , Just syn <- synonymHead t ->
-          synonym syn (peel (fuel - 1) n) (pure . higherRankAfterCore n) (below fuel t)
-      | otherwise -> below fuel t
+          synonym syn (peel (fuel - 1) n k) (pure . etaArityCore n k) (stop fuel k t)
+      | otherwise -> stop fuel k t
+
+  -- Not an arrow: a polytype here is under none, and no argument reaches it.
+  stop fuel k t = (\p -> if p then Nothing else Just k) <$> below fuel t
 
   -- Below the spine: a polytype anywhere, written or behind a synonym.
   below fuel t = anyM (poly fuel) (SYB.listify (const True :: HsType GhcRn -> Bool) t)
@@ -1136,58 +1183,56 @@ An equation already wrapped in @component "f"@ is left alone; see
 componentWrapMG ::
   AbiNames ->
   GHC.Name ->
-  -- | Is the right-hand side's type higher-rank? See 'higherRankAfter'.
-  Bool ->
+  {- | Fresh arguments to eta-expand each equation with (usually none); see
+  'etaArity'.
+  -}
+  [[GHC.Name]] ->
   MatchGroup GhcRn (LHsExpr GhcRn) ->
   (MatchGroup GhcRn (LHsExpr GhcRn), [Note])
-componentWrapMG abi nm rhsHigherRank (MG ext (L la ms)) =
+componentWrapMG abi nm etaVars (MG ext (L la ms)) =
   (MG ext (L la (map fst results)), concatMap snd results)
  where
-  results = zipWith wrapLM ms isLasts
+  results = zipWith3 wrapLM ms isLasts etaVars
   isLasts = map (== length ms) [1 ..]
 
-  wrapLM (L lm m) isLast =
-    let (m', ws) = wrapMatch (locA lm) isLast m in (L lm m', ws)
+  wrapLM (L lm m) isLast vars =
+    let (m', ws) = wrapMatch (locA lm) isLast vars m in (L lm m', ws)
 
-  wrapMatch spn isLast m0@(Match mx mc pats (GRHSs gx galts localBinds))
-    -- 'component' cannot be instantiated at a higher-rank type.
-    | rhsHigherRank =
-        ( m0
-        ,
-          [
-            ( spn
-            , Diag.Unhonoured
-            ,
-              [ "skipping component wrap for an equation of '" <> occ <> "'."
-              , "Its right-hand side has a higher-rank type, which the wrap"
-                  <> " cannot be instantiated at."
-              , "Its bindings still trace, at the enclosing scope."
-              ]
-            )
-          ]
-        )
+  wrapMatch spn isLast vars m0@(Match mx mc pats (GRHSs gx galts localBinds))
     -- Single unguarded right-hand side.
     | [L lg (GRHS ggx [] body)] <- galts =
         if alreadyInjected [abiComponent abi] occ body
           then (m0, [])
           else
-            ( Match
-                mx
-                mc
-                pats
-                (GRHSs gx [L lg (GRHS ggx [] (wrap spn localBinds body))] emptyLB)
+            ( eta
+                spn
+                vars
+                ( Match
+                    mx
+                    mc
+                    pats
+                    ( GRHSs
+                        gx
+                        [L lg (GRHS ggx [] (wrap spn localBinds (applied spn vars body)))]
+                        emptyLB
+                    )
+                )
             , []
             )
     -- Guarded: case-encode inside the wrap, unless failing guards could
     -- fall through to a later equation.
     | L lg (GRHS ggx _ _) : _ <- galts
     , selfExhaustive galts || isLast =
-        let caseE = mkGuardCase ext spn gx galts
-         in ( Match
-                mx
-                mc
-                pats
-                (GRHSs gx [L lg (GRHS ggx [] (wrap spn localBinds caseE))] emptyLB)
+        let caseE = mkGuardCase ext spn gx (map (fmap (applyG spn vars)) galts)
+         in ( eta
+                spn
+                vars
+                ( Match
+                    mx
+                    mc
+                    pats
+                    (GRHSs gx [L lg (GRHS ggx [] (wrap spn localBinds caseE))] emptyLB)
+                )
             , []
             )
     | otherwise =
@@ -1208,6 +1253,29 @@ componentWrapMG abi nm rhsHigherRank (MG ext (L la ms)) =
 
   wrap spn lbs body =
     mkApp2 (abiComponent abi) spn occ (mkLetE spn lbs body)
+
+  -- Eta-expansion, when the signature calls for it ('etaArity'): the fresh
+  -- arguments become trailing patterns, and every body is applied to them
+  -- INSIDE the wrap, where its type is rank-1 again.
+  eta spn vars mt
+    | null vars = mt
+    | otherwise =
+        mt
+          { m_pats =
+              mkMatchPats
+                ( matchPats mt
+                    <> [ L (noAnnSrcSpan spn) (VarPat noExtField (L (noAnnSrcSpan spn) v))
+                       | v <- vars
+                       ]
+                )
+          }
+  applied spn vars body
+    | null vars = body
+    | otherwise = foldl app (nlHsPar body) vars
+   where
+    app f v = L (noAnnSrcSpan spn) (unLoc (mkHsApp f (mkVarE spn v)))
+  applyG spn vars (GRHS x guards body) = GRHS x guards (applied spn vars body)
+  applyG _ _ g = g
 
   occ = GHC.getOccString nm
   emptyLB = EmptyLocalBinds noExtField

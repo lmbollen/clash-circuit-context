@@ -195,6 +195,7 @@ test-suite plugin-diagnostics
     Test.DeclGroups
     Test.DesignCtx
     Test.Downstream
+    Test.Impredicative
 
   -- Type-abstraction patterns are GHC 9.10 and up; nothing imports this
   -- module, it is compiled for its own sake.

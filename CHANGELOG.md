@@ -65,10 +65,14 @@ Initial version.
   inferred higher-rank locals.) A local binding like
   that is left alone and not reported: a polytype has to sit under an arrow,
   so the binding is a function, and a function is never a trace or probe
-  target. An `OPAQUE` component whose
-  right-hand side is higher-rank after its patterns skips the component wrap
-  with an `x-circuit-context` warning. Its bindings still trace, at the
-  enclosing scope. Type synonyms are seen through, declared locally (above a
+  target. An `OPAQUE` component whose right-hand side is higher-rank after
+  its patterns is **eta-expanded** so it keeps its scope:
+  `f clear = withReset rst` becomes `f clear eta:0 = component "f" (withReset
+  rst eta:0)`, with as many fresh arguments as it takes to reach a rank-1
+  type, and its bindings record under `f` rather than in the caller. Where
+  no argument reaches the polytype (`ImpredicativeTypes`), GHC's Quick Look
+  instantiates the wrap at it and the equation is wrapped as written, so no
+  higher-rank binding is reported at all. Type synonyms are seen through, declared locally (above a
   Template Haskell splice too), imported, or written as an operator:
   `type WithRst dom r = (HiddenReset dom => r) -> r` in a signature is
   recognised like the type it stands for. A type-abstraction pattern
