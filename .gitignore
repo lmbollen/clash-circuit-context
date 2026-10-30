@@ -18,3 +18,11 @@ cabal.project.local*
 # instrumented sources they need (see each branch's README).
 /deps/
 /waveforms/
+
+# The book (book/): the output, the work directory of mdbook-clash, the
+# exported diagrams, the build of its clash, and the files its examples write.
+/_build/
+/book/_build/
+/book/src/gen/
+/book/dist-newstyle/
+/book/waveforms/
