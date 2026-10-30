@@ -174,7 +174,10 @@ Initial version.
   step is not a probe target; and a type Clash cannot translate is not
   recorded by either. The last is declared by the new open type family
   `NonTranslatable` (exported from `Clash.CircuitContext`), which answers
-  `'True` for lists, functions, `IO`, `SimOnly`, and the `Signal`, `Vec`,
+  `'True` for lists, functions, `IO`, `SimOnly`, the rest of `base` that is
+  never hardware (references, pointers, handles, threads, `ST`, `TypeRep`,
+  `Dynamic`, `SomeException`; not plain data such as `Ratio` or `Complex`,
+  which Clash translates field by field), and the `Signal`, `Vec`,
   `Maybe`, `Either` and tuples (up to eight components) holding them; declare your own types next to
   them. A type nobody declared still warns. What remains in
   `-Wx-circuit-context-untraced` could have been recorded, and each message

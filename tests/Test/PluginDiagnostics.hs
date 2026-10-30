@@ -50,8 +50,11 @@ module Main where
 
 import qualified Prelude as P
 
-import Control.Exception (evaluate)
+import Control.Exception (SomeException, displayException, evaluate, toException)
+import Data.Dynamic (Dynamic, fromDynamic, toDyn)
 import qualified Data.Map.Strict as Map
+import Data.Typeable (TypeRep, typeOf)
+import Foreign.Ptr (FunPtr, Ptr, castPtrToFunPtr, nullFunPtr, nullPtr, plusPtr)
 import Numeric.Natural (Natural)
 import System.Exit (exitFailure)
 
@@ -164,6 +167,7 @@ neverWires k inp = out
       + (fromInteger <$> bigs)
       + (fromIntegral <$> nats)
       + (maybe 0 fromInteger <$> maybes)
+      + (fromEnum . (== nullPtr) <$> ptrs)
       + pairSum
       + ((\(Names ns) (Tags ts) -> P.length ns + P.length ts) <$> named <*> tagged)
   label = P.replicate k 'x'
@@ -175,6 +179,7 @@ neverWires k inp = out
   bigs = toInteger <$> inp
   nats = toNatural <$> inp
   maybes = Just . toInteger <$> inp
+  ptrs = (nullPtr :: Ptr Int) <$ inp
   pair = Pair inp lists'
   lists' = P.sum <$> lists
   pairSum = case pair of Pair a b -> a + b
@@ -216,7 +221,9 @@ not itself sequential. @total@ is an 'Integer', probed as Clash's 64 bits,
 and @tap@ an 'SNat', probed as the 'Index' holding it (@none@, an @SNat 0@,
 has no bits to record); @shown@ (a 'String') and @scale@ (a function) are
 not probe targets and may not warn. Neither are @ticks@ (a 'Signal') and
-@clk@ (a 'Clock'): they have no single value per step. @wrapped@ only lacks
+@clk@ (a 'Clock'): they have no single value per step. Nor are @ptr@, @fun@,
+@rep@, @dyn@ and @exc@: @base@ types that are never hardware, declared
+'NonTranslatable' by the library (as is the @ptrs@ signal in 'neverWires'). @wrapped@ only lacks
 a 'BitPack' instance, so it must warn.
 
 @below@, @above@ and @natural@ pin what is recorded for an 'Integer' or a
@@ -235,6 +242,11 @@ probedStep acc x =
       + fromInteger (below + above)
       + fromIntegral natural
       + P.sum ticked
+      + fromEnum (ptr == nullPtr)
+      + fromEnum (fun == nullFunPtr)
+      + P.length (P.show rep)
+      + P.maybe 0 P.id (fromDynamic dyn)
+      + P.length (displayException exc)
   )
  where
   total = acc + toInteger x
@@ -252,6 +264,14 @@ probedStep acc x =
   clk :: Clock System
   clk = clockGen
   ticked = sampleN 2 (register clk resetGen enableGen 0 ticks)
+  -- base types that are never hardware ($base in Clash.CircuitContext.Auto).
+  -- Each mentions x, or the closed-binding skip would leave it alone and the
+  -- silence would prove nothing.
+  ptr = nullPtr `plusPtr` x :: Ptr Int
+  fun = castPtrToFunPtr ptr :: FunPtr (Int -> Int)
+  rep = typeOf x :: TypeRep
+  dyn = toDyn x :: Dynamic
+  exc = toException (userError (P.show x)) :: SomeException
   scale = (* x)
   wrapped = Undescribed x
   unwrap (Undescribed y) = y
