@@ -179,7 +179,9 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
   why it is a warning you can turn off
   (`-Wno-x-circuit-context-uninstrumented`) rather than an error.
 * Traceable today: `Signal dom a` with `(KnownDomain dom, BitPack a,
-  NFDataX a)`, and `Vec n` thereof (traced element-wise as `name_0`,
+  NFDataX a)`, `Signal dom Integer` and `Signal dom Natural` (as the 64 bits
+  Clash translates them to), `DSignal`, `Reset` and `Enable` (as the signal
+  underneath), and `Vec n` thereof (traced element-wise as `name_0`,
   `name_1`, …). No `Typeable` is required — that field of a trace only
   feeds clash's replay machinery, which these maps don't use, and
   requiring it would exclude size-polymorphic payloads (`Unsigned n` under
@@ -244,8 +246,39 @@ Five categories, because they differ in how likely each is to be a defect:
 | `-Wx-circuit-context` | The plugin could not honour something the source unambiguously asked for. Nothing benign lands here. |
 | `-Wx-circuit-context-uninstrumented` | A signature asks for instrumentation somewhere the pass does not reach or does not scope: `HasCircuitContext` without `OPAQUE`, `OPAQUE` without a signature, both constraints at once, a class or instance method body. |
 | `-Wx-circuit-context-undecided` | The oracle could not decide, and fell back to not tracing. **The one that matters**: this is the approximation admitting it may be wrong, not a fact about your types. |
-| `-Wx-circuit-context-untraced` | The oracle found no instance. A real answer, and the verbose one — it fires for every `Int` and `Bool` that was never going to trace. |
+| `-Wx-circuit-context-untraced` | The oracle found no instance for something that could have been recorded, and the message names the instance or constraint to add. Bindings no recorder could ever take are not reported (see below). |
 | `-Wx-circuit-context-undescribed` | The signal is recorded, but as raw bits: its payload has no `clash-shockwaves` `Waveform` instance, so a typed viewer cannot name its constructors and fields. Nothing is lost; derive the instance, or silence the category if bits are what you want. |
+
+What counts as "could have been recorded" depends on the mode. A trace
+records wires: a `Signal`, a `DSignal`, or a tuple, `Vec` or record holding
+them. So a plain value in a traced component (a `Bool` computed inside a
+lambda, a memory map, a function) is not a trace target; the oracle reads
+that off the type's constructors. A probe records a value at each step of a
+mealy machine, so anything holding a `Signal` or a clock is not a probe
+target.
+
+Neither mode can record a type Clash cannot translate, and that is
+*declared*, not guessed: the open type family `NonTranslatable` answers
+`'True` for lists, functions, `IO`, `SimOnly`, the rest of `base` that is
+never hardware (`IORef`, `MVar`, `ST`, `Ptr`, `Handle`, `ThreadId`, `TypeRep`,
+`Dynamic`, `SomeException`, …), and any `Signal`, `Vec`,
+`Maybe`, `Either` or tuple (up to eight components) holding one. A binding whose type (or whose
+missing `BitPack`) is declared that way is not reported. A type nobody
+declared still warns, offering both fixes; for a type of your own that Clash
+cannot translate, declare it next to the type:
+
+```haskell
+data Config = Config {names :: [String], limit :: Int}
+
+type instance NonTranslatable Config = 'True
+```
+
+`Integer` and `Natural` are not in that family: Clash translates them to 64
+bits, and a signal or probe of either records exactly that. Inside a
+composite (`Maybe Integer`) there is no `BitPack` for them, and the warning
+says to use `Signed 64` / `Unsigned 64` there. An `SNat n` in a
+probed step is a number too, and probes as the `Index (n + 1)` holding it
+(`SNat 0` has no bits, so it records nothing).
 
 Which means "strict mode" is not a plugin option, it is `-Werror`:
 
@@ -456,9 +489,9 @@ Three things worth knowing:
   `untraced`, because nothing is lost: `-Werror=x-circuit-context-untraced`
   stays a check for lost wires only, and
   `-Wno-x-circuit-context-undescribed` is the switch when raw bits are what
-  you want. A type with no hardware representation at all (a list, a
-  function, `Integer`) has no `BitPack`, so it is never recorded and is
-  reported as `untraced` instead.
+  you want. A type Clash cannot translate (a list, a
+  function) is never recorded, and since no instance could fix that, a type
+  declared `NonTranslatable` is not reported at all.
 * **A waveform is a pair of files.** `Clash.CircuitContext.Waveform` writes
   both through temp + rename with the sidecar landing first, so if the `.vcd`
   is there its `.json` is there and complete. Without the sidecar the VCD is

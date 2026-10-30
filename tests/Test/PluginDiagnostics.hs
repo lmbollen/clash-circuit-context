@@ -7,6 +7,7 @@
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE StandaloneDeriving #-}
+{-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -34,8 +35,10 @@ Two halves, both exercised by this one module:
 * what the plugin now SAYS — every near-miss below is a GHC warning at
   compile time, and this module holds one live example of each category:
   @x-circuit-context-uninstrumented@ (@noOpaque@, @unsigned@, @bothModes@),
-  @x-circuit-context-untraced@ (@label@, a 'String', which no hardware
-  representation exists for, and @untraceable@),
+  @x-circuit-context-untraced@ (@untraceable@, and in 'neverWires' a record
+  of signals without an instance and a signal of 'Tags', which Clash cannot
+  translate but nobody declared; its plain values, its signal of lists and
+  its signal of the declared 'Names' must NOT warn),
   @x-circuit-context-undecided@ (@held@, whose 'Awkward' payload has a
   'BitPack' instance the oracle cannot recurse into) and
   @x-circuit-context-undescribed@ (@bare@, recorded as raw bits for want of
@@ -47,8 +50,12 @@ module Main where
 
 import qualified Prelude as P
 
-import Control.Exception (evaluate)
+import Control.Exception (SomeException, displayException, evaluate, toException)
+import Data.Dynamic (Dynamic, fromDynamic, toDyn)
 import qualified Data.Map.Strict as Map
+import Data.Typeable (TypeRep, typeOf)
+import Foreign.Ptr (FunPtr, Ptr, castPtrToFunPtr, nullFunPtr, nullPtr, plusPtr)
+import Numeric.Natural (Natural)
 import System.Exit (exitFailure)
 
 import Clash.Explicit.Prelude
@@ -106,8 +113,9 @@ viaLocalSyn inp = out
 {-# OPAQUE viaLocalSyn #-}
 
 {- | Component via an IMPORTED constraint synonym, and the module's
-oracle diagnostics: @untraceable@ has no 'BitPack' instance, @label@ is not a
-signal at all, and @bare@ is traced but cannot be described.
+oracle diagnostics: @untraceable@ has no 'BitPack' instance, @label@ is a
+'String' (which no hardware could carry, so it is NOT reported), and @bare@ is
+traced but cannot be described.
 -}
 viaImportedSyn :: (DesignCtx dom) => Int -> Signal dom Int -> Signal dom Int
 viaImportedSyn k inp = out
@@ -119,6 +127,154 @@ viaImportedSyn k inp = out
   _forcedBare = bare
   bare = Bare . fromIntegral <$> inp
 {-# OPAQUE viaImportedSyn #-}
+
+-- | Signals with no 'Traceable' instance: see 'neverWires'.
+data Pair dom = Pair (Signal dom Int) (Signal dom Int)
+
+-- | Clash cannot translate either, but only 'Names' says so: see 'neverWires'.
+newtype Names = Names [String]
+
+type instance NonTranslatable Names = 'True
+
+newtype Tags = Tags [Int]
+
+{- | What a trace can and cannot record. A trace records wires, so the plain
+values here (@label@, @big@, @flags@, @step@) are not trace targets, whatever
+their type; and @lists@ is a signal whose payload Clash cannot represent. A
+warning about any of them would have no fix, so none may warn, and
+@check.sh@ checks that none does.
+
+@named@ is a signal of a type its author declared 'NonTranslatable', so it
+may not warn either. @tagged@ is the same shape undeclared: the plugin cannot
+know, so it must warn, and offer the declaration.
+
+@bigs@ and @nats@ ARE recorded: Clash translates 'Integer' and 'Natural' to
+64 bits, and so does the recorder. @maybes@ is an 'Integer' inside a 'Maybe',
+where there is no 'BitPack' for it: it must warn, and say to use @Signed 64@,
+never to declare 'Integer' 'NonTranslatable'. @pair@ holds signals and only
+lacks an instance, so it must still warn, and name the fix.
+-}
+toNatural :: Int -> Natural
+toNatural = fromIntegral
+
+neverWires :: (DesignCtx dom) => Int -> Signal dom Int -> Signal dom Int
+neverWires k inp = out
+ where
+  out =
+    inp
+      + pure (P.length label + fromInteger big + step (P.length (P.filter id (toList flags))))
+      + (P.length <$> lists)
+      + (fromInteger <$> bigs)
+      + (fromIntegral <$> nats)
+      + (maybe 0 fromInteger <$> maybes)
+      + (fromEnum . (== nullPtr) <$> ptrs)
+      + pairSum
+      + ((\(Names ns) (Tags ts) -> P.length ns + P.length ts) <$> named <*> tagged)
+  label = P.replicate k 'x'
+  big = toInteger k
+  flag = k > 3
+  flags = repeat flag :: Vec 4 Bool
+  step = (+ k)
+  lists = (: []) <$> inp
+  bigs = toInteger <$> inp
+  nats = toNatural <$> inp
+  maybes = Just . toInteger <$> inp
+  ptrs = (nullPtr :: Ptr Int) <$ inp
+  pair = Pair inp lists'
+  lists' = P.sum <$> lists
+  pairSum = case pair of Pair a b -> a + b
+  named = Names . pure . P.show <$> inp
+  tagged = Tags . pure <$> inp
+{-# OPAQUE neverWires #-}
+
+{- | Two types the walk must keep apart although they differ only in a
+promoted argument: @Picked 'True@ holds a signal, @Picked 'False@ does not.
+'Both' holds one of each, so it is a trace target that only lacks a
+'Traceable' instance, and @both@ in 'otherWires' must warn. Remembering
+@Picked@ without its argument saw it once, as the signal-free kind, and
+silenced the warning.
+-}
+type family Pick (b :: Bool) where
+  Pick 'True = Signal System Int
+  Pick 'False = Int
+
+newtype Picked b = Picked (Pick b)
+
+data Both = Both (Picked 'False) (Picked 'True)
+
+{- | The wires that are not a bare 'Signal': a reset, an enable and a
+delayed signal each trace as the signal underneath them.
+-}
+otherWires :: (HasCircuitContext) => Signal System Int -> Signal System Int
+otherWires inp = out
+ where
+  rst = unsafeToReset ((> 1) <$> inp) :: Reset System
+  ena = toEnable ((> 0) <$> inp)
+  dsig = fromSignal inp :: DSignal System 0 Int
+  out = mux (unsafeFromReset rst .&&. fromEnable ena) (toSignal dsig) inp + bothSig
+  both = Both (Picked 0) (Picked inp)
+  bothSig = case both of Both _ (Picked s) -> s
+{-# OPAQUE otherWires #-}
+
+{- | What a probe can and cannot record: any value Clash can represent that is
+not itself sequential. @total@ is an 'Integer', probed as Clash's 64 bits,
+and @tap@ an 'SNat', probed as the 'Index' holding it (@none@, an @SNat 0@,
+has no bits to record); @shown@ (a 'String') and @scale@ (a function) are
+not probe targets and may not warn. Neither are @ticks@ (a 'Signal') and
+@clk@ (a 'Clock'): they have no single value per step. Nor are @ptr@, @fun@,
+@rep@, @dyn@ and @exc@: @base@ types that are never hardware, declared
+'NonTranslatable' by the library (as is the @ptrs@ signal in 'neverWires'). @wrapped@ only lacks
+a 'BitPack' instance, so it must warn.
+
+@below@, @above@ and @natural@ pin what is recorded for an 'Integer' or a
+'Natural': Clash's 64 bits, two's complement, wrapping where the hardware
+would. @below@ is @-total@, so it records @2^64 - total@; @above@ and
+@natural@ are @total + 2^64@, so they record @total@ itself.
+-}
+probedStep :: (HasProbe) => Integer -> Int -> (Integer, Int)
+probedStep acc x =
+  ( total
+  , P.length shown
+      + scale 2
+      + unwrap wrapped
+      + snatToNum tap
+      + snatToNum none
+      + fromInteger (below + above)
+      + fromIntegral natural
+      + P.sum ticked
+      + fromEnum (ptr == nullPtr)
+      + fromEnum (fun == nullFunPtr)
+      + P.length (P.show rep)
+      + P.maybe 0 P.id (fromDynamic dyn)
+      + P.length (displayException exc)
+  )
+ where
+  total = acc + toInteger x
+  -- Signed, or the closed-binding skip would leave them alone.
+  tap :: SNat 5
+  tap = SNat
+  none :: SNat 0
+  none = SNat
+  shown = P.show total
+  below = negate total
+  above = total + 2 P.^ (64 :: Int)
+  natural = fromInteger above :: Natural
+  ticks = pure x :: Signal System Int
+  -- Signed, or the closed-binding skip would leave it alone.
+  clk :: Clock System
+  clk = clockGen
+  ticked = sampleN 2 (register clk resetGen enableGen 0 ticks)
+  -- base types that are never hardware ($base in Clash.CircuitContext.Auto).
+  -- Each mentions x, or the closed-binding skip would leave it alone and the
+  -- silence would prove nothing.
+  ptr = nullPtr `plusPtr` x :: Ptr Int
+  fun = castPtrToFunPtr ptr :: FunPtr (Int -> Int)
+  rep = typeOf x :: TypeRep
+  dyn = toDyn x :: Dynamic
+  exc = toException (userError (P.show x)) :: SomeException
+  scale = (* x)
+  wrapped = Undescribed x
+  unwrap (Undescribed y) = y
 
 {- | The GROUND half of Helios F2. @1 <= 8@ is the same @Assert@ family as
 @1 <= n@, and it reduces: "monomorphic is safe" became a usable heuristic
@@ -185,6 +341,9 @@ top :: (HasCircuitContext) => Signal System Int -> Signal System Int
 top inp =
   viaLocalSyn inp
     + viaImportedSyn 3 inp
+    + neverWires 3 inp
+    + mealyProbed clockGen resetGen enableGen probedStep 0 inp
+    + otherWires inp
     + viaTuplePat inp
     + noOpaque (unsigned inp)
     + (unAwkward <$> sized (Awkward . fromIntegral <$> inp :: Signal System (Awkward 8)))
@@ -195,7 +354,7 @@ top inp =
 
 main :: IO ()
 main = do
-  (_, traces, _) <- withCircuitContext $ do
+  (_, traces, probes) <- withCircuitContext $ do
     let xs = sampleN 8 (top (fromList [1, 1 ..]))
     _ <- evaluate (deepseqX xs xs)
     pure xs
@@ -224,10 +383,21 @@ main = do
     pure ys
   let
     paths = P.map (P.map segmentName . splitOn '.') (Map.keys traces)
+    probePaths = P.map (P.map segmentName . splitOn '.') (Map.keys probes)
+    -- A probe's recorded values, cycle by cycle (a run covers its cycles).
+    probeValues nm =
+      [ toInteger val
+      | (k, ProbeEntry{peRuns = runs}) <- Map.toList probes
+      , P.last (P.map segmentName (splitOn '.' k)) == nm
+      , (cs, ce, (_, val)) <- P.reverse runs
+      , _ <- [cs .. ce]
+      ]
     downstreamPaths =
       P.map (P.map segmentName . splitOn '.') (Map.keys downstream)
   putStrLn "recorded paths:"
   mapM_ (putStrLn . ("  " <>) . show) paths
+  putStrLn "probed paths:"
+  mapM_ (putStrLn . ("  " <>) . show) probePaths
   putStrLn "downstream regression paths:"
   mapM_ (putStrLn . ("  " <>) . show) downstreamPaths
   let
@@ -294,6 +464,55 @@ main = do
               , P.map segmentName (splitOn '.' k) == ["f2", "ix"]
               , P.maybe False (P.const True) (teAdt e)
               ]
+          ]
+        , -- Clash translates Integer to 64 bits, and so does the recorder:
+          -- a signal of it traces and a value of it probes. The bindings
+          -- around them that no recorder could take must not be recorded
+          -- either (they are not reported; check.sh checks that).
+          [ "an Integer was not recorded: " <> nm
+          | (nm, ps) <- [("bigs", paths), ("total", probePaths)]
+          , P.null [p | p <- ps, P.last p == nm]
+          ]
+        , -- An SNat probes as the Index holding it; an SNat 0 has no bits.
+          [ "an SNat was not probed as Index 6 (3 bits): tap " <> show ws
+          | let ws =
+                  [ peWidth e
+                  | (k, e) <- Map.toList probes
+                  , P.last (P.map segmentName (splitOn '.' k)) == "tap"
+                  ]
+          , ws /= [3]
+          ]
+        , ["a zero-width SNat was probed: " <> show p | p <- probePaths, P.last p == "none"]
+        , [ "a Natural was not recorded: nats"
+          | P.null [p | p <- paths, P.last p == "nats"]
+          ]
+        , -- Clash's 64 bits, two's complement, wrapping like the hardware.
+          [ "an Integer or Natural was not recorded as 64 wrapping bits: "
+              <> nm
+              <> " recorded "
+              <> show got
+              <> ", expected "
+              <> show want
+          | let totals = probeValues "total"
+          , (nm, want) <-
+              [ ("below", P.map (\t -> 2 P.^ (64 :: Int) - t) totals)
+              , ("above", totals)
+              , ("natural", totals)
+              ]
+          , let got = probeValues nm
+          , P.null totals P.|| got /= want
+          ]
+        , [ "recorded a sequential value in a probed step: " <> show p
+          | p <- probePaths
+          , P.last p `P.elem` ["ticks", "clk"]
+          ]
+        , [ "a reset, enable or delayed signal was not traced: " <> show p
+          | p <- [["top", "otherWires", nm] | nm <- ["rst", "ena", "dsig"]]
+          , p `P.notElem` paths
+          ]
+        , [ "recorded something no recorder can take: " <> show p
+          | p <- paths <> probePaths
+          , P.last p `P.elem` ["label", "big", "flags", "step", "lists", "shown", "scale"]
           ]
         , [ "a signed closed binding was not traced: " <> show p
           | p <- [["signedClosed", "constant"]]

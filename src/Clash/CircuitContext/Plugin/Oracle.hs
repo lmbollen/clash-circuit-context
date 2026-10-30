@@ -59,10 +59,13 @@ import Data.Maybe (isJust)
 import qualified GHC.Builtin.Names as GHC
 import qualified GHC.Builtin.Types as GHC
 import qualified GHC.Builtin.Types.Literals as GHC (typeNatTyCons)
+import qualified GHC.Core.DataCon as GHC
+import qualified GHC.Core.FamInstEnv as GHC (normaliseType)
 import qualified GHC.Core.InstEnv as GHC
 import qualified GHC.Core.Predicate as GHC
 import qualified GHC.Core.Reduction as GHC (reductionReducedType)
 import qualified GHC.Core.TyCo.FVs as GHC
+import qualified GHC.Core.TyCo.Rep as GHC (scaledThing)
 import qualified GHC.Core.TyCon as GHC
 import qualified GHC.Core.Type as GHC
 import qualified GHC.Data.Strict as Strict
@@ -103,6 +106,7 @@ data OracleEnv = OracleEnv
   , canDescribeTyCon :: API.TyCon
   , autoDescribeClass :: API.Class
   , describableClass :: API.Class
+  , nonTranslatableTyCon :: API.TyCon
   }
 
 {- FOURMOLU_DISABLE -}
@@ -147,6 +151,7 @@ initEnv = do
           <*> tc "CanDescribe"
           <*> cl "AutoDescribe"
           <*> cl "Describable"
+          <*> tc "NonTranslatable"
       -- Same hazard one package over: CanDescribe asks for clash-shockwaves'
       -- Waveform per payload, and a module that never mentions
       -- clash-shockwaves never loads its instances, so every stock payload
@@ -214,7 +219,7 @@ rewriteGround env fam cls _givens [t]
         Defer -> pure API.TcPluginNoRewrite
         _ -> do
           loc <- API.rewriteEnvCtLoc <$> API.askRewriteEnv
-          reportDeclined loc cls t decision
+          reportDeclined env loc cls t decision
           pure $
             API.TcPluginRewriteTo
               ( API.mkTyFamAppReduction
@@ -268,7 +273,7 @@ solveStuck env givens wanteds = do
             case decision of
               Defer -> pure Nothing
               _ -> do
-                reportDeclined (API.ctLoc ct) target t decision
+                reportDeclined env (API.ctLoc ct) target t decision
                 pure (Just (ct, cls, t, isYes decision))
       _ -> pure Nothing
 
@@ -294,8 +299,7 @@ requirement that stopped it.
 Two categories, because the reader needs to know which of these happened:
 
 * @x-circuit-context-untraced@ — the instance environment has no match. A
-  real answer, and the common one: most local bindings in a design are
-  @Int@s and @Bool@s that were never going to trace.
+  real answer, and the message ends with the fix.
 * @x-circuit-context-undecided@ — the oracle could not decide and fell back
   to not tracing. This one may be a limitation of the approximation rather
   than a fact about the type, so it is the one worth promoting to an error
@@ -307,11 +311,13 @@ that takes @Traceable@ as a real constraint, so a payload it cannot describe
 is a compile error rather than a hole.
 
 'Defer' is not reported at all: it is a round the solver will come back
-from, not an answer.
+from, not an answer. Neither is a binding no recorder could ever take (see
+'neverRecordable'): a warning about it would have no fix.
 -}
 reportDeclined ::
   forall m.
   (API.MonadTcPlugin m) =>
+  OracleEnv ->
   API.CtLoc ->
   -- | @Traceable@, @Probeable@ or @Describable@ — what was asked for
   API.Class ->
@@ -319,7 +325,7 @@ reportDeclined ::
   API.Type ->
   Decision ->
   m ()
-reportDeclined loc cls t = \case
+reportDeclined env loc cls t = \case
   -- A declined description is not a lost signal: the binding is still
   -- recorded, as raw bits. So it gets its own category rather than
   -- untraced/undecided, which mean "lost" and which
@@ -351,23 +357,35 @@ reportDeclined loc cls t = \case
               <> " as a real constraint, to find out which."
           ]
   NoInstance blame ->
-    say
-      Diag.Untraced
-      [ headline <> Diag.renderPlain t
-      , "no instance for: " <> Diag.renderPlain blame
-      ]
+    unlessNeverRecordable blame $
+      say
+        Diag.Untraced
+        [ headline <> Diag.renderPlain t
+        , "no instance for: " <> Diag.renderPlain blame
+        , remedy blame
+        ]
   GaveUp blame ->
-    say
-      Diag.Undecided
-      [ headline <> Diag.renderPlain t
-      , "the oracle could not decide: " <> Diag.renderPlain blame
-      , "This may be a limit of the approximation rather than a fact about"
-          <> " the type."
-      , "Name the binding with traceSignalC, which takes Traceable as a real"
-          <> " constraint, to find out which."
-      ]
+    unlessNeverRecordable blame $
+      say
+        Diag.Undecided
+        [ headline <> Diag.renderPlain t
+        , "the oracle could not decide: " <> Diag.renderPlain blame
+        , "This may be a limit of the approximation rather than a fact about"
+            <> " the type."
+        , "Name the binding with traceSignalC, which takes Traceable as a real"
+            <> " constraint, to find out which."
+        ]
   _ -> pure ()
  where
+  -- A binding that could never be recorded in this mode, whatever instances
+  -- were in scope, is not reported: the warning would have no fix (see
+  -- 'neverRecordable').
+  unlessNeverRecordable blame act = do
+    never <- neverRecordable env (not probing) t blame
+    if never then pure () else act
+
+  probing = GHC.getOccString (GHC.getName cls) == "Probeable"
+
   say :: Diag.Category -> [String] -> m ()
   say cat body =
     APIInternal.unsafeLiftTcM (Diag.report spn cat body)
@@ -377,9 +395,220 @@ reportDeclined loc cls t = \case
 
   describing = GHC.getOccString (GHC.getName cls) == "Describable"
 
-  headline = case GHC.getOccString (GHC.getName cls) of
-    "Probeable" -> "not probed: "
-    _ -> "not traced: "
+  headline
+    | probing = "not probed: "
+    | otherwise = "not traced: "
+
+{- | The next step for a binding that could have been recorded and was not,
+read off the requirement that stopped it. A requirement on a data type
+(@BitPack PacketStreamS2M@, @Traceable (Bus dom)@) wants an instance, or,
+for a type Clash cannot translate, a @NonTranslatable@ declaration; one on a
+type variable or a type family that did not reduce (@BitPack a@,
+@Traceable (Fwd p)@) wants a constraint.
+
+'Integer' and 'Natural' are the exception: Clash translates both, so a
+@NonTranslatable@ declaration would be wrong, and would silence every later
+decline that has a real fix. A payload of either is recorded on its own;
+inside a composite (@Maybe Integer@) there is no 'BitPack' for it, so the
+fix is the 64-bit type Clash would have used.
+-}
+remedy :: API.PredType -> String
+remedy blame = case GHC.classifyPredType blame of
+  GHC.ClassPred _ [arg]
+    | Just wide <- sixtyFourBits arg ->
+        "Clash translates "
+          <> Diag.renderPlain arg
+          <> " as 64 bits, but there is no BitPack for it inside another"
+          <> " type: use "
+          <> wide
+          <> " in its place to record this binding."
+  GHC.ClassPred cls args
+    | not (null args)
+    , all onDataType args ->
+        if GHC.getOccString (GHC.getName cls) == "Traceable"
+          then
+            "Give it a Traceable instance: for a record of signals, derive"
+              <> " Generic and write an empty instance."
+          else
+            "Derive or write that instance to record this binding."
+              <> case args of
+                -- NonTranslatable takes exactly one type.
+                [arg] ->
+                  " If Clash cannot translate the type, say so instead: type"
+                    <> " instance NonTranslatable "
+                    <> parens (Diag.renderPlain arg)
+                    <> " = 'True."
+                _ -> ""
+  _ -> "Add that constraint to the enclosing signature to record this binding."
+ where
+  onDataType arg = case GHC.tcSplitTyConApp_maybe arg of
+    Just (tc, _) -> not (GHC.isTypeFamilyTyCon tc)
+    Nothing -> False
+  sixtyFourBits arg = case GHC.tcSplitTyConApp_maybe arg of
+    Just (tc, [])
+      | GHC.getName tc == GHC.integerTyConName -> Just "Signed 64"
+      | GHC.getName tc == GHC.naturalTyConName -> Just "Unsigned 64"
+    _ -> Nothing
+  parens ty
+    | ' ' `elem` ty = "(" <> ty <> ")"
+    | otherwise = ty
+
+--------------------------------------------------------------------------------
+-- Nothing to record
+--------------------------------------------------------------------------------
+
+{- | Whether a declined binding could never have been recorded in this mode,
+whatever instances were in scope. Such a binding is not reported: a warning
+about it has no fix, and these are a large share of what the renamer wraps
+(it wraps every local, because it cannot see types).
+
+What each mode records:
+
+* A trace records WIRES: a 'Signal' (or @DSignal@), or a tuple, 'Vec' or
+  record holding them. A type with no 'Signal' anywhere in its fields (a
+  @Bool@ or @Vec 4 Bool@ computed inside a lambda, a @MemoryMap@, a function)
+  is not a trace target at all.
+* A probe records a VALUE at each step of a mealy machine, so a type holding
+  a 'Signal' or a clock (it has no single value) is not a probe target.
+
+Whether a type holds a signal is read off its constructors: that is a fact
+about every type, and asking anyone to declare it would bring the warnings
+back for every type nobody declared. Whether Clash can translate it is NOT
+read off: @NonTranslatable@ declares it, for the declined type or for the
+type its requirement is about (@Signal dom [a]@ stops at @BitPack [a]@). A
+type nobody declared is taken to be translatable, so a binding of it that
+cannot be recorded still warns.
+-}
+neverRecordable ::
+  (API.MonadTcPlugin m) =>
+  OracleEnv ->
+  -- | 'True' for a trace, 'False' for a probe
+  Bool ->
+  -- | the declined type
+  API.Type ->
+  -- | the requirement that stopped it
+  API.PredType ->
+  m Bool
+neverRecordable env tracing t blame = do
+  notTarget <-
+    if tracing
+      then not <$> reaches True isWire t
+      else reaches False isSequential t
+  if notTarget
+    then pure True
+    else or <$> traverse (nonTranslatable env) (t : blamed)
+ where
+  isWire = \case Wire -> True; _ -> False
+  isSequential = \case Wire -> True; ClockLine -> True; _ -> False
+  blamed = case GHC.classifyPredType blame of
+    GHC.ClassPred _ args -> filter (GHC.isLiftedTypeKind . GHC.typeKind) args
+    _ -> []
+
+-- | @NonTranslatable ty@ reduces to ''True'.
+nonTranslatable :: (API.MonadTcPlugin m) => OracleEnv -> API.Type -> m Bool
+nonTranslatable env ty = do
+  famEnvs <- API.getFamInstEnvs
+  let
+    reduced =
+      GHC.reductionReducedType . GHC.normaliseType famEnvs GHC.Nominal $
+        GHC.mkTyConApp (nonTranslatableTyCon env) [ty]
+  pure (reduced `GHC.eqType` boolTy True)
+
+-- | What a type is made of, one constructor layer down.
+data Layer
+  = -- | A function or a polymorphic value: a computation, not data.
+    Computation
+  | -- | Clash's 'Signal'.
+    Wire
+  | {- | Clash's 'Clock'. It does hold a 'Signal' (a dynamic clock's periods),
+    but a clock is not a data wire: Clash's own @traceSignal@ cannot record one
+    either.
+    -}
+    ClockLine
+  | -- | A primitive type (@Int#@, @ByteArray#@, …): no fields.
+    Primitive
+  | {- | An algebraic data type or newtype, with the fields of every
+    constructor (existentials left as type variables).
+    -}
+    Algebraic [API.Type]
+  | {- | Nothing to see: a type variable, a type family that does not reduce,
+    an abstract type.
+    -}
+    Opaque
+
+layer :: (API.MonadTcPlugin m) => API.Type -> m Layer
+layer = go (10 :: Int)
+ where
+  go fuel ty
+    | GHC.isFunTy ty || GHC.isForAllTy ty = pure Computation
+    | Just (tc, args) <- GHC.splitTyConApp_maybe ty = tyCon fuel tc args
+    | otherwise = pure Opaque
+
+  tyCon fuel tc args
+    | GHC.isTypeFamilyTyCon tc =
+        if fuel <= 0
+          then pure Opaque
+          else maybe (pure Opaque) (go (fuel - 1)) =<< reduceFamily tc args
+    | clashSignal "Signal" = pure Wire
+    | clashSignal "Clock" = pure ClockLine
+    | GHC.isPrimTyCon tc = pure Primitive
+    | Just dcs <- GHC.tyConDataCons_maybe tc =
+        pure . Algebraic $
+          [ GHC.scaledThing f
+          | dc <- dcs
+          , let exs = GHC.mkTyCoVarTys (GHC.dataConExTyCoVars dc)
+          , f <- GHC.dataConInstOrigArgTys dc (args <> exs)
+          ]
+    | otherwise = pure Opaque
+   where
+    clashSignal nm =
+      GHC.getOccString tc == nm
+        && fmap (GHC.moduleNameString . GHC.moduleName) (GHC.nameModule_maybe (GHC.getName tc))
+          == Just "Clash.Signal.Internal"
+
+-- | Steps the walk below may take before it stops and calls the type opaque.
+walkFuel :: Int
+walkFuel = 400
+
+{- | Whether a layer @hit@ picks out is reachable through the type's fields.
+Where the walk cannot see (a type variable, an abstract type, the budget run
+out) the answer is @blind@: whichever answer keeps the binding reported.
+
+Every visited type is remembered so a recursive type is seen once. A @Nat@ or
+@Symbol@ argument (a length, a domain) is left out of what is remembered, or
+@Vec n Bool@ would unfold into @Vec n1 Bool@, @Vec n2 Bool@, … until the
+budget ran out. Any other argument is kept, a promoted one included: a type
+family can choose a field's type by it (@X 'True@ holding a signal where
+@X 'False@ does not), so the two are different types to the walk.
+-}
+reaches :: (API.MonadTcPlugin m) => Bool -> (Layer -> Bool) -> API.Type -> m Bool
+reaches blind hit t0 = go walkFuel [] [t0]
+ where
+  go _ _ [] = pure False
+  go fuel seen (t : rest)
+    | fuel <= 0 = pure blind
+    | Just k <- key t, any (sameKey k) seen = go (fuel - 1) seen rest
+    | otherwise = do
+        l <- layer t
+        let seen' = maybe seen (: seen) (key t)
+        case l of
+          _ | hit l -> pure True
+          Opaque | blind -> pure True
+          Algebraic fs -> go (fuel - 1) seen' (fs <> rest)
+          _ -> go (fuel - 1) seen' rest
+
+  key t = case GHC.splitTyConApp_maybe t of
+    Just (tc, args) -> Just (tc, filter mayHoldData args)
+    Nothing -> Nothing
+
+  sameKey (a, as) (b, bs) =
+    a == b && length as == length bs && and (zipWith GHC.eqType as bs)
+
+  -- Unbounded, and never deciding a field's type in practice: a length or a
+  -- domain.
+  mayHoldData arg =
+    let k = GHC.typeKind arg
+     in not (k `GHC.eqType` GHC.naturalTy || k `GHC.eqType` GHC.typeSymbolKind)
 
 --------------------------------------------------------------------------------
 -- Solvability approximation
