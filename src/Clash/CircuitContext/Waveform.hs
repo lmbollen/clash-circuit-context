@@ -126,7 +126,12 @@ import Control.Monad (forM_, unless, when)
 import Control.Monad.IO.Class (MonadIO, liftIO)
 import Data.Char (toLower)
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
-import System.Directory (createDirectoryIfMissing, makeAbsolute, renameFile)
+import System.Directory (
+  createDirectoryIfMissing,
+  makeAbsolute,
+  removePathForcibly,
+  renameFile,
+ )
 import System.Environment (lookupEnv)
 import System.FilePath (takeFileName, (-<.>), (<.>), (</>))
 import System.IO (hClose, hPutStrLn, openTempFile, stderr)
@@ -196,6 +201,18 @@ newWaveformSlot name =
 -- | The @.vcd@ path a slot writes to.
 waveformSlotPath :: WaveformSlot -> FilePath
 waveformSlotPath (WaveformSlot path _) = path
+
+{- | Delete the slot's @.vcd@ and @.json@, if they exist.
+
+For the on-failure captures only: there a file means "this test failed",
+so a file left by an earlier failing run is wrong as soon as the test
+passes. The other captures do not call this. A @CCC_WAVEFORMS=1@ run writes
+files that a later plain run must keep, and a passing case of a hedgehog
+property may be a shrink step after the counterexample was written.
+-}
+removeSlotFiles :: WaveformSlot -> IO ()
+removeSlotFiles (WaveformSlot path _) =
+  mapM_ removePathForcibly [path, path -<.> "json"]
 
 {- | Write the slot's surviving run, if it captured one. Idempotent: writing
 twice writes the same bytes, and a slot that never captured anything (every
@@ -517,6 +534,8 @@ The simulation runs first with recording OFF, so a passing test costs nothing
 at all — no maps, no render, no file. If @consume@ throws (an assertion
 failing is a throw), the simulation is run a SECOND time with recording on,
 that run's waveform is written, and the original exception is rethrown.
+When the test passes, the slot's files from an earlier failing run are
+deleted.
 
 Two things to know before using it:
 
@@ -555,7 +574,7 @@ withWaveformOnFailureSim ::
 withWaveformOnFailureSim slot window sim consume = do
   first <- try (consume (withoutCircuitContext sim))
   case first of
-    Right a -> pure a
+    Right a -> removeSlotFiles slot >> pure a
     -- An ASYNC exception is not the test failing — it is the test being
     -- cancelled (Ctrl-C, a runner timeout). Re-simulating the design on the
     -- way out would turn "stop now" into minutes of work for a large DUT, so
@@ -616,7 +635,7 @@ withWaveformOnFailureSim' ::
 withWaveformOnFailureSim' slot window sim consume = do
   (r, traces, probes) <- withCircuitContextWindowE window (consume sim)
   case r of
-    Right a -> pure a -- discard the recording UNRENDERED
+    Right a -> removeSlotFiles slot >> pure a -- discard the recording UNRENDERED
     -- Cancellation, not failure (see 'withWaveformOnFailure'): rethrow
     -- without rendering — a Ctrl-C should not leave a waveform claiming to
     -- show a failing run.
