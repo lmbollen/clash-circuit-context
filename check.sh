@@ -58,6 +58,14 @@ if grep -q "Compiling Main.*AutoInstrumentation" "$log" 2>/dev/null; then
   else
     echo "FAIL: expected plugin warning missing"; fail=1
   fi
+  # A last equation whose guards can all fail still warns, about the
+  # function rather than about the plugin's encoding of its guards (#13).
+  if grep -qE "In an equation for .partialGuard." "$log" \
+    && ! grep -qE "Patterns of type .\(\). not matched" "$log"; then
+    echo "ok: incomplete-guards warning names the function"
+  else
+    echo "FAIL: incomplete-guards warning missing or about the encoding"; fail=1
+  fi
 fi
 
 # Every warning category must have fired while compiling

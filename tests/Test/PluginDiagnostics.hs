@@ -311,6 +311,20 @@ viaTuplePat inp = a + b
   (a, b) = (inp + 3, inp + 4)
 {-# OPAQUE viaTuplePat #-}
 
+{- | A last equation whose guards can all fail. The first pass binds those
+guards as a local equation named after the function (@let partialLast | … in
+partialLast@); the second pass must not take that generated binder for a
+user's and trace it, which would record a wire called @partialLast@ inside
+the scope of the same name.
+-}
+partialLast ::
+  (HasCircuitContext) => Int -> Signal System Int -> Signal System Int
+partialLast k inp
+  | k P.> 0 = out4
+ where
+  out4 = inp + 8
+{-# OPAQUE partialLast #-}
+
 {- | 'HasCircuitContext' without @OPAQUE@: still traced, but into the
 CALLER's scope — @out2@ below lands in @top@, not in a scope of its own.
 Diagnosed rather than fixed: a small helper flattening into its caller is
@@ -345,6 +359,7 @@ top inp =
     + mealyProbed clockGen resetGen enableGen probedStep 0 inp
     + otherWires inp
     + viaTuplePat inp
+    + partialLast 1 inp
     + noOpaque (unsigned inp)
     + (unAwkward <$> sized (Awkward . fromIntegral <$> inp :: Signal System (Awkward 8)))
     + (unAwkward <$> grounded (Awkward . fromIntegral <$> inp))
@@ -406,6 +421,15 @@ main = do
         [ [ "constraint synonym not seen: expected " <> show p
           | p <- [["top", "viaLocalSyn", "out"], ["top", "viaImportedSyn", "out"]]
           , p `P.notElem` paths
+          ]
+        , [ "a last equation with failing guards lost its wrap: " <> show p
+          | p <- [["top", "partialLast", "out4"]]
+          , p `P.notElem` paths
+          ]
+        , [ "the guards' generated binder was traced by the second pass: "
+              <> show p
+          | p <- paths
+          , P.last p == "partialLast"
           ]
         , [ "a synonym from an earlier declaration group not seen: expected "
               <> show p

@@ -175,7 +175,9 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
    equation (a final `otherwise`/unguarded alternative, or the last
    equation of the function). A *non-final* equation whose guards can fall
    through is skipped with a compile-time warning, because wrapping it
-   would turn the fall-through into a crash.
+   would turn the fall-through into a crash. A last equation whose guards
+   can all fail keeps GHC's own diagnostics: `-Wincomplete-patterns` and the
+   runtime error both name your function, not the encoding.
 
 ### Semantics worth knowing
 

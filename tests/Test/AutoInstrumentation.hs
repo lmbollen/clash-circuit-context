@@ -4,6 +4,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TypeApplications #-}
 
 {- | Phase 3 golden test: the smoke design written NATURALLY — no manual
 'component' \/ 'traceSignalC' \/ 'probe' calls anywhere. The plugin
@@ -39,7 +40,7 @@ module Main where
 
 import qualified Prelude as P
 
-import Control.Exception (evaluate)
+import Control.Exception (SomeException, evaluate, try)
 import Data.List (isInfixOf)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
@@ -49,6 +50,7 @@ import System.Exit (exitFailure)
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext
+import Clash.Signal (HiddenReset, withReset)
 
 -- | Accumulator: component "acc"; probes its pre-registration sum.
 acc :: (HasCircuitContext) => Signal System Int -> Signal System Int
@@ -86,6 +88,29 @@ partialGuard k inp
  where
   out2 = inp + 3
 {-# OPAQUE partialGuard #-}
+
+{- | 'partialGuard', defined infix: the guards' local equation is printed
+prefix, as it has no patterns to put the name between.
+-}
+infixPartial :: (HasCircuitContext) => Int -> Signal System Int -> Signal System Int
+k `infixPartial` inp
+  | k P.> 0 = out5
+ where
+  out5 = inp + 5
+{-# OPAQUE infixPartial #-}
+
+{- | 'partialGuard' with a higher-rank right-hand side: the plugin
+eta-expands the equation (one extra argument for the constrained @r@), so
+its guards must take that argument too. Nothing reads @rst@, so it is not
+recorded; the samples show the expansion works.
+-}
+partialRank ::
+  (HasCircuitContext, KnownDomain dom) => Int -> Reset dom -> ((HiddenReset dom) => r) -> r
+partialRank k reset
+  | k P.> 0 = withReset rst
+ where
+  rst = reset
+{-# OPAQUE partialRank #-}
 
 {- | Non-exhaustive guards on a non-final equation: that equation's wrap is
 skipped (warning); the last equation still becomes a component.
@@ -209,6 +234,36 @@ main = do
     "partialGuard is a component containing out2 (last-equation rule)"
     (P.any (\k -> "partialGuard@" `isInfixOf` k P.&& ".out2@" `isInfixOf` k) tks)
   check "opt-out honored" (P.not (hasT "hidden"))
+  -- A last equation whose guards can all fail is still wrapped (failure was
+  -- bottom before and after). It must stay the SAME bottom: the failure names
+  -- the function, not the plugin's encoding of its guards (#13).
+  let failsInFunction nm act = do
+        failed <- try (evaluate act) :: IO (Either SomeException (Signal System Int))
+        check
+          (nm <> "'s guard failure names the function, not the encoding")
+          ( either
+              (isInfixOf ("Non-exhaustive patterns in function " <> nm) . show)
+              (P.const P.False)
+              failed
+          )
+  failsInFunction "partialGuard" (withoutCircuitContext (partialGuard 0 (pure 1)))
+  failsInFunction "infixPartial" (withoutCircuitContext (0 `infixPartial` pure 1))
+  failsInFunction
+    "partialRank"
+    (withoutCircuitContext (partialRank 0 (resetGen @System) (pure 1)))
+  (ipSamples, ipTraces, _) <- withCircuitContext $ do
+    let xs =
+          sampleN 4 (1 `infixPartial` fromList [1, 1 ..])
+            P.<> sampleN 4 (partialRank 1 (resetGen @System) (fromList [1, 1 ..]))
+    _ <- evaluate (deepseqX xs xs)
+    pure xs
+  check "infixPartial and partialRank sample" (ipSamples P.== [6, 6, 6, 6, 1, 1, 1, 1])
+  check
+    "infixPartial is a component containing out5 (last-equation rule)"
+    ( P.any
+        (\k -> "infixPartial@" `isInfixOf` k P.&& ".out5@" `isInfixOf` k)
+        (Map.keys ipTraces)
+    )
   check
     "polyHelper open locals traced at both use types"
     (hasT ".asBool@" P.&& hasT ".asInt@" P.&& hasT ".out4@")
