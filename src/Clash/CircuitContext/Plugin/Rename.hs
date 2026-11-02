@@ -84,6 +84,7 @@ import qualified GHC.Tc.Types as GHC
 import qualified GHC.Tc.Utils.Env as GHC (tcLookupGlobal, tcLookupTyCon)
 import qualified GHC.Tc.Utils.Monad as GHC (tryTcDiscardingErrs)
 import GHC.Types.Basic (Origin)
+import GHC.Types.Fixity (LexicalFixity (Prefix))
 import GHC.Types.SrcLoc (GenLocated (..), unLoc)
 import qualified GHC.Types.TyThing as GHC (TyThing (AConLike, AnId))
 import GHC.Types.Unique.Supply (MonadUnique (getUniqueM))
@@ -513,7 +514,7 @@ onTopBind ctx modes opaques sigTypes lb@(L l b) = case b of
               mapM
                 (\_ -> mapM (freshEta (locA l)) [0 .. fromMaybe 0 arity - 1])
                 (mgEquations mg1)
-            let (mg2, ws) = componentWrapMG (ctxAbi ctx) nm etaVars mg1
+            (mg2, ws) <- componentWrapMG (ctxAbi ctx) nm etaVars mg1
             pure (L l b{fun_matches = mg2}, ws)
           else pure (L l b{fun_matches = mg1}, [])
   _ -> pure (lb, [])
@@ -1188,71 +1189,87 @@ componentWrapMG ::
   -}
   [[GHC.Name]] ->
   MatchGroup GhcRn (LHsExpr GhcRn) ->
-  (MatchGroup GhcRn (LHsExpr GhcRn), [Note])
-componentWrapMG abi nm etaVars (MG ext (L la ms)) =
-  (MG ext (L la (map fst results)), concatMap snd results)
+  GHC.TcM (MatchGroup GhcRn (LHsExpr GhcRn), [Note])
+componentWrapMG abi nm etaVars (MG ext (L la ms)) = do
+  results <- sequence (zipWith3 wrapLM ms isLasts etaVars)
+  pure (MG ext (L la (map fst results)), concatMap snd results)
  where
-  results = zipWith3 wrapLM ms isLasts etaVars
   isLasts = map (== length ms) [1 ..]
 
-  wrapLM (L lm m) isLast vars =
-    let (m', ws) = wrapMatch (locA lm) isLast vars m in (L lm m', ws)
+  wrapLM (L lm m) isLast vars = do
+    (m', ws) <- wrapMatch (locA lm) isLast vars m
+    pure (L lm m', ws)
 
   wrapMatch spn isLast vars m0@(Match mx mc pats (GRHSs gx galts localBinds))
     -- Single unguarded right-hand side.
     | [L lg (GRHS ggx [] body)] <- galts =
-        if alreadyInjected [abiComponent abi] occ body
-          then (m0, [])
-          else
-            ( eta
-                spn
-                vars
-                ( Match
-                    mx
-                    mc
-                    pats
-                    ( GRHSs
-                        gx
-                        [L lg (GRHS ggx [] (wrap spn localBinds (applied spn vars body)))]
-                        emptyLB
-                    )
-                )
-            , []
-            )
-    -- Guarded: case-encode inside the wrap, unless failing guards could
-    -- fall through to a later equation.
+        pure $
+          if alreadyInjected [abiComponent abi] occ body
+            then (m0, [])
+            else
+              ( eta
+                  spn
+                  vars
+                  ( Match
+                      mx
+                      mc
+                      pats
+                      ( GRHSs
+                          gx
+                          [L lg (GRHS ggx [] (wrap spn localBinds (applied spn vars body)))]
+                          emptyLB
+                      )
+                  )
+              , []
+              )
+    -- Guarded and self-exhaustive: case-encode inside the wrap.
     | L lg (GRHS ggx _ _) : _ <- galts
-    , selfExhaustive galts || isLast =
+    , selfExhaustive galts =
         let caseE = mkGuardCase ext spn gx (map (fmap (applyG spn vars)) galts)
-         in ( eta
-                spn
-                vars
-                ( Match
-                    mx
-                    mc
-                    pats
-                    (GRHSs gx [L lg (GRHS ggx [] (wrap spn localBinds caseE))] emptyLB)
-                )
-            , []
-            )
+         in pure (wrapped spn vars mx mc pats gx lg ggx localBinds caseE, [])
+    -- Guarded, can all fail, and nothing to fall through to: a local
+    -- equation of the same name, so GHC's coverage warning and runtime
+    -- error name the function rather than the encoding ('mkGuardLet').
+    | L lg (GRHS ggx _ _) : _ <- galts
+    , isLast = do
+        u <- getUniqueM
+        let
+          guardsNm = GHC.mkInternalName u (GHC.mkVarOcc occ) GHC.noSrcSpan
+          applied' = m0{m_grhss = GRHSs gx (map (fmap (applyG spn vars)) galts) localBinds}
+          letE = mkGuardLet ext spn applied' guardsNm
+        pure (wrapped spn vars mx mc pats gx lg ggx localBinds letE, [])
     | otherwise =
-        ( Match mx mc pats (GRHSs gx galts localBinds)
-        ,
-          [
-            ( spn
-            , Diag.Unhonoured
-            ,
-              [ "skipping component wrap for an equation of '" <> occ <> "'."
-              , "Its guards can fall through to a later equation, which the"
-                  <> " wrap would turn into a crash."
-              , "Its bindings still trace, at the enclosing scope."
-              ]
-            )
-          ]
-        )
+        pure
+          ( Match mx mc pats (GRHSs gx galts localBinds)
+          ,
+            [
+              ( spn
+              , Diag.Unhonoured
+              ,
+                [ "skipping component wrap for an equation of '" <> occ <> "'."
+                , "Its guards can fall through to a later equation, which the"
+                    <> " wrap would turn into a crash."
+                , "Its bindings still trace, at the enclosing scope."
+                ]
+              )
+            ]
+          )
 
   wrap spn lbs body =
     mkApp2 (abiComponent abi) spn occ (mkLetE spn lbs body)
+
+  -- The equation with its guards replaced by one right-hand side, @body@
+  -- (which encodes them), wrapped and eta-expanded.
+  wrapped spn vars mx mc pats gx lg ggx localBinds body =
+    eta
+      spn
+      vars
+      ( Match
+          mx
+          mc
+          pats
+          (GRHSs gx [L lg (GRHS ggx [] (wrap spn localBinds body))] emptyLB)
+      )
 
   -- Eta-expansion, when the signature calls for it ('etaArity'): the fresh
   -- arguments become trailing patterns, and every body is applied to them
@@ -1334,6 +1351,72 @@ mkGuardCase origin spn gx galts =
               )
           ]
       )
+
+{- | @let f | g1 = e1 | ... in f@, from a guarded equation of @f@ (its
+argument patterns dropped: they are already matched by the enclosing one).
+
+The local binder is fresh but keeps @f@'s occurrence, which is what GHC
+names in a coverage warning ("In an equation for ‘f’") and in the runtime
+failure ("Non-exhaustive patterns in function f"). It gets no source span, so
+a second run of this pass (the plugin enabled twice) does not take it for a
+user binding and trace it ('wantedBinder').
+
+Its free-variable set is every local name the guards and bodies mention: a
+superset, which only ever makes the binding look open. That usually keeps
+GHC from generalising it, but not always: without @MonoLocalBinds@ every let
+binding is generalised, and names bound INSIDE the guards or bodies (a
+pattern guard's binders, a nested @let@) do not count as open. Generalising
+it is harmless, though. The binder has exactly one use, at one type, so even
+when an injected @CanTrace@ constraint cannot be quantified and the binding
+is monomorphised, there is no second use for that to clash with (unlike the
+closed bindings 'closedBind' skips).
+-}
+mkGuardLet ::
+  Origin ->
+  GHC.SrcSpan ->
+  Match GhcRn (LHsExpr GhcRn) ->
+  GHC.Name ->
+  LHsExpr GhcRn
+mkGuardLet origin spn eqn nm = mkLetE spn lbs (mkVarE spn nm)
+ where
+  grhss = (m_grhss eqn){grhssLocalBinds = EmptyLocalBinds noExtField}
+  -- @m_ctxt@ is kept, so it still names the user's function while 'fun_id'
+  -- is the fresh binder. That mismatch is deliberate: the context is what
+  -- GHC names in the coverage warning and the runtime error. Its fixity is
+  -- not kept, though. An equation defined infix (@k `f` x@, @a <+> b@) has an
+  -- 'Infix' context, and GHC's 'pprMatch' panics on an infix match without
+  -- two patterns. It prints the match for every error inside the guards or
+  -- bodies ("In an equation for ‘f’: …"), so a type error became a panic.
+  eqn' =
+    eqn
+      { m_ctxt = prefix (m_ctxt eqn)
+      , m_pats = mkMatchPats []
+      , m_grhss = grhss
+      }
+  prefix ctxt@FunRhs{} = ctxt{mc_fixity = Prefix}
+  prefix ctxt = ctxt
+  bind =
+    L
+      (noAnnSrcSpan GHC.noSrcSpan)
+      FunBind
+        { fun_ext = fvs
+        , fun_id = L (noAnnSrcSpan spn) nm
+        , fun_matches =
+            MG origin (L (noAnnSrcSpan spn) [L (noAnnSrcSpan spn) eqn'])
+        }
+  lbs =
+    HsValBinds
+      noAnn
+      (XValBindsLR (NValBinds [(GHC.NonRecursive, bindsFromList [bind])] []))
+  fvs =
+    GHC.mkNameSet
+      [ n
+      | HsVar _ (L _ n) <- SYB.listify isVar grhss
+      , not (GHC.isExternalName n)
+      ]
+  isVar :: HsExpr GhcRn -> Bool
+  isVar HsVar{} = True
+  isVar _ = False
 
 mkLetE ::
   GHC.SrcSpan -> HsLocalBinds GhcRn -> LHsExpr GhcRn -> LHsExpr GhcRn

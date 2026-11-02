@@ -26,7 +26,11 @@ Initial version.
   order used to be the order `dumpVCD1#` returned, which had no meaning.
 * GHC plugin (`Clash.CircuitContext.Plugin`): automatic instrumentation.
   `OPAQUE` + `HasCircuitContext` toplevel functions become components
-  (guarded equations are case-encoded when they cannot fall through);
+  (guarded equations are case-encoded when they cannot fall through, and a
+  last equation whose guards can all fail is bound as a local equation of
+  the function's own name, so `-Wincomplete-patterns` and the runtime
+  error still name the function: "Non-exhaustive patterns in function f",
+  not "in case");
   named local bindings in `HasCircuitContext` functions are auto-traced,
   in `HasProbe` functions auto-probed; `_`-prefix opts a binding out.
   Local **pattern** bindings (tuples, records, …) are handled too: each
