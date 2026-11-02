@@ -40,16 +40,15 @@ module Main where
 
 import qualified Prelude as P
 
-import Control.Exception (SomeException, evaluate, try)
-import Data.List (isInfixOf)
-import qualified Data.Map.Strict as Map
-import Data.Maybe (fromMaybe, isJust)
-import qualified Data.Text.IO as TIO
+import Control.Exception (SomeException, evaluate, throwIO, try)
+import Data.List (isInfixOf, sort)
+import Data.Maybe (fromMaybe)
 import System.Exit (exitFailure)
 
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext
+import Clash.CircuitContext.Recording
 import Clash.Signal (HiddenReset, withReset)
 
 -- | Accumulator: component "acc"; probes its pre-registration sum.
@@ -200,18 +199,29 @@ check what ok
   | ok = putStrLn ("ok: " <> what)
   | otherwise = putStrLn ("FAIL: " <> what) >> exitFailure
 
+{- | Run an action under a recording context, rethrowing what it throws, and
+return its result with the recording.
+-}
+recorded :: String -> ((HasCircuitContext) => IO a) -> IO (a, Recording)
+recorded spill k = do
+  (r, rec) <- withRecording spill k
+  either throwIO (\a -> pure (a, rec)) r
+
+-- | The keys of the recorded signals of one kind, in order.
+keysOf :: Kind -> Recording -> [String]
+keysOf kind rec = sort [signalKey s | s <- recordedSignals rec, signalKind s P.== kind]
+
 main :: IO ()
 main = do
-  (samples, traces, probes) <- withCircuitContext $ do
+  (samples, rec) <- recorded "auto-instrumentation.spill" $ do
     let xs = sampleN 8 (top (fromList [1, 1 ..]))
-    _ <- evaluate (deepseqX xs xs)
-    pure xs
+    evaluate (deepseqX xs xs)
   putStrLn ("samples: " <> show samples)
-  putStrLn ("traces:  " <> show (Map.keys traces))
-  putStrLn ("probes:  " <> show (Map.keys probes))
+  putStrLn ("traces:  " <> show (keysOf TraceKind rec))
+  putStrLn ("probes:  " <> show (keysOf ProbeKind rec))
   let
-    tks = Map.keys traces
-    pks = Map.keys probes
+    tks = keysOf TraceKind rec
+    pks = keysOf ProbeKind rec
     hasT nm = P.any (nm `isInfixOf`) tks
     countT nm = P.length (P.filter (nm `isInfixOf`) tks)
     countP nm = P.length (P.filter (nm `isInfixOf`) pks)
@@ -251,49 +261,51 @@ main = do
   failsInFunction
     "partialRank"
     (withoutCircuitContext (partialRank 0 (resetGen @System) (pure 1)))
-  (ipSamples, ipTraces, _) <- withCircuitContext $ do
+  (ipSamples, ipRec) <- recorded "auto-instrumentation-ip.spill" $ do
     let xs =
           sampleN 4 (1 `infixPartial` fromList [1, 1 ..])
             P.<> sampleN 4 (partialRank 1 (resetGen @System) (fromList [1, 1 ..]))
-    _ <- evaluate (deepseqX xs xs)
-    pure xs
+    evaluate (deepseqX xs xs)
+  discardRecording ipRec
   check "infixPartial and partialRank sample" (ipSamples P.== [6, 6, 6, 6, 1, 1, 1, 1])
   check
     "infixPartial is a component containing out5 (last-equation rule)"
     ( P.any
         (\k -> "infixPartial@" `isInfixOf` k P.&& ".out5@" `isInfixOf` k)
-        (Map.keys ipTraces)
+        (keysOf TraceKind ipRec)
     )
   check
     "polyHelper open locals traced at both use types"
     (hasT ".asBool@" P.&& hasT ".asInt@" P.&& hasT ".out4@")
   check "closed polymorphic local skipped (F9)" (P.not (hasT "quiet"))
   -- probeFmap / mealyBProbed coverage (separate runs; not in the golden VCD).
-  (_, _, pfProbes) <- withCircuitContext $ do
+  (_, pfRec) <- recorded "auto-instrumentation-pf.spill" $ do
     let xs = sampleN 4 (probeFmapDemo (fromList [3, 3 ..]))
-    _ <- evaluate (deepseqX xs xs)
-    pure xs
-  let pfKeys = Map.keys pfProbes
+    evaluate (deepseqX xs xs)
+  let pfKeys = keysOf ProbeKind pfRec
+  discardRecording pfRec
   check
     "probeFmap probes combinational internals"
     (P.any (".doubled@" `isInfixOf`) pfKeys P.&& P.any (".negated@" `isInfixOf`) pfKeys)
-  (_, _, mbProbes) <- withCircuitContext $ do
+  (_, mbRec) <- recorded "auto-instrumentation-mb.spill" $ do
     let xs = sampleN 4 (mealyBDemo (fromList [1, 1 ..]))
-    _ <- evaluate (deepseqX xs xs)
-    pure xs
+    evaluate (deepseqX xs xs)
+  discardRecording mbRec
   check
     "mealyBProbed probes step internals"
-    (P.any (".s'@" `isInfixOf`) (Map.keys mbProbes))
+    (P.any (".s'@" `isInfixOf`) (keysOf ProbeKind mbRec))
   -- This module never mentions clash-shockwaves, so its Waveform instances
   -- reach the oracle only through the plugin's force-load of their home
   -- interface. Without it every wire still traces, as raw bits, which the
   -- golden VCD cannot tell apart; only the descriptor can.
   check
     "an Int wire is described without importing clash-shockwaves"
-    (P.any (".out@" `isInfixOf`) (Map.keys (Map.filter (isJust . teAdt) traces)))
-  vcd <- dumpVCDC (0, 8) traces probes
+    ( P.any
+        (\s -> ".out@" `isInfixOf` signalKey s P.&& signalDescribed s)
+        [s | s <- recordedSignals rec, signalKind s P.== TraceKind]
+    )
+  vcd <- writeVCD (0, 8) rec "auto-instrumentation.vcd"
+  discardRecording rec
   case vcd of
     Left err -> putStrLn ("VCD error: " <> err) >> exitFailure
-    Right txt -> do
-      TIO.writeFile "auto-instrumentation.vcd" txt
-      putStrLn "auto-instrumentation passed"
+    Right () -> putStrLn "auto-instrumentation passed"

@@ -99,19 +99,16 @@ top inp = out
 ```
 
 No `traceSignal`, no manual names — the code reads like ordinary Clash.
-Run a simulation under `withCircuitContext` and dump:
+Simulate it and write the waveform:
 
 ```haskell
-import qualified Data.Text.IO as TIO
+import Clash.CircuitContext.Waveform
 
 main :: IO ()
 main = do
-  (_samples, traces, probes) <- withCircuitContext $ do
-    let xs = sampleN 100 (top (fromList [1, 1 ..]))
-    _ <- evaluate (deepseqX xs xs)
-    pure xs
-  vcd <- dumpVCDC (0, 100) traces probes
-  either fail (TIO.writeFile "trace.vcd") vcd
+  -- 100 cycles; writes waveforms/top.vcd (+ .json) of cycles [0, 100).
+  _samples <- writeWaveform "top" (0, 100) (top (fromList [1, 1 ..]))
+  pure ()
 ```
 
 The VCD scope tree mirrors the design hierarchy; the two `acc` instances
@@ -367,22 +364,25 @@ design question, tracked as finding F1 in
 
 ## Waveforms from your test suite
 
-`withCircuitContext` + `dumpVCDC` is the raw API. `Clash.CircuitContext.Waveform`
-writes the files for you, and in a test suite records only the run you will
-look at. Every function takes what `dumpVCD` takes: the `Signal` to observe
-(it supplies the `HasCircuitContext`) and the number of samples. Several
-outputs in one domain become one signal with `bundle`; a `clash-protocols`
-circuit becomes one with `toSignals`.
+`Clash.CircuitContext.Waveform` writes the files for you, and in a test suite
+records only the run you will look at. Every function takes what `dumpVCD`
+takes: the `Signal` to observe (it supplies the `HasCircuitContext`) and a
+window `(start, stop)` of cycles. The simulation runs `stop` cycles and the
+waveform shows cycles `start` to `stop - 1`; `(0, n)` shows all `n`. As in
+`dumpVCD`, `start` cannot be negative: VCD time is unsigned. Several outputs
+in one domain become one signal with `bundle`; a `clash-protocols` circuit
+becomes one with `toSignals`. For outputs in more than one domain, record by
+hand with `Clash.CircuitContext.Recording` (`withRecording`, `writeVCD`).
 
 ```haskell
 import Clash.CircuitContext.Waveform
 
 -- Anywhere in IO: simulate, write waveforms/counter.vcd (+ .json), get the samples.
-main = writeWaveform "counter" 1000 (top (fromList [1 ..])) >>= print
+main = writeWaveform "counter" (0, 1000) (top (fromList [1 ..])) >>= print
 
 -- In a test: nothing is recorded while it passes; the failing run's waveform when it fails.
 case_counter :: Assertion
-case_counter = withWaveform "counter" 1000 (top (fromList [1 ..])) $ \out ->
+case_counter = withWaveform "counter" (0, 1000) (top (fromList [1 ..])) $ \out ->
   out @?= expected
 ```
 
@@ -402,6 +402,13 @@ Recording only on failure matters under a parallel runner, where peak memory
 is the sum over concurrently running tests: on a real 24-core suite it took
 unconditional recording from 25.2 GB and 6m22s to **8.2 GB and 1m06s**.
 
+A recording does not keep its history in memory: each signal's value changes
+go to a spill file next to the waveform, `waveforms/<name>.spill`, while the
+simulation runs, and the VCD is written from there, straight to disk. The
+spill file is deleted when the waveform is written. A long run needs about the
+same memory as a short one; it needs disk space instead, roughly the size of
+the VCD.
+
 ### Hedgehog properties
 
 A Hedgehog failure is a value in `PropertyT`'s error layer, not a thrown
@@ -414,7 +421,7 @@ import Clash.CircuitContext.Waveform.Hedgehog
 prop_counter :: Property
 prop_counter = property $ do
   xs  <- forAll genInputs
-  out <- simulateWaveform Counterexample "counter" (length xs) (top (fromList xs))
+  out <- simulateWaveform Counterexample "counter" (0, length xs) (top (fromList xs))
   out === model xs
 ```
 
@@ -453,8 +460,7 @@ than chosen between:
 
 Every traced or probed payload with a `Waveform` instance carries its
 description. The descriptor is captured at registration, where the payload
-type is still known, and `dumpVCDSW` (in `Clash.CircuitContext.Shockwaves`)
-writes the VCD and the sidecar from one call, keyed by the very scope paths
+type is still known, and the sidecar is written with the VCD, keyed by the very scope paths
 the VCD declares — sibling `_0`/`_1` suffixes and the `logic` scope of a
 top-level name included — so nothing is matched by name. The
 sidecar is in shockwaves' own format, and its
@@ -492,8 +498,7 @@ Three things worth knowing:
 * **A waveform is a pair of files.** `Clash.CircuitContext.Waveform` writes
   both through temp + rename with the sidecar landing first, so if the `.vcd`
   is there its `.json` is there and complete. Without the sidecar the VCD is
-  still a complete untyped waveform, and `dumpVCDC` remains the VCD-only
-  dump. A description cannot cost you the VCD either: one that fails to
+  still a complete untyped waveform. A description cannot cost you the VCD either: one that fails to
   render (a hand-written `Waveform` instance whose width disagrees with
   `BitSize`, say) is left out of the sidecar and named on stderr, and the
   signal stays in the VCD as bits. The sidecar is small: about 0.04 % of the
@@ -504,8 +509,9 @@ Three things worth knowing:
 Everything the plugin injects is ordinary user API from
 `Clash.CircuitContext`, usable directly where you want explicit control:
 `component`, `imapComponents`, `traceSignalC`, `traceSignalSW`, `probe`,
-`probeSW`, `mealyProbed`, `withCircuitContext`, `dumpVCDC` (and `dumpVCDSW` for the VCD
-with its sidecar), and the `autoTrace`/`autoProbe` pair
+`probeSW`, `mealyProbed`, `withRecording` (with `writeVCD` from
+`Clash.CircuitContext.Recording` for the VCD and its sidecar), and the
+`autoTrace`/`autoProbe` pair
 (these two still need the plugin enabled: its typechecker half reduces the
 `CanTrace`/`CanProbe`/`CanDescribe` type families).
 
@@ -513,9 +519,9 @@ with its sidecar), and the `autoTrace`/`autoProbe` pair
 
 * The context is one implicit parameter, `?circuitContext`. `component`
   pushes a hierarchy segment; trace/probe registrations qualify their keys
-  with the path at creation time. All state lives in per-simulation
-  `IORef`s created by `withCircuitContext` — there is no global mutable
-  state, and independent simulations don't interfere.
+  with the path at creation time. All state lives in a per-simulation
+  recorder created by `withRecording` — there is no global mutable state,
+  and independent simulations don't interfere.
 * Instance identity is **heap identity**: each `component`/`mealyProbed`
   application allocates a fresh hierarchy cell, resolved to a small ordinal
   at registration time via its `StableName`.
@@ -554,11 +560,11 @@ must do is discharge the `HasCircuitContext` constraint, e.g. `let
 ?circuitContext = noCircuitContext in …` at the synthesis entry point.
 
 The same gate keeps **simulation cheap when you are not recording**: under
-`noCircuitContext` (i.e. not inside `withCircuitContext`) the combinators
+`noCircuitContext` (i.e. not inside `withRecording`) the combinators
 short-circuit before touching any `IORef` — `component` skips the hierarchy
 push, `mealyProbed` runs as a plain `mealy` with no cycle counter, and
 `probe`/`traceSignalC` are the identity. A design that merely *carries*
-instrumentation pays essentially nothing until a `withCircuitContext` run
+instrumentation pays essentially nothing until a `withRecording` run
 actually collects a waveform.
 
 ## Limitations
@@ -586,7 +592,7 @@ actually collects a waveform.
   synonym is the only way to alias `HasCircuitContext`.
 * Constraint plumbing is at the type level: `HasCircuitContext` propagates
   to a function's callers. Supply the context once, at a boundary — a test
-  does it with `withCircuitContext`; a synthesis entry point (or any caller
+  does it with `writeWaveform` or `withRecording`; a synthesis entry point (or any caller
   you don't want to thread the constraint through) does it with
   `withoutCircuitContext` (see [Opting out](#opting-out)). This is a
   compile-time concern only; it does not affect the generated hardware

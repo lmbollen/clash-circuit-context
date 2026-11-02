@@ -19,7 +19,7 @@ module Test.Capture (tests) where
 
 import qualified Prelude as P
 
-import Control.Exception (SomeException, evaluate, try)
+import Control.Exception (ErrorCall, SomeException, evaluate, try)
 import Control.Monad (when)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (isPrefixOf)
@@ -50,10 +50,11 @@ counter :: (HasCircuitContext) => Signal System (Unsigned 8)
 counter = traceSignalC "count" (fromList [0 ..])
 {-# OPAQUE counter #-}
 
-{- | Two traced signals identical in every COMMITTED cycle and diverging only
-at the last forced one — which the recorder has not committed yet (it sits in
-the packed tail; see 'teForced') when the run stops. Sampled 4 cycles, both
-commit @[0, 0, 0]@ and the divergent cycle 3 is drained at dump time.
+{- | Two traced signals identical in every cycle but the last forced one —
+which the tap has not recorded yet when the run stops (it records a cycle when
+the next cell is forced), so it is recorded only when the run ends. Sampled 4
+cycles, both record @[0, 0, 0]@ while the run goes, and the divergent cycle 3
+when it ends.
 -}
 twins :: (HasCircuitContext) => Signal System (Unsigned 8, Unsigned 8)
 twins =
@@ -68,7 +69,7 @@ vcdOf name = "waveforms" </> name <.> "vcd"
 -- | Leave the waveform of a failing run behind, as an earlier run would.
 plantFailure :: String -> IO ()
 plantFailure name = do
-  _ <- try @SomeException $ withWaveform name 8 counter $ \xs -> evaluate (P.length xs) >> errorX "an earlier failure"
+  _ <- try @SomeException $ withWaveform name (0, 8) counter $ \xs -> evaluate (P.length xs) >> errorX "an earlier failure"
   (v, j) <- filesFor name
   assertBool "the earlier failure left its waveform" (v P.&& j)
 
@@ -76,12 +77,16 @@ plantFailure name = do
 filesFor :: String -> IO (Bool, Bool)
 filesFor name = (,) <$> doesFileExist (vcdOf name) <*> doesFileExist (vcdOf name -<.> "json")
 
--- | A test with its own, scrubbed waveform name.
+{- | A test with its own, scrubbed waveform name. Afterwards, the recording's
+spill file must be gone, whatever the test did: written, failed or passed.
+-}
 withName :: String -> (String -> Assertion) -> Assertion
 withName name body = do
   let vcd = vcdOf name
   P.mapM_ (\p -> doesFileExist p >>= \e -> when e (removeFile p)) [vcd, vcd -<.> "json"]
   body name
+  spill <- doesFileExist (vcd -<.> "spill")
+  assertBool "the spill file is deleted" (P.not spill)
 
 -- | How many cycles a VCD has (one @#@ timestamp per cycle).
 cyclesOf :: String -> IO Int
@@ -110,15 +115,31 @@ tests =
     "Test.Capture"
     [ testCase "writeWaveform writes the VCD and its sidecar" $
         withName "capture-written" $ \name -> do
-          out <- writeWaveform name 8 counter
+          out <- writeWaveform name (0, 8) counter
           out @?= [0 .. 7]
           (v, j) <- filesFor name
           assertBool "both halves written" (v P.&& j)
+    , -- A window shows its cycles only, and the samples are all of them.
+      testCase "writeWaveform shows the window, and returns every sample" $
+        withName "capture-window" $ \name -> do
+          out <- writeWaveform name (3, 8) counter
+          out @?= [0 .. 7]
+          vcd <- P.readFile (vcdOf name)
+          P.take 1 [l | l <- P.lines vcd, P.take 1 l P.== "#"] @?= ["#3"]
+          n <- cyclesOf name
+          n @?= 5
+    , -- As dumpVCD, a window must have 0 <= start <= stop.
+      testCase "a window that ends before it starts is refused" $
+        withName "capture-bad-window" $ \name -> do
+          outcome <- try @ErrorCall (writeWaveform name (5, 3) counter)
+          assertBool "refused" (P.either (P.const True) (P.const False) outcome)
+          (v, _) <- filesFor name
+          assertBool "no VCD" (P.not v)
     , -- A PASSING run writes nothing at all: the simulation runs without a
       -- recording context, so there is no history to render or discard.
       testCase "withWaveform writes nothing when the test passes" $
         withName "capture-passing" $ \name -> do
-          _ <- withWaveform name 8 counter evaluate
+          _ <- withWaveform name (0, 8) counter evaluate
           (v, j) <- filesFor name
           assertBool "no VCD, no sidecar" (P.not v P.&& P.not j)
     , -- A file left by an earlier FAILING run is deleted when the test
@@ -126,14 +147,14 @@ tests =
       testCase "withWaveform deletes an earlier failure's files when the test passes" $
         withName "capture-stale" $ \name -> do
           plantFailure name
-          _ <- withWaveform name 8 counter evaluate
+          _ <- withWaveform name (0, 8) counter evaluate
           (v, j) <- filesFor name
           assertBool "no stale VCD, no stale sidecar" (P.not v P.&& P.not j)
     , -- …but keeps a waveform that was written on purpose, by writeWaveform.
       testCase "withWaveform keeps a waveform written on purpose when the test passes" $
         withName "capture-requested" $ \name -> do
-          _ <- writeWaveform name 8 counter
-          _ <- withWaveform name 8 counter evaluate
+          _ <- writeWaveform name (0, 8) counter
+          _ <- withWaveform name (0, 8) counter evaluate
           (v, j) <- filesFor name
           assertBool "the requested waveform is still there" (v P.&& j)
     , -- A FAILING run writes both, and the check's exception propagates.
@@ -141,7 +162,7 @@ tests =
         withName "capture-failing" $ \name -> do
           outcome <-
             try @SomeException $
-              withWaveform name 8 counter $ \xs -> do
+              withWaveform name (0, 8) counter $ \xs -> do
                 _ <- evaluate (P.length xs)
                 errorX "deliberate failure"
           assertBool
@@ -158,7 +179,7 @@ tests =
         withName "capture-one-cycle" $ \name -> do
           _ <-
             try @SomeException $
-              withWaveform name 8 counter $ \xs -> do
+              withWaveform name (0, 8) counter $ \xs -> do
                 _ <- evaluate (P.take 1 xs P.== [0])
                 errorX "deliberate failure"
           (v, j) <- filesFor name
@@ -173,7 +194,7 @@ tests =
       -- own identifier.
       testCase "signals diverging only at the last (uncommitted) cycle are not aliased" $
         withName "capture-alias-tail" $ \name -> do
-          _ <- writeWaveform name 4 twins
+          _ <- writeWaveform name (0, 4) twins
           vcd <- P.readFile (vcdOf name)
           assertBool
             "the divergent change line is present"
@@ -184,7 +205,7 @@ tests =
         withName "capture-prop-passing" $ \name -> do
           ok <-
             Hedgehog.check . Hedgehog.property $ do
-              xs <- simulateWaveform Counterexample name 8 counter
+              xs <- simulateWaveform Counterexample name (0, 8) counter
               P.length xs Hedgehog.=== 8
           assertBool "the passing property passes" ok
           (v, j) <- filesFor name
@@ -200,7 +221,7 @@ tests =
         withName "capture-prop-failing" $ \name -> do
           ok <-
             Hedgehog.check . Hedgehog.property $ do
-              xs <- simulateWaveform Counterexample name 8 counter
+              xs <- simulateWaveform Counterexample name (0, 8) counter
               P.length xs Hedgehog.=== 7
           assertBool "the failing property fails" (P.not ok)
           (v, j) <- filesFor name
@@ -215,7 +236,7 @@ tests =
           ok <-
             Hedgehog.check . Hedgehog.property $ do
               xs <- Hedgehog.forAll (Gen.list (Range.linear 1 30) Gen.bool)
-              out <- simulateWaveform Counterexample name (P.length xs) counter
+              out <- simulateWaveform Counterexample name (0, P.length xs) counter
               Hedgehog.assert (P.length out P.< 3)
           assertBool "the failing property fails" (P.not ok)
           n <- cyclesOf name
@@ -259,7 +280,7 @@ tests =
         withName "capture-prop-sized" $ \name -> do
           ok <-
             Hedgehog.check . Hedgehog.withTests 20 . Hedgehog.property $ do
-              xs <- simulateWaveform (AtSize 10) name 8 counter
+              xs <- simulateWaveform (AtSize 10) name (0, 8) counter
               P.length xs Hedgehog.=== 8
           assertBool "the property passes" ok
           (v, j) <- filesFor name
@@ -270,14 +291,14 @@ tests =
         withName "capture-prop-once" $ \name -> do
           _ <-
             Hedgehog.check . Hedgehog.withTests 5 . Hedgehog.property $
-              () <$ simulateWaveform (AtSize 0) name 8 counter
+              () <$ simulateWaveform (AtSize 0) name (0, 8) counter
           first <- filesFor name
           first @?= (True, True)
           removeFile (vcdOf name)
           removeFile (vcdOf name -<.> "json")
           _ <-
             Hedgehog.check . Hedgehog.withTests 5 . Hedgehog.property $
-              () <$ simulateWaveform (AtSize 0) name 8 counter
+              () <$ simulateWaveform (AtSize 0) name (0, 8) counter
           second <- filesFor name
           second @?= (False, False)
     ]

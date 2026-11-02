@@ -6,6 +6,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
@@ -50,9 +51,8 @@ module Main where
 
 import qualified Prelude as P
 
-import Control.Exception (SomeException, displayException, evaluate, toException)
+import Control.Exception (SomeException, displayException, evaluate, throwIO, toException)
 import Data.Dynamic (Dynamic, fromDynamic, toDyn)
-import qualified Data.Map.Strict as Map
 import Data.Typeable (TypeRep, typeOf)
 import Foreign.Ptr (FunPtr, Ptr, castPtrToFunPtr, nullFunPtr, nullPtr, plusPtr)
 import Numeric.Natural (Natural)
@@ -61,6 +61,7 @@ import System.Exit (exitFailure)
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext
+import Clash.CircuitContext.Recording
 import qualified Test.DeclGroups as DeclGroups
 import Test.DesignCtx (DesignCtx)
 import qualified Test.Downstream as Downstream
@@ -367,15 +368,24 @@ top inp =
     + DeclGroups.etaReduced resetGen inp
 {-# OPAQUE top #-}
 
+-- | Record an action, rethrowing what it throws.
+recorded :: String -> ((HasCircuitContext) => IO a) -> IO Recording
+recorded spill k = do
+  (r, rec) <- withRecording spill k
+  either throwIO (P.const (pure rec)) r
+
+-- | The recorded signals of one kind.
+ofKind :: Kind -> Recording -> [RecordedSignal]
+ofKind kind rec = [s | s <- recordedSignals rec, signalKind s == kind]
+
 main :: IO ()
 main = do
-  (_, traces, probes) <- withCircuitContext $ do
+  rec <- recorded "plugin-diagnostics.spill" $ do
     let xs = sampleN 8 (top (fromList [1, 1 ..]))
-    _ <- evaluate (deepseqX xs xs)
-    pure xs
+    evaluate (deepseqX xs xs)
   -- A SECOND recording, for the cases lifted from the downstream audit. Kept
   -- separate from @top@ so a path assertion names the case it belongs to.
-  (_, downstream, _) <- withCircuitContext $ do
+  downstreamRec <- recorded "plugin-diagnostics-downstream.spill" $ do
     let ys =
           sampleN
             8
@@ -394,21 +404,29 @@ main = do
                 , Downstream.synArrowImported (pure 1)
                 )
             )
-    _ <- evaluate (deepseqX ys ys)
-    pure ys
+    evaluate (deepseqX ys ys)
   let
-    paths = P.map (P.map segmentName . splitOn '.') (Map.keys traces)
-    probePaths = P.map (P.map segmentName . splitOn '.') (Map.keys probes)
-    -- A probe's recorded values, cycle by cycle (a run covers its cycles).
+    traces = ofKind TraceKind rec
+    probes = ofKind ProbeKind rec
+    downstream = ofKind TraceKind downstreamRec
+  -- A probe's recorded values, change by change.
+  probeChanges <-
+    sequence
+      [ (,) (P.last (P.map segmentName (splitOn '.' (signalKey s)))) <$> recordedChanges rec s
+      | s <- probes
+      ]
+  P.mapM_ discardRecording [rec, downstreamRec]
+  let
+    paths = P.map (P.map segmentName . splitOn '.') (P.map signalKey traces)
+    probePaths = P.map (P.map segmentName . splitOn '.') (P.map signalKey probes)
     probeValues nm =
       [ toInteger val
-      | (k, ProbeEntry{peRuns = runs}) <- Map.toList probes
-      , P.last (P.map segmentName (splitOn '.' k)) == nm
-      , (cs, ce, (_, val)) <- P.reverse runs
-      , _ <- [cs .. ce]
+      | (k, changes) <- probeChanges
+      , k == nm
+      , (_, Just (_, val)) <- changes
       ]
     downstreamPaths =
-      P.map (P.map segmentName . splitOn '.') (Map.keys downstream)
+      P.map (P.map segmentName . splitOn '.') (P.map signalKey downstream)
   putStrLn "recorded paths:"
   mapM_ (putStrLn . ("  " <>) . show) paths
   putStrLn "probed paths:"
@@ -484,9 +502,9 @@ main = do
           [ "downstream regression: [\"f2\",\"ix\"] was recorded but not described"
           | P.null
               [ ()
-              | (k, e) <- Map.toList downstream
-              , P.map segmentName (splitOn '.' k) == ["f2", "ix"]
-              , P.maybe False (P.const True) (teAdt e)
+              | e <- downstream
+              , P.map segmentName (splitOn '.' (signalKey e)) == ["f2", "ix"]
+              , signalDescribed e
               ]
           ]
         , -- Clash translates Integer to 64 bits, and so does the recorder:
@@ -500,9 +518,9 @@ main = do
         , -- An SNat probes as the Index holding it; an SNat 0 has no bits.
           [ "an SNat was not probed as Index 6 (3 bits): tap " <> show ws
           | let ws =
-                  [ peWidth e
-                  | (k, e) <- Map.toList probes
-                  , P.last (P.map segmentName (splitOn '.' k)) == "tap"
+                  [ signalWidth e
+                  | e <- probes
+                  , P.last (P.map segmentName (splitOn '.' (signalKey e))) == "tap"
                   ]
           , ws /= [3]
           ]
@@ -598,7 +616,7 @@ main = do
       exitFailure
 
 {- | The name part of a recorded segment, dropping the @\@ordinal\@location@
-disambiguation tag 'Clash.CircuitContext.Core.dumpVCDC' resolves later.
+disambiguation tag the VCD writer resolves later.
 -}
 segmentName :: String -> String
 segmentName = P.takeWhile (/= '@')

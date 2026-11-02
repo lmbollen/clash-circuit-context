@@ -1,7 +1,9 @@
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 {- |
 Copyright  :  (C) 2026, QBayLogic B.V.
@@ -14,7 +16,7 @@ and, if you ask for it, of one passing case.
 > prop_counter :: Property
 > prop_counter = property $ do
 >   xs  <- forAll genInputs
->   out <- simulateWaveform Counterexample "counter" (length xs) (top (fromList xs))
+>   out <- simulateWaveform Counterexample "counter" (0, length xs) (top (fromList xs))
 >   out === model xs
 
 Every case simulates without recording, so a property that passes costs
@@ -46,7 +48,7 @@ module Clash.CircuitContext.Waveform.Hedgehog (
   simulateWaveform,
 ) where
 
-import Control.Exception (SomeException, displayException, try)
+import Control.Exception (SomeException, displayException, evaluate, throwIO, try)
 import Control.Monad.IO.Class (liftIO)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import qualified Data.Set as Set
@@ -58,10 +60,11 @@ import Hedgehog.Internal.Property (footnote, forAllWithT)
 
 import qualified Hedgehog.Gen as Gen
 
-import Clash.Explicit.Signal (Signal)
-import Clash.Prelude (NFDataX)
+import Clash.Explicit.Signal (Signal, sampleN)
+import Clash.Prelude (KnownDomain, NFDataX, deepseqX)
 
 import Clash.CircuitContext.Core (HasCircuitContext)
+import Clash.CircuitContext.Internal.Recorder (Recording)
 import Clash.CircuitContext.Internal.Waveform
 
 -- | Which cases of a property leave a waveform.
@@ -78,23 +81,26 @@ data Capture
     AtSize Size
   deriving (Show, Eq)
 
-{- | @n@ samples of a design, for a property to check. Records nothing,
-except as 'Capture' asks; see the module header.
+{- | @stop@ samples of a design, for a property to check. Records nothing,
+except as 'Capture' asks; see the module header. A waveform shows the cycles
+@[start, stop)@ of the window, as in "Clash.CircuitContext.Waveform".
 
 The waveform is @waveforms\/\<name\>.vcd@ (and its @.json@ sidecar); give each
 property its own name.
 -}
 simulateWaveform ::
-  (NFDataX a) =>
+  forall dom a.
+  (KnownDomain dom, NFDataX a) =>
   Capture ->
   -- | The name of the waveform: @waveforms\/\<name\>.vcd@
   String ->
-  -- | Number of samples
-  Int ->
+  -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
+  (Int, Int) ->
   -- | The signal to observe
   (HasCircuitContext => Signal dom a) ->
   PropertyT IO [a]
-simulateWaveform capture name n sig = do
+simulateWaveform capture name window@(_, stop) sig = do
+  liftIO (checkWindow name window)
   keepThis <- case capture of
     Counterexample -> pure False
     AtSize size -> firstAtSize name size
@@ -102,22 +108,44 @@ simulateWaveform capture name n sig = do
     liftIO $
       if keepThis
         then do
-          (xs, traces, probes) <- record n sig
-          _ <- save Requested name traces probes
-          pure xs
-        else simulate n sig
-  footnote (onPrint (recordCounterexample name n sig))
+          (xs, rec) <- recordRun @dom name window sig
+          _ <- save Requested name (psWindow @dom window) rec
+          either throwIO pure xs
+        else simulate stop sig
+  footnote (onPrint (recordCounterexample @dom name window sig))
   pure out
+
+-- | Record @stop@ samples of the signal, forced.
+recordRun ::
+  forall dom a.
+  (KnownDomain dom, NFDataX a) =>
+  String ->
+  (Int, Int) ->
+  (HasCircuitContext => Signal dom a) ->
+  IO (Either SomeException [a], Recording)
+recordRun name (start, stop) sig =
+  record name (start * domainPeriod @dom) $ do
+    let xs = sampleN stop sig
+    evaluate (xs `deepseqX` xs)
+
+-- | A window of cycles of a domain, in ps.
+psWindow :: forall dom. (KnownDomain dom) => (Int, Int) -> (Int, Int)
+psWindow (start, stop) = (start * domainPeriod @dom, stop * domainPeriod @dom)
 
 {- | Record this case again and write its waveform. Run only when Hedgehog
 prints the footnote; never throws, as it runs inside Hedgehog's report.
 -}
 recordCounterexample ::
-  (NFDataX a) => String -> Int -> (HasCircuitContext => Signal dom a) -> IO String
-recordCounterexample name n sig = do
+  forall dom a.
+  (KnownDomain dom, NFDataX a) =>
+  String ->
+  (Int, Int) ->
+  (HasCircuitContext => Signal dom a) ->
+  IO String
+recordCounterexample name window sig = do
   result <- try $ do
-    (_, traces, probes) <- record n sig
-    save Failure name traces probes
+    (_, rec) <- recordRun @dom name window sig
+    save Failure name (psWindow @dom window) rec
   case result of
     Right True -> ("waveform: " <>) <$> makeAbsolute (waveformPath name)
     Right False -> pure ("no waveform for " <> name <> ": nothing was recorded")

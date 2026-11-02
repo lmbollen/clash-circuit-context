@@ -1,7 +1,11 @@
-{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE AllowAmbiguousTypes #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE MonoLocalBinds #-}
+{-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 {- |
 Copyright  :  (C) 2026, QBayLogic B.V.
@@ -14,52 +18,53 @@ viewer reads, and how a signal is simulated with or without recording.
 
 == Memory
 
-A recording is rendered and written as soon as its run ends, and nothing
-keeps it afterwards. Retaining anything lazy here (notably the sidecar's
-'Json.Value', a lazy tree over the trace maps) retains that run's entire
-history: in an earlier, process-global store that meant every instrumented
-test's history at once, 26 GB resident, measured. Nothing here serializes
-tests either, so a parallel runner is free to use every core.
+A recording's values go to a spill file, @waveforms\/\<name\>.spill@, while
+the simulation runs, and are read from there when the files are written; the
+spill file is deleted after. So a recording needs about the same memory for
+a long run as for a short one. Nothing here serializes tests either, so a
+parallel runner is free to use every core.
 -}
 module Clash.CircuitContext.Internal.Waveform (
   waveformPath,
+  checkWindow,
+  domainPeriod,
   simulate,
   record,
   Origin (..),
   save,
+  discard,
   removeFailureWaveform,
   announce,
 ) where
 
-import Control.Exception (evaluate)
-import Control.Exception (IOException, try)
+import Control.Exception (
+  ErrorCall (..),
+  IOException,
+  SomeException,
+  evaluate,
+  throwIO,
+  try,
+ )
+import Control.Monad (when)
 import System.Directory (
   createDirectoryIfMissing,
   makeAbsolute,
   removePathForcibly,
-  renameFile,
  )
-import System.FilePath (takeFileName, (-<.>), (<.>), (</>))
-import System.IO (hClose, hPutStrLn, openTempFile, stderr)
-
-import qualified Data.Aeson as Json
-import qualified Data.ByteString as ByteString
-import qualified Data.Map.Strict as Map
-import qualified Data.Text as Text
-import qualified Data.Text.IO as TIO
+import System.FilePath ((-<.>), (<.>), (</>))
+import System.IO (IOMode (ReadMode), hGetLine, hPutStrLn, stderr, withFile)
 
 import Clash.Explicit.Signal (Signal, sampleN)
-import Clash.Prelude (NFDataX, deepseqX)
+import Clash.Prelude (KnownDomain, NFDataX, deepseqX, snatToNum)
+import Clash.Signal.Internal (SDomainConfiguration (..), knownDomain)
 
 import Clash.CircuitContext.Core (
   HasCircuitContext,
-  ProbeMap,
-  TraceData,
-  recordedCycles,
-  withCircuitContext,
+  withRecordingFrom,
   withoutCircuitContext,
  )
-import Clash.CircuitContext.Shockwaves (dumpVCDSW)
+import Clash.CircuitContext.Internal.Recorder (Recording (..), ticks, timescale)
+import Clash.CircuitContext.Internal.Vcd (writeFiles)
 
 {- | The @.vcd@ path of a waveform name: @waveforms\/\<name\>.vcd@, relative to
 the process's WORKING DIRECTORY. That is not the same place under every way
@@ -70,29 +75,41 @@ its absolute path.
 waveformPath :: String -> FilePath
 waveformPath name = "waveforms" </> name <.> "vcd"
 
+-- | Throw, as 'Clash.Signal.Trace.dumpVCD' does, unless @0 <= start <= stop@.
+checkWindow :: String -> (Int, Int) -> IO ()
+checkWindow name (start, stop) =
+  when (start < 0 || stop < start) $
+    throwIO
+      ( ErrorCall
+          ( "clash-circuit-context: "
+              <> name
+              <> ": the window "
+              <> show (start, stop)
+              <> " is not a (start, stop) with 0 <= start <= stop"
+          )
+      )
+
+-- | The clock period of a domain, in ps.
+domainPeriod :: forall dom. (KnownDomain dom) => Int
+domainPeriod = case knownDomain @dom of
+  SDomainConfiguration{sPeriod} -> snatToNum sPeriod
+
 {- | @n@ samples of the signal, forced, without recording: every recorder is
 the identity under 'withoutCircuitContext', so nothing registers and nothing
 accumulates.
 -}
-simulate :: (NFDataX a) => Int -> (HasCircuitContext => Signal dom a) -> IO [a]
+simulate :: (NFDataX a) => Int -> ((HasCircuitContext) => Signal dom a) -> IO [a]
 simulate n sig = evaluate (let xs = withoutCircuitContext (sampleN n sig) in xs `deepseqX` xs)
 
-{- | @n@ samples of the signal under a fresh recording context, forced so every
-trace and probe fires, and the recording.
-
-The samples are bound to ONE thunk before they are forced. Forcing the
-constrained value twice would instantiate the context twice and register every
-signal twice (spurious @name_0@\/@name_1@ siblings).
+{- | Run an action under a fresh recording context that records from this
+time (ps) on, into the spill file of this waveform name. Returns what the
+action returned or threw, and the recording; 'save' deletes the spill file.
 -}
 record ::
-  (NFDataX a) =>
-  Int ->
-  (HasCircuitContext => Signal dom a) ->
-  IO ([a], TraceData, ProbeMap)
-record n sig =
-  withCircuitContext $ do
-    let xs = sampleN n sig
-    evaluate (xs `deepseqX` xs)
+  String -> Int -> ((HasCircuitContext) => IO r) -> IO (Either SomeException r, Recording)
+record name start k = do
+  createDirectoryIfMissing True "waveforms"
+  withRecordingFrom start (waveformPath name -<.> "spill") k
 
 {- | Why a waveform is written. A 'Failure' waveform is marked in its VCD's
 @$comment@ line, so that a later passing run can tell it from one written on
@@ -101,47 +118,38 @@ purpose ('removeFailureWaveform').
 data Origin = Requested | Failure
   deriving (Eq)
 
--- | The @$comment@ line of a 'Failure' waveform.
-failureComment :: Text.Text
-failureComment = Text.pack "$comment clash-circuit-context: the run of a failing test $end"
+-- | The @$comment@ text of a 'Failure' waveform.
+failureComment :: String
+failureComment = "clash-circuit-context: the run of a failing test"
 
-{- | Render a recording and write it as @waveforms\/\<name\>.vcd@ and its
-@.json@ sidecar. 'False', and nothing written, when the run recorded nothing
-or the render failed; an earlier file is then left alone.
-
-The waveform covers the cycles the run forced ('recordedCycles'). Both files
-go through a temporary file and a rename, and the SIDECAR LANDS FIRST: if the
-@.vcd@ is there, its @.json@ is there and complete. (Not that the two are from
-the same run: a crash between the renames leaves a new @.json@ beside the
-previous run's @.vcd@.)
+{- | Write a recording as @waveforms\/\<name\>.vcd@ and its @.json@ sidecar,
+over the window @[start, stop)@ in ps, and delete its spill file. 'False',
+and nothing written, when the run recorded nothing or the files could not be
+written; an earlier file is then left alone.
 -}
-save :: Origin -> String -> TraceData -> ProbeMap -> IO Bool
-save origin name traces probes
-  | Map.null traces && Map.null probes = pure False
-  | end == 0 = pure False
-  | otherwise = do
-      rendered <- dumpVCDSW (0, end) traces probes
-      case rendered of
-        Left _ -> pure False
-        Right (txt, meta) -> do
-          txt' <- evaluate (if origin == Failure then markFailure txt else txt)
-          meta' <- evaluate (ByteString.toStrict (Json.encode meta))
-          createDirectoryIfMissing True "waveforms"
-          (jTmp, jH) <- openTempFile "waveforms" (takeFileName sidecar <.> "tmp")
-          ByteString.hPut jH meta'
-          hClose jH
-          renameFile jTmp sidecar
-          (tmp, h) <- openTempFile "waveforms" (takeFileName path <.> "tmp")
-          TIO.hPutStr h txt'
-          hClose h
-          renameFile tmp path
-          pure True
+save :: Origin -> String -> (Int, Int) -> Recording -> IO Bool
+save origin name (start, stop) rec = do
+  written <-
+    if recordingEndPs rec == 0
+      then pure (Right (Left "nothing was evaluated"))
+      else
+        try
+          (writeFiles comment (start `div` timescale rec, ticks rec stop) rec (waveformPath name))
+  discard rec
+  case written of
+    Right (Right ()) -> pure True
+    Right (Left _) -> pure False
+    Left (err :: IOException) -> do
+      hPutStrLn
+        stderr
+        ("clash-circuit-context: " <> name <> ": no waveform written: " <> show err)
+      pure False
  where
-  end = recordedCycles traces probes
-  path = waveformPath name
-  sidecar = path -<.> "json"
+  comment = if origin == Failure then failureComment else "No comment"
 
-  markFailure = Text.unlines . map (\l -> if Text.pack "$comment" `Text.isPrefixOf` l then failureComment else l) . Text.lines
+-- | Delete a recording's spill file, without writing a waveform.
+discard :: Recording -> IO ()
+discard = removePathForcibly . recordingSpill
 
 {- | Delete @waveforms\/\<name\>.vcd@ and its @.json@ if the VCD is the
 waveform of a failing run ('Failure'). A waveform written on purpose (by
@@ -149,10 +157,13 @@ waveform of a failing run ('Failure'). A waveform written on purpose (by
 -}
 removeFailureWaveform :: String -> IO ()
 removeFailureWaveform name = do
-  header <- try (take 3 . Text.lines <$> TIO.readFile (waveformPath name))
+  -- Only the header: the VCD can be gigabytes.
+  header <-
+    try
+      (withFile (waveformPath name) ReadMode (\h -> mapM (const (hGetLine h)) [1 :: Int .. 3]))
   case header of
     Right ls
-      | failureComment `elem` ls ->
+      | ("$comment " <> failureComment <> " $end") `elem` ls ->
           mapM_ removePathForcibly [waveformPath name, waveformPath name -<.> "json"]
     Right _ -> pure ()
     Left (_ :: IOException) -> pure ()
