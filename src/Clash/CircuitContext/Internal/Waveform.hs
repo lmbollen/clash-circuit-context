@@ -1,3 +1,4 @@
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE RankNTypes #-}
@@ -25,13 +26,15 @@ module Clash.CircuitContext.Internal.Waveform (
   waveformsRequested,
   simulate,
   record,
+  Origin (..),
   save,
-  removeWaveform,
+  removeFailureWaveform,
   announce,
 ) where
 
 import Control.Exception (evaluate)
 import Data.Char (toLower)
+import Control.Exception (IOException, try)
 import System.Directory (
   createDirectoryIfMissing,
   makeAbsolute,
@@ -45,6 +48,7 @@ import System.IO (hClose, hPutStrLn, openTempFile, stderr)
 import qualified Data.Aeson as Json
 import qualified Data.ByteString as ByteString
 import qualified Data.Map.Strict as Map
+import qualified Data.Text as Text
 import qualified Data.Text.IO as TIO
 
 import Clash.Explicit.Signal (Signal, sampleN)
@@ -108,6 +112,17 @@ record n sig =
     let xs = sampleN n sig
     evaluate (xs `deepseqX` xs)
 
+{- | Why a waveform is written. A 'Failure' waveform is marked in its VCD's
+@$comment@ line, so that a later passing run can tell it from one written on
+purpose ('removeFailureWaveform').
+-}
+data Origin = Requested | Failure
+  deriving (Eq)
+
+-- | The @$comment@ line of a 'Failure' waveform.
+failureComment :: Text.Text
+failureComment = Text.pack "$comment clash-circuit-context: the run of a failing test $end"
+
 {- | Render a recording and write it as @waveforms\/\<name\>.vcd@ and its
 @.json@ sidecar. 'False', and nothing written, when the run recorded nothing
 or the render failed; an earlier file is then left alone.
@@ -118,8 +133,8 @@ go through a temporary file and a rename, and the SIDECAR LANDS FIRST: if the
 the same run: a crash between the renames leaves a new @.json@ beside the
 previous run's @.vcd@.)
 -}
-save :: String -> TraceData -> ProbeMap -> IO Bool
-save name traces probes
+save :: Origin -> String -> TraceData -> ProbeMap -> IO Bool
+save origin name traces probes
   | Map.null traces && Map.null probes = pure False
   | end == 0 = pure False
   | otherwise = do
@@ -127,7 +142,7 @@ save name traces probes
       case rendered of
         Left _ -> pure False
         Right (txt, meta) -> do
-          txt' <- evaluate txt
+          txt' <- evaluate (if origin == Failure then markFailure txt else txt)
           meta' <- evaluate (ByteString.toStrict (Json.encode meta))
           createDirectoryIfMissing True "waveforms"
           (jTmp, jH) <- openTempFile "waveforms" (takeFileName sidecar <.> "tmp")
@@ -144,10 +159,22 @@ save name traces probes
   path = waveformPath name
   sidecar = path -<.> "json"
 
--- | Delete @waveforms\/\<name\>.vcd@ and its @.json@, if they exist.
-removeWaveform :: String -> IO ()
-removeWaveform name =
-  mapM_ removePathForcibly [waveformPath name, waveformPath name -<.> "json"]
+  markFailure = Text.unlines . map (\l -> if Text.pack "$comment" `Text.isPrefixOf` l then failureComment else l) . Text.lines
+
+{- | Delete @waveforms\/\<name\>.vcd@ and its @.json@ if the VCD is the
+waveform of a failing run ('Failure'). A waveform written on purpose (by
+@writeWaveform@, or with @CCC_WAVEFORMS@ set) is kept, so a plain run of a
+suite does not delete what an earlier run was asked to write.
+-}
+removeFailureWaveform :: String -> IO ()
+removeFailureWaveform name = do
+  header <- try (take 3 . Text.lines <$> TIO.readFile (waveformPath name))
+  case header of
+    Right ls
+      | failureComment `elem` ls ->
+          mapM_ removePathForcibly [waveformPath name, waveformPath name -<.> "json"]
+    Right _ -> pure ()
+    Left (_ :: IOException) -> pure ()
 
 {- | Say on stderr where a failure's waveform landed, as an ABSOLUTE path: the
 directory is relative to the working directory, which differs between ways of
