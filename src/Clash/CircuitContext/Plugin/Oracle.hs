@@ -231,6 +231,30 @@ rewriteGround env fam cls _givens [t]
                   (boolTy (isYes decision))
               )
               []
+-- Not ground, but never recordable whatever its unknowns are: @NonTranslatable@
+-- reduces to ''True' for the type as it stands (a list, a function, …). Say
+-- so NOW, while GHC is still inferring the type of the binding. Deferring
+-- would leave a @CanTrace@ constraint over the unknowns, which GHC will not
+-- quantify over, so a closed binding such as @xs = Nothing : xs@ would lose
+-- its generalisation, and a second use at another type would not compile
+-- (#24). Never recordable is never reported ('neverRecordable').
+rewriteGround env fam cls _givens [t]
+  | cls /= describableClass env = do
+      never <- nonTranslatable env t
+      pure $
+        if never
+          then
+            API.TcPluginRewriteTo
+              ( API.mkTyFamAppReduction
+                  "clash-circuit-context"
+                  GHC.Nominal
+                  []
+                  fam
+                  [t]
+                  (boolTy False)
+              )
+              []
+          else API.TcPluginNoRewrite
 rewriteGround _ _ _ _ _ = pure API.TcPluginNoRewrite
 
 --------------------------------------------------------------------------------

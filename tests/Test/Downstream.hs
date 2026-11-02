@@ -53,6 +53,7 @@ module Test.Downstream (
 
   -- * F6: the closed-binding silence, and double registration
   signedClosed,
+  selfRecursive,
   handWritten,
 
   -- * Higher-rank signatures
@@ -75,6 +76,7 @@ import Clash.Prelude
 import Data.Maybe (fromMaybe)
 import Data.Proxy (Proxy (Proxy))
 import Test.DesignCtx (ImportedFn, ImportedRst)
+import qualified Prelude as P
 
 import Clash.CircuitContext (
   CircuitContextAnnotation (NoCircuitScope),
@@ -294,6 +296,41 @@ signedClosed inp = out
   asBool = polymorphic :: Signal System (Maybe Bool)
   asInt = polymorphic :: Signal System (Maybe Int)
 {-# OPAQUE signedClosed #-}
+
+{- | A closed binding that refers to itself is a feedback loop: a register
+whose next state is computed from its own output. The skip above dropped the
+most basic sequential circuit, a free-running counter, because its only free
+variable is itself and @clockGen@\/@resetGen@\/@enableGen@ are top-level (#24).
+@selfRecursive.ticks@ and @selfRecursive.hiddenCounter.count@ must be recorded.
+
+It is safe to wrap because Clash requires @MonomorphismRestriction@: a register
+loop's payload carries @NFDataX@ (and here @Num@), so GHC does not generalise
+such a binding in the first place. @nothings@ is the hazard that remains, a
+self-recursive closed binding with no constraint at all, used at two types
+below. The module must COMPILE: wrapping it must not monomorphise it.
+-}
+selfRecursive :: (HasCircuitContext) => Signal System Int -> Signal System Int
+selfRecursive inp = out
+ where
+  out =
+    inp
+      + (fromIntegral <$> ticks)
+      + (fromIntegral <$> withClockResetEnable clockGen resetGen enableGen hiddenCounter)
+      + pure (P.length (P.take 2 (nothings :: [Maybe Bool])))
+      + pure (P.length (P.take 2 (nothings :: [Maybe Int])))
+
+  ticks = E.register clockGen resetGen enableGen (0 :: Unsigned 4) (ticks + 1)
+
+  nothings = Nothing : nothings
+{-# OPAQUE selfRecursive #-}
+
+-- | The same counter, written with a hidden clock, reset and enable.
+hiddenCounter ::
+  (HasCircuitContext, HiddenClockResetEnable dom) => Signal dom (Unsigned 4)
+hiddenCounter = count
+ where
+  count = register 0 (count + 1)
+{-# OPAQUE hiddenCounter #-}
 
 {- | Hand-written recording combinators are not doubled.
 

@@ -384,7 +384,7 @@ main = do
                 , Downstream.f2Out
                 , Downstream.runHarness
                 , Downstream.runHarnessUnvouched
-                , Downstream.signedClosed (pure 1)
+                , Downstream.signedClosed (pure 1) + Downstream.selfRecursive (pure 1)
                 , Downstream.handWritten (pure 1)
                 , Downstream.rankN (pure 1)
                 , Downstream.rankNArg id (pure 1)
@@ -540,6 +540,10 @@ main = do
           ]
         , [ "a signed closed binding was not traced: " <> show p
           | p <- [["signedClosed", "constant"]]
+          , p `P.notElem` downstreamPaths
+          ]
+        , [ "a closed self-recursive binding was not traced: " <> show p
+          | p <- [["selfRecursive", "ticks"], ["selfRecursive", "hiddenCounter", "count"]]
           , p `P.notElem` downstreamPaths
           ]
         , [ "an unsigned-payload closed binding recorded after all: " <> show p

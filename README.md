@@ -150,9 +150,10 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
    usual Clash idiom for multi-output circuits: each pattern binder `x` is
    traced via an injected `x = autoTrace "x" x'` sibling, so the rest of
    the code is untouched. A *closed* binding — one with no free local
-   variables — is traced only if it carries its own type signature; without
-   one it is skipped, because GHC generalises it and the injected constraint
-   cannot be quantified in an inferred type. Untraceable types (no `BitPack`,
+   variables — is traced only if it carries its own type signature or refers
+   to itself (a register loop such as `cnt = register clockGen resetGen
+   enableGen 0 (cnt + 1)`); otherwise it is skipped, because GHC generalises
+   it and the injected constraint cannot be quantified in an inferred type. Untraceable types (no `BitPack`,
    unknown domain, missing evidence for a polymorphic type) fall back to
    identity — by
    design, decided by a typechecker-plugin oracle (`CanTrace`), so
@@ -594,9 +595,14 @@ actually collects a waveform.
   `Clash.Signal.Trace` internals used are identical across these versions.
   The `cabal.project` here pins the 1.11 upstream commit this package is
   developed against (1.11 is not yet on Hackage).
-* An **unsigned closed** local binding is skipped before the oracle is
-  consulted, so it produces neither a wire nor a warning — the one path that
-  is silent in both channels. Give it a type signature to have it traced.
+* An **unsigned closed** local binding that does not refer to itself is
+  skipped before the oracle is consulted, so it produces neither a wire nor
+  a warning — the one path that is silent in both channels. Give it a type
+  signature to have it traced. A self-referring one is traced, with one
+  exception: an unconstrained self-referring binding of a type that is not
+  `NonTranslatable` (`s = Nothing :- s`, an infinite stream of your own
+  type) becomes monomorphic, so it cannot be used at two types. Give it a
+  signature, or start its name with `_`.
 * Instance-method and class-default bodies are not instrumented: the
   renamer pass rewrites value bindings only. A signature there carrying the
   constraint is reported (`-Wx-circuit-context-uninstrumented`) rather than

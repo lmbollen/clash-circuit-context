@@ -761,13 +761,14 @@ mkTraceLocalBind abi m spn nmOld nmFresh =
 
 {- | Does the closed-binding skip apply here?
 
-'True' — wrap it — when the binding is OPEN, or when it is closed but carries
-its own type signature. See 'closedBind' for why closed bindings are skipped
-and why a signature lifts the skip.
+'True' — wrap it — when the binding is OPEN, when it is closed but carries
+its own type signature, or when it is closed but refers to itself. See
+'closedBind' for why closed bindings are skipped and why a signature or a
+self-reference lifts the skip.
 -}
 signedOrOpen :: GHC.Name -> [GHC.Name] -> GHC.NameSet -> Bool
 signedOrOpen nm localSigned fvs =
-  not (closedBind nm fvs) || nm `elem` localSigned
+  not (closedBind nm fvs) || nm `elem` localSigned || nm `GHC.elemNameSet` fvs
 
 {- | Would GHC infer a higher-rank type for this UNSIGNED binding, so that
 wrapping it breaks the build?
@@ -1040,14 +1041,29 @@ binder would be monomorphized at its first use — and a second use at a
 different type becomes a baffling type error (found on bittide's @timeWb@,
 whose @noWrite@ is used at two register types; F9 in the dogfooding notes).
 
-The trade-off: a closed binding is a constant by construction (it can
-mention hidden clocks only through its type), so its trace is a flat line —
-skipping it costs almost nothing. A closed binding that is genuinely
-monomorphic (e.g. a self-contained @cnt = register 0 (cnt + 1)@ that never
-mentions an argument) is skipped too; trace it explicitly with
-'Clash.CircuitContext.Core.traceSignalC' if it matters. Self-references do
-not open a binding: monomorphic recursion is resolved before
-generalization, so tracing cannot rescue it either way.
+A closed binding is not a constant, though: @clockGen@, @resetGen@ and
+@enableGen@ are top-level names, so @cnt = register clockGen resetGen
+enableGen 0 (cnt + 1)@ is closed and is a running register (#24). Two cases
+lift the skip, because generalisation cannot be lost in them:
+
+* The binding has its own signature: the type is pinned where the author
+  wrote it.
+* The binding refers to itself. A loop that holds a signal goes through a
+  register, whose payload carries @NFDataX@, and Clash requires
+  @MonomorphismRestriction@, so GHC does not generalise such a binding in the
+  first place. A self-reference with no constraint at all (@xs = Nothing :
+  xs@) can still be generalised. For a list or another 'NonTranslatable'
+  type, the oracle declines it before GHC decides what to quantify, so the
+  wrap leaves no constraint behind and the binding stays polymorphic.
+
+One case remains: a self-referring binding of an unconstrained type that is
+not 'NonTranslatable', such as @s = Nothing :- s@ (the constructor of
+'Clash.Signal.Internal.Signal') or an infinite stream of a user's type, used
+at two different types. The wrap makes it monomorphic, and the second use
+does not compile. A register loop cannot be such a binding. Give it a
+signature, or start its name with @_@.
+
+Any other closed binding is still skipped, and not reported.
 -}
 closedBind :: GHC.Name -> GHC.NameSet -> Bool
 closedBind self fvs =
