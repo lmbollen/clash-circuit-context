@@ -52,11 +52,12 @@ resolved to a small ordinal at registration time via its 'StableName' — no
 global state and no id minting in pure code. Map keys carry
 @name\@ordinal\@loc@ tags (the @\'\@\'@ character is reserved — don't use it
 in names); 'dumpVCDC' strips them and, where siblings genuinely collide,
-renames them @name_0@, @name_1@, … DESIGN-deterministically: ordered by
-instantiation call site, never by evaluation order. Instances born at the
-same call site (bare 'fmap' replication) can't be design-ordered — name
-those by structural position with 'imapComponents' (or explicit 'component'
-names).
+renames them @name_0@, @name_1@, …, ordered by the design call site of
+'component' (see 'callLoc'). Instances born at the same call site are
+numbered in the order the simulation first reaches them: bare 'fmap'
+replication, and every instance of one plugin-made component (the plugin
+writes @component "f"@ inside @f@). Name those by structural position with
+'imapComponents', or call 'component' by hand at each site.
 -}
 module Clash.CircuitContext.Core (
   -- * Context
@@ -153,7 +154,7 @@ import qualified Data.ByteString.Lazy as ByteStringLazy
 import Data.Char (isDigit)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import qualified Data.IntMap.Strict as IntMap
-import Data.List (foldl', intercalate, partition, sortOn)
+import Data.List (foldl', intercalate, isPrefixOf, partition, sortOn)
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isNothing)
 import qualified Data.Text as Text
@@ -166,6 +167,7 @@ import GHC.Stack (
   callStack,
   getCallStack,
   srcLocFile,
+  srcLocModule,
   srcLocStartCol,
   srcLocStartLine,
  )
@@ -456,12 +458,19 @@ taggedLoc :: String -> String -> Int -> String
 taggedLoc nm loc i =
   nm <> "@" <> show i <> (if null loc then "" else "@" <> loc)
 
-{- | Encode the nearest call site as a design-side sort key, using only
+{- | Encode the nearest call site IN THE DESIGN as a sort key, using only
 characters safe inside hierarchy segments (no dots, no \@): line, column and
 a file hash. Empty when no call stack is available.
+
+Frames inside this library are skipped. Every public recorder reaches the
+function that calls this through more 'HasCallStack' functions of its own
+(@component@ calls @simComponent@, @autoTrace@ calls @traceSignalSW@, …), so
+the newest frame is always one of those internal calls. Taking it gave every
+instance the same call site, and sibling instances were then numbered in
+evaluation order after all.
 -}
 callLoc :: CallStack -> String
-callLoc cs = case getCallStack cs of
+callLoc cs = case dropWhile (internal . snd) (getCallStack cs) of
   (_, l) : _ ->
     "L"
       <> show (srcLocStartLine l)
@@ -471,6 +480,7 @@ callLoc cs = case getCallStack cs of
       <> show (fileHash (srcLocFile l))
   [] -> ""
  where
+  internal l = "Clash.CircuitContext." `isPrefixOf` srcLocModule l
   fileHash :: String -> Word
   fileHash = foldl' (\h c -> h * 31 + fromIntegral (fromEnum c)) 5381
 
