@@ -55,6 +55,17 @@ Initial version.
   author was explicit. Unsigned closed bindings are still skipped, and are
   the one remaining path that is silent in both channels: no wire and no
   warning, because the oracle is never asked.
+* A closed local binding that **refers to itself** is traced, signature or
+  not. The skip dropped the most basic sequential circuit, a free-running
+  counter (`cnt = register clockGen resetGen enableGen 0 (cnt + 1)`, or
+  `register 0 (cnt + 1)` with a hidden clock), because its only free variable
+  is itself. A register loop is never generalised (its payload carries
+  `NFDataX`, and Clash requires `MonomorphismRestriction`), so wrapping it
+  loses nothing. The oracle also declines a type that is `NonTranslatable`
+  whatever its unknown parts are (`xs = Nothing : xs`) while GHC is still
+  inferring it, so such a binding stays polymorphic. The exception: an
+  unconstrained self-referring binding of another type (`s = Nothing :- s`)
+  becomes monomorphic.
 * A binding with a **higher-rank signature** no longer breaks the build.
   Tracing it would instantiate the recorder at a type with a polytype inside
   (`(HiddenReset dom => r) -> r`), which GHC refuses as impredicative: a
@@ -383,10 +394,8 @@ Initial version.
   application is not quantifiable in an inferred type, so GHC monomorphized
   the binder at its first use and the second use became a baffling type error
   (found on bittide's `timeWb`/`clockControlWb`, misdiagnosed at first as a
-  Protocols-DSL conflict). Closed bindings are constants by construction, so
-  the lost trace is a flat line; a genuinely monomorphic closed binding (a
-  self-contained `cnt = register 0 (cnt + 1)`) can still be traced explicitly
-  with `traceSignalC`. Regression-tested in the auto-smoke design
+  Protocols-DSL conflict). A self-referring closed binding, such as a
+  free-running counter, is traced again (see the entry on self-reference). Regression-tested in the auto-smoke design
   (`polyHelper`).
 * Code-quality alignment with `clash-lang/clash-shockwaves`: clash-lang-style
   module headers (copyright/license/maintainer) on every module; a shared
