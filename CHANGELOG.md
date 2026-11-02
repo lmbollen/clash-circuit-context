@@ -18,6 +18,12 @@ Initial version.
   `f` itself. The call site skips the frames of this library: it used to
   stop at the library's own internal call, so all instances had one call
   site and were numbered in evaluation order.
+* A VCD scope declares its signals in the order they are written in the
+  design (the call site of each recorder: for the plugin, the binding),
+  then its child scopes by name, with numbers compared as numbers
+  (`lane_2` before `lane_10`). Signals with one call site, such as the
+  elements of a `Vec` or the fields of a record, follow by name too. The
+  order used to be the order `dumpVCD1#` returned, which had no meaning.
 * GHC plugin (`Clash.CircuitContext.Plugin`): automatic instrumentation.
   `OPAQUE` + `HasCircuitContext` toplevel functions become components
   (guarded equations are case-encoded when they cannot fall through);
