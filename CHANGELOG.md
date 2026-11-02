@@ -432,9 +432,10 @@ Initial version.
   again with recording, writes the waveform and rethrows. When the check
   passes it deletes a waveform an earlier failing run left: a failure's
   waveform is marked in its VCD's `$comment`, and only a marked file is
-  deleted, so a plain run keeps what a `CCC_WAVEFORMS=1` run wrote. The
-  check gets the samples lazily, so the waveform has the cycles it
-  evaluated. `CCC_WAVEFORMS=1` records every test's first run and keeps it. Under a
+  deleted, so a passing test keeps what `writeWaveform` wrote. The check
+  gets the samples lazily, so the waveform has the cycles it evaluated.
+  There is no environment switch: to record nothing, build without the
+  plugin. Under a
   parallel runner peak memory is the sum over concurrent tests, so not
   recording passing runs is the dominant saving: measured on a 24-core suite,
   25.2 GB and 6m22s became 8.2 GB and 1m06s. Nothing keeps a rendered
@@ -445,8 +446,7 @@ Initial version.
   when Hedgehog PRINTS it. Hedgehog prints footnotes only for the case it
   reports, so the waveform is of the shrunk counterexample, recorded once,
   and the report ends with its path. `AtSize s` additionally keeps the first
-  passing case of at least size `s`, once per waveform name. With
-  `CCC_WAVEFORMS=1` every case records and the last one is kept. The test
+  passing case of at least size `s`, once per waveform name. The test
   suite pins the Hedgehog behaviour this relies on.
 * `withCircuitContextWindowE` returns what was recorded even when the action
   threw (the plain version reads the recorder refs after the action, so an

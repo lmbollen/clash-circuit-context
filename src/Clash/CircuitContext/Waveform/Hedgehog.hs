@@ -81,12 +81,6 @@ data Capture
 {- | @n@ samples of a design, for a property to check. Records nothing,
 except as 'Capture' asks; see the module header.
 
-With the environment variable @CCC_WAVEFORMS@ set (not to empty, @0@, @no@,
-@off@ or @false@), every case records and writes its waveform, so the last case
-the property runs is kept, as with
-'Clash.CircuitContext.Waveform.withWaveform'. A failure still ends with the
-counterexample.
-
 The waveform is @waveforms\/\<name\>.vcd@ (and its @.json@ sidecar); give each
 property its own name.
 -}
@@ -101,13 +95,9 @@ simulateWaveform ::
   (HasCircuitContext => Signal dom a) ->
   PropertyT IO [a]
 simulateWaveform capture name n sig = do
-  keepAll <- liftIO waveformsRequested
-  keepThis <-
-    if keepAll
-      then pure True
-      else case capture of
-        Counterexample -> pure False
-        AtSize size -> firstAtSize name size
+  keepThis <- case capture of
+    Counterexample -> pure False
+    AtSize size -> firstAtSize name size
   out <-
     liftIO $
       if keepThis
