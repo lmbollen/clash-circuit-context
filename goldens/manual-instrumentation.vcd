@@ -4,20 +4,20 @@ $timescale 10000ps $end
 $scope module top $end
   $var wire 64 $ out $end
   $scope module acc_0 $end
-    $var wire 64 ' sum $end
     $var wire 64 ( step $end
+    $var wire 64 ' sum $end
   $upscope $end
   $scope module acc_1 $end
-    $var wire 64 % sum $end
     $var wire 64 & step $end
+    $var wire 64 % sum $end
   $upscope $end
   $scope module vacc_0 $end
     $var wire 64 # step $end
     $var wire 64 ' sum $end
   $upscope $end
   $scope module vacc_1 $end
-    $var wire 64 ! sum $end
     $var wire 64 " step $end
+    $var wire 64 ! sum $end
   $upscope $end
 $upscope $end
 $enddefinitions $end

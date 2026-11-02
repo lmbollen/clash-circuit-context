@@ -163,6 +163,60 @@ prop_siblingsFollowSourceOrder = property $ do
   counting step =
     let total = register clockGen resetGen enableGen 0 (total + pure step)
      in traceSignalC "total" total
+{- | A scope declares its signals in the order they are written, then its
+child scopes in name order, with numbers compared as numbers. The generator
+picks the order in which the simulation reaches them. Before this order was
+fixed, signals came in registration order and @lane_10@ came before
+@lane_2@.
+
+The signals are written out of name order on purpose (@sig@ before @b_10@
+before @a@), so that source order and name order differ.
+-}
+prop_declarationsAreSorted :: Property
+prop_declarationsAreSorted = property $ do
+  signalOrder <- forAll (Gen.shuffle [0 .. 2 :: Int])
+  lanes <- forAll (Gen.shuffle [10, 0, 2 :: Int])
+  (_, traces, probes) <- withCircuitContextWindowM P.maxBound $ do
+    let sampled =
+          component "top"
+            $ [written P.!! i | i <- signalOrder]
+            P.<> [ component ("lane_" P.<> show i) (sampleN 2 (traceSignalC "x" (stim [3, 4])))
+                 | i <- lanes
+                 ]
+    liftIO (evaluate (sampled `deepseqX` sampled))
+  vcd <- evalEither =<< liftIO (dumpVCDC (0, 2) traces probes)
+  declarations vcd
+    === [ "scope top"
+        , "sig"
+        , "b_10"
+        , "a"
+        , "scope lane_0"
+        , "x"
+        , "up"
+        , "scope lane_2"
+        , "x"
+        , "up"
+        , "scope lane_10"
+        , "x"
+        , "up"
+        , "up"
+        ]
+ where
+  written :: (HasCircuitContext) => [[Unsigned 8]]
+  written =
+    [ sampleN 2 (traceSignalC "sig" (stim [1, 2]))
+    , sampleN 2 (traceSignalC "b_10" (stim [1, 2]))
+    , sampleN 2 (traceSignalC "a" (stim [1, 2]))
+    ]
+  declarations vcd =
+    [ d
+    | l <- Text.lines vcd
+    , d <- case P.words (Text.unpack l) of
+        ["$scope", "module", nm, "$end"] -> ["scope " P.<> nm]
+        ["$var", "wire", _, _, nm, "$end"] -> [nm]
+        ["$upscope", "$end"] -> ["up"]
+        _ -> []
+    ]
 
 tests :: TestTree
 tests =
@@ -170,6 +224,7 @@ tests =
     "Test.Recorder"
     [ testProperty "every dumped cycle is the simulated value" prop_dumpIsFaithful
     , testProperty "sibling instances are numbered in source order" prop_siblingsFollowSourceOrder
+    , testProperty "a scope declares its signals in source order, its scopes by name" prop_declarationsAreSorted
     , testProperty "recordedCycles counts forced cells, down to one" prop_recordedCyclesCountsForcing
     , testProperty "aliasing never changes a signal's decoded values" prop_aliasingNeverChangesValues
     , testProperty "a capture window keeps the tail, truthfully" prop_windowKeepsTheTailTruthfully

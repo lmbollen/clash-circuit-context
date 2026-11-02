@@ -3,19 +3,19 @@ $comment No comment $end
 $timescale 10000ps $end
 $scope module top $end
   $var wire 64 % out $end
-  $var wire 64 ' pair_pSnd $end
+  $var wire 64 * accA $end
   $var wire 64 ' accB $end
   $var wire 64 * pair_pFst $end
-  $var wire 64 * accA $end
+  $var wire 64 ' pair_pSnd $end
   $scope module acc_0 $end
     $var wire 64 * total $end
-    $var wire 64 + prev $end
     $var wire 64 , next $end
+    $var wire 64 + prev $end
   $upscope $end
   $scope module acc_1 $end
     $var wire 64 ' total $end
-    $var wire 64 ( prev $end
     $var wire 64 ) next $end
+    $var wire 64 ( prev $end
   $upscope $end
   $scope module guarded $end
     $var wire 64 & pos $end
@@ -25,8 +25,8 @@ $scope module top $end
   $upscope $end
   $scope module polyHelper $end
     $var wire 64 ! out4 $end
-    $var wire 65 " asInt $end
     $var wire 2 # asBool $end
+    $var wire 65 " asInt $end
   $upscope $end
 $upscope $end
 $enddefinitions $end
