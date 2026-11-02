@@ -80,6 +80,7 @@ import Clash.CircuitContext (
   CircuitContextAnnotation (NoCircuitScope),
   HasCircuitContext,
   HasProbe,
+  Traceable (traceNamed),
   traceSignalC,
  )
 import Clash.Shockwaves.Waveform (Waveform)
@@ -308,14 +309,20 @@ signals the author asked for, and both are kept — the same reason their
 @switch@ kept its @traceSignalC "out"@, which names a function's result rather
 than a where-binding.
 
-Recorded: @handWritten.out@ exactly once, plus @handWritten.inner@ and
-@handWritten.renamed@.
+@viaClass@ uses 'traceNamed', the method of @Traceable@. It is a recorder
+too, and the @undecided@ warning recommends it, so it must not be doubled
+either. It was, because only the "Clash.CircuitContext.Core" recorders were
+recognised.
+
+Recorded: @handWritten.out@ and @handWritten.viaClass@ exactly once each, plus
+@handWritten.inner@ and @handWritten.renamed@.
 -}
 handWritten :: (HasCircuitContext) => Signal System Int -> Signal System Int
-handWritten inp = out + renamed
+handWritten inp = out + renamed + viaClass
  where
   out = traceSignalC "out" (inp + 1)
   renamed = traceSignalC "inner" (inp + 2)
+  viaClass = traceNamed "viaClass" (inp + 3)
 {-# OPAQUE handWritten #-}
 
 {- | A local binding whose SIGNATURE is higher-rank: its argument is itself

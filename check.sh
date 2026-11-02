@@ -94,7 +94,8 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     "use Signed 64 in its place" \
     "recorded as raw bits, not described: Bare" \
     "no instance for: Waveform Bare" \
-    "the oracle could not decide: 1 <= n"
+    "the oracle could not decide: 1 <= n" \
+    "Name the binding with traceNamed, which takes Traceable"
   do
     if grep -qF "$want" "$log"; then
       echo "ok: diagnostic fired: $want"

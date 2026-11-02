@@ -522,10 +522,11 @@ main = do
           | p <- downstreamPaths
           , P.last p == "polymorphic"
           ]
-        , [ "hand-written traceSignalC was doubled: " <> show n <> " copies"
-          | let n =
+        , [ "hand-written " <> nm <> " was doubled: " <> show n <> " copies"
+          | (nm, leaf) <- [("traceSignalC", "out"), ("traceNamed", "viaClass")]
+          , let n =
                   P.length
-                    [q | q <- downstreamPaths, q == ["handWritten", "out"]]
+                    [q | q <- downstreamPaths, q == ["handWritten", leaf]]
           , n /= 1
           ]
         , [ "a differently-named hand-written trace was dropped: " <> show p

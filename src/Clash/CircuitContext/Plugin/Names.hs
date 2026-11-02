@@ -59,6 +59,8 @@ lookupAbiNames = do
         mapM
           (GHC.lookupOrig cm . GHC.mkVarOcc)
           ["traceSignalC", "traceSignalSW", "probe", "probeSW"]
+      -- 'Traceable''s own method, so it lives in Auto rather than Core.
+      traceNamedN <- GHC.lookupOrig am (GHC.mkVarOcc "traceNamed")
       pure
         ( Just
             AbiNames
@@ -68,7 +70,7 @@ lookupAbiNames = do
               , abiHasCircuitContext = hasCircuitContextN
               , abiHasProbe = hasProbeN
               , abiNoCircuitScope = noCircuitScopeN
-              , abiExplicitRecorders = explicitNs
+              , abiExplicitRecorders = traceNamedN : explicitNs
               }
         )
     _ -> pure Nothing
