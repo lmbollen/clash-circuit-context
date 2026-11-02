@@ -128,6 +128,20 @@ tests =
           P.take 1 [l | l <- P.lines vcd, P.take 1 l P.== "#"] @?= ["#3"]
           n <- cyclesOf name
           n @?= 5
+    , -- A suite that does not know how long its firmware runs passes
+      -- maxBound and lets the check decide. The window's end in ps must not
+      -- overflow: the waveform has the cycles the check forced.
+      testCase "a window ending at maxBound records what the check forced" $
+        withName "capture-unbounded" $ \name -> do
+          _ <-
+            try @SomeException $
+              withWaveform name (0, P.maxBound) counter $ \xs -> do
+                _ <- evaluate (P.length (P.take 5 xs))
+                errorX "deliberate failure"
+          (v, j) <- filesFor name
+          assertBool "both halves written" (v P.&& j)
+          n <- cyclesOf name
+          n @?= 5
     , -- As dumpVCD, a window must have 0 <= start <= stop.
       testCase "a window that ends before it starts is refused" $
         withName "capture-bad-window" $ \name -> do
