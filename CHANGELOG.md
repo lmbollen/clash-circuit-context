@@ -433,7 +433,9 @@ Initial version.
   not reproduce, and still renders only on failure. Under a parallel runner
   peak memory is the sum over concurrent tests, so this is the dominant cost:
   measured on a 24-core suite, 25.2 GB and 6m22s became 8.2 GB and 1m06s,
-  with no waveform at all on a green run.
+  with no waveform at all on a green run. When the test passes, both
+  on-failure captures delete the files of the slot, so a waveform from an
+  earlier failing run does not stay behind and look current.
 * `Clash.CircuitContext.Waveform.Hedgehog` for properties. A hedgehog failure
   is a value in `PropertyT`'s error layer, not a thrown exception, so no `try`
   in IO can observe one — a property would fail, print a counterexample and

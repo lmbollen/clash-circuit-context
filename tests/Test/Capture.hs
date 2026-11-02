@@ -21,7 +21,7 @@ import qualified Prelude as P
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (when)
 import Data.List (isPrefixOf)
-import System.Directory (doesFileExist, removeFile)
+import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.FilePath ((-<.>))
 
 import Test.Tasty (TestTree, testGroup)
@@ -53,6 +53,13 @@ twins =
   ( sampleN 4 (traceSignalC "same" (fromList [0, 0, 0, 0, 0] :: Signal System (Unsigned 8)))
   , sampleN 4 (traceSignalC "diff" (fromList [0, 0, 0, 1, 0] :: Signal System (Unsigned 8)))
   )
+
+-- | Leave both files of a slot behind, as an earlier failing run would.
+plantStale :: WaveformSlot -> IO ()
+plantStale slot = do
+  createDirectoryIfMissing True waveformDir
+  writeFile (waveformSlotPath slot) "stale"
+  writeFile (waveformSlotPath slot -<.> "json") "stale"
 
 -- | Do the slot's files exist? (VCD and its ADT sidecar.)
 filesFor :: WaveformSlot -> IO (Bool, Bool)
@@ -95,6 +102,20 @@ tests =
           _ <- withWaveformOnFailure slot 8 counter evaluate
           (v, j) <- filesFor slot
           assertBool "no VCD, no sidecar" (P.not v P.&& P.not j)
+    , -- A file left by an earlier FAILING run of the same test is deleted
+      -- when the test passes: in this mode a file means "this test failed".
+      testCase "withWaveformOnFailure deletes an earlier failure's files when the test passes" $
+        withSlot "capture-stale" $ \slot -> do
+          plantStale slot
+          _ <- withWaveformOnFailure slot 8 counter evaluate
+          (v, j) <- filesFor slot
+          assertBool "no stale VCD, no stale sidecar" (P.not v P.&& P.not j)
+    , testCase "withWaveformOnFailure' deletes an earlier failure's files when the test passes" $
+        withSlot "capture-stale-strict" $ \slot -> do
+          plantStale slot
+          _ <- withWaveformOnFailure' slot 8 counter evaluate
+          (v, j) <- filesFor slot
+          assertBool "no stale VCD, no stale sidecar" (P.not v P.&& P.not j)
     , -- A FAILING run writes both, and the original exception propagates.
       testCase "withWaveformOnFailure writes both files when the test fails" $
         withSlot "capture-failing" $ \slot -> do
