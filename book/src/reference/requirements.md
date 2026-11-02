@@ -14,5 +14,7 @@ categories](warnings.md).
 
 ## HDL
 
-The instrumentation has no effect on the HDL that Clash generates. See [How
-to generate HDL from an instrumented design](../how-to/hdl.md).
+The instrumentation adds no registers and no logic to the HDL that Clash
+generates. If you run `clash` on a source file, give
+`-fplugin=Clash.CircuitContext.Plugin` on the command line. See [How to
+generate HDL from an instrumented design](../how-to/hdl.md).

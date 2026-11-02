@@ -11,8 +11,10 @@ Each recording function has two branches, chosen by `clashSimulation` from
 `clashSimulation` is `False`, and the function is the identity:
 `component`, `traceSignalC` and `probe` disappear, and `mealyProbed` is an
 ordinary `mealy`. The dead-code elimination of Clash then removes all the
-machinery. The HDL is the same as the HDL of the design without
-instrumentation, so you can instrument a design that you synthesise.
+machinery. The HDL has no registers and no logic for recording, so you can
+instrument a design that you synthesise. The text of the HDL is not the same
+as the text without instrumentation: see [How to generate HDL from an
+instrumented design](../how-to/hdl.md#compare-with-the-hdl-of-the-design-without-instrumentation).
 
 ## In a simulation that does not record: almost none
 

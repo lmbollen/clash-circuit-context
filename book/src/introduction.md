@@ -18,9 +18,10 @@ each signal: its constructors and fields, not only its bits.
 
 {{#drawio path="diagrams/pipeline.drawio" steps="layers" alt="The plugin rewrites the design. A simulation records it. The dump writes a VCD file and a JSON file for a viewer."}}
 
-The instrumentation has no effect on hardware. When Clash generates HDL, each
-recording function is the identity, and the HDL is the same as the HDL of the
-design without instrumentation.
+The instrumentation adds no hardware. When Clash generates HDL, each
+recording function is the identity. The HDL does the same function as the
+HDL of the design without instrumentation, but its text is different. See
+[How to generate HDL from an instrumented design](how-to/hdl.md).
 
 ## How this book is organised
 

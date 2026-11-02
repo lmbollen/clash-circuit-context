@@ -39,6 +39,11 @@ the package supports, see [Requirements](../reference/requirements.md).
    Do not do both. The plugin then runs twice. This is harmless, but it does
    twice the work.
 
+   The `clash` executable does not read this pragma when you give it a
+   source file. To generate HDL from such a file, give the plugin on the
+   command line: see [How to generate HDL from an instrumented
+   design](hdl.md#run-clash-on-a-source-file).
+
 5. Build the package. A function with `HasCircuitContext` and `OPAQUE` is
    now a component: see [How to make a function a
    component](component.md).
