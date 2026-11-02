@@ -23,7 +23,6 @@ tests either, so a parallel runner is free to use every core.
 -}
 module Clash.CircuitContext.Internal.Waveform (
   waveformPath,
-  waveformsRequested,
   simulate,
   record,
   Origin (..),
@@ -33,7 +32,6 @@ module Clash.CircuitContext.Internal.Waveform (
 ) where
 
 import Control.Exception (evaluate)
-import Data.Char (toLower)
 import Control.Exception (IOException, try)
 import System.Directory (
   createDirectoryIfMissing,
@@ -41,7 +39,6 @@ import System.Directory (
   removePathForcibly,
   renameFile,
  )
-import System.Environment (lookupEnv)
 import System.FilePath (takeFileName, (-<.>), (<.>), (</>))
 import System.IO (hClose, hPutStrLn, openTempFile, stderr)
 
@@ -72,21 +69,6 @@ its absolute path.
 -}
 waveformPath :: String -> FilePath
 waveformPath name = "waveforms" </> name <.> "vcd"
-
-{- | Has the developer asked for every waveform? Reads @CCC_WAVEFORMS@: unset,
-empty, @0@, @no@, @off@ or @false@ mean no.
--}
-waveformsRequested :: IO Bool
-waveformsRequested = do
-  v <- lookupEnv "CCC_WAVEFORMS"
-  pure $ case fmap (map toLower) v of
-    Nothing -> False
-    Just "" -> False
-    Just "0" -> False
-    Just "no" -> False
-    Just "off" -> False
-    Just "false" -> False
-    Just _ -> True
 
 {- | @n@ samples of the signal, forced, without recording: every recorder is
 the identity under 'withoutCircuitContext', so nothing registers and nothing
@@ -163,8 +145,7 @@ save origin name traces probes
 
 {- | Delete @waveforms\/\<name\>.vcd@ and its @.json@ if the VCD is the
 waveform of a failing run ('Failure'). A waveform written on purpose (by
-@writeWaveform@, or with @CCC_WAVEFORMS@ set) is kept, so a plain run of a
-suite does not delete what an earlier run was asked to write.
+@writeWaveform@) is kept, also when another test of the same name passes.
 -}
 removeFailureWaveform :: String -> IO ()
 removeFailureWaveform name = do

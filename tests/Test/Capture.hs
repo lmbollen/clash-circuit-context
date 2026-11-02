@@ -129,8 +129,7 @@ tests =
           _ <- withWaveform name 8 counter evaluate
           (v, j) <- filesFor name
           assertBool "no stale VCD, no stale sidecar" (P.not v P.&& P.not j)
-    , -- …but keeps a waveform that was written on purpose (by writeWaveform,
-      -- or by a CCC_WAVEFORMS=1 run): a plain run must not delete it.
+    , -- …but keeps a waveform that was written on purpose, by writeWaveform.
       testCase "withWaveform keeps a waveform written on purpose when the test passes" $
         withName "capture-requested" $ \name -> do
           _ <- writeWaveform name 8 counter
