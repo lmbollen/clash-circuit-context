@@ -8,373 +8,146 @@ Copyright  :  (C) 2026, QBayLogic B.V.
 License    :  BSD2 (see the file LICENSE)
 Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
 
-Choosing WHICH case of a hedgehog property leaves a waveform.
+The waveform of a Hedgehog property: of the counterexample Hedgehog reports,
+and, if you ask for it, of one passing case.
 
-A property runs its body once per generated case; a test wants at most one
-waveform. Deciding after the fact means recording all of them and throwing
-nearly all away — under a parallel runner that is the dominant memory cost.
-So the decision is made BEFORE the simulation runs, and the cases that lose
-it never record at all ('Clash.CircuitContext.Waveform.withWaveformWhen' runs
-them under 'Clash.CircuitContext.withoutCircuitContext').
+> prop_counter :: Property
+> prop_counter = property $ do
+>   xs  <- forAll genInputs
+>   out <- simulateWaveform Counterexample "counter" (length xs) (top (fromList xs))
+>   out === model xs
 
-The decision lives in a generator, which is what lets it see hedgehog's
-'Size', and it claims a caller-owned 'IORef' so it fires at most once however
-many times the generator is re-run during shrinking.
+Every case simulates without recording, so a property that passes costs
+nothing extra. When it fails, Hedgehog's report ends with
+@waveform: \/abs\/path\/waveforms\/counter.vcd@: the waveform of the case it
+reports, the smallest counterexample.
 
-> prop_roundtrip :: IORef Bool -> Property
-> prop_roundtrip fired = property $ do
->   input <- forAll genInput
->   keep  <- recordLargestCase fired
->   out   <- withWaveformWhen keep slot nCycles (dut input)
->   out === expected input
+== How the counterexample is recorded
 
-For a FAILING case you want the counterexample rather than a size heuristic,
-and 'withWaveformOnCounterexample' captures exactly that — see below for why
-it cannot be 'Clash.CircuitContext.Waveform.withWaveformOnFailure'.
+A property does not know which of its cases Hedgehog will report: every case
+that fails is shrunk further, and the case Hedgehog reports is known only when
+shrinking ends. Each case therefore leaves a footnote that, when it is
+PRINTED, simulates that case again with recording and writes the waveform.
+Hedgehog prints footnotes only for the case it reports, so exactly that case
+is recorded, once. The footnote of every other case is never printed, so it
+never runs.
+
+This relies on how Hedgehog evaluates reports (hedgehog 1.5: progress during
+shrinking does not print footnotes, and a footnote's text is evaluated only
+when it is printed), which the test suite of this package checks. A runner
+that never prints the failure (one that only reads 'checkReport''s status)
+gets no waveform.
+
+The second simulation must give the same result as the first. That holds for
+a design whose inputs all come from the property.
 -}
 module Clash.CircuitContext.Waveform.Hedgehog (
-  -- * Capturing the counterexample
-  withWaveformOnCounterexample,
-  withWaveformCase,
-  withWaveformCaseLazy,
-
-  -- * For a simulation that is not one signal
-
-  -- | As for 'Clash.CircuitContext.Waveform.withWaveformSim': these take the
-  -- simulation RESULT and a trailing capture window.
-  withWaveformOnCounterexampleSim,
-  withWaveformCaseSim,
-  withWaveformCaseLazySim,
-
-  -- * Choosing a passing case to keep
-  recordThisCase,
-  recordCaseOfSize,
-  recordLargestCase,
-  maxSize,
-  recheckWithWaveform,
+  Capture (..),
+  simulateWaveform,
 ) where
 
-import Control.Exception (evaluate)
-import Control.Monad (forM_, when)
+import Control.Exception (SomeException, displayException, try)
 import Control.Monad.IO.Class (liftIO)
-import Data.IORef (IORef, atomicModifyIORef')
+import Data.IORef (IORef, atomicModifyIORef', newIORef)
+import qualified Data.Set as Set
 import System.Directory (makeAbsolute)
+import System.IO.Unsafe (unsafePerformIO)
 
-import Hedgehog (PropertyT, Seed, Size (..))
-import Hedgehog.Internal.Property (
-  Failure,
-  PropertyT (PropertyT),
-  footnote,
-  forAllWithT,
-  mkTestT,
-  runTestT,
- )
+import Hedgehog (PropertyT, Size)
+import Hedgehog.Internal.Property (footnote, forAllWithT)
 
-import qualified Hedgehog
 import qualified Hedgehog.Gen as Gen
 
-import Clash.Explicit.Signal (Signal, sampleN)
-import Clash.Prelude (NFDataX, deepseqX)
+import Clash.Explicit.Signal (Signal)
+import Clash.Prelude (NFDataX)
 
-import Clash.CircuitContext.Core (
-  HasCircuitContext,
-  withCircuitContextWindowM,
-  withoutCircuitContext,
- )
-import Clash.CircuitContext.Waveform (
-  WaveformSlot,
-  captureRun,
-  waveformSlotPath,
-  writeWaveformSlot,
- )
+import Clash.CircuitContext.Core (HasCircuitContext)
+import Clash.CircuitContext.Internal.Waveform
 
-{- | Capture the waveform of a property's COUNTEREXAMPLE: the shrunk, minimal
-case that hedgehog finally reports.
+-- | Which cases of a property leave a waveform.
+data Capture
+  = -- | Only the counterexample Hedgehog reports.
+    Counterexample
+  | {- | The counterexample, and the first case whose 'Size' is at least this
+    one, once per waveform name in this process. 'Size' is Hedgehog's measure
+    of how large a case is, so a small one gives a short waveform you can read
+    end to end. A property runs at sizes 0, 1, 2, … in order, so a property of
+    @n@ tests reaches sizes below @n@. If the property later fails, the
+    counterexample replaces this waveform.
+    -}
+    AtSize Size
+  deriving (Show, Eq)
 
-Every case runs first with recording OFF, so a property that passes costs
-nothing at all. When @consume@ fails — @'Hedgehog.==='@, @assert@, @failure@ —
-that one case is re-run with recording on, its waveform replaces the slot's,
-and the failure is re-raised unchanged so hedgehog still shrinks and still
-reports exactly what it would have.
+{- | @n@ samples of a design, for a property to check. Records nothing,
+except as 'Capture' asks; see the module header.
 
-Because shrinking re-runs the property on ever smaller inputs, and each
-failing case overwrites the slot, what survives is the waveform of the LAST
-failing case — which is the minimal counterexample hedgehog prints. That is
-the one worth looking at: the same failure, in as few cycles and as small a
-design as hedgehog could reduce it to. Only failing cases pay for a recording,
-so the cost is one recording per step down the shrink path.
-
-This cannot be 'Clash.CircuitContext.Waveform.withWaveformOnFailure'. A
-hedgehog failure is a value in @PropertyT@'s error layer, not a thrown
-exception, so no amount of 'Control.Exception.try' in IO can see it; catching
-it means running the property monad, which is what this does.
-
-> prop_roundtrip :: WaveformSlot -> Property
-> prop_roundtrip wf = property $ do
->   input <- forAll genInput
->   withWaveformOnCounterexample wf n (dut input) $ \out ->
->     out === model input
-
-Two constraints, both from the re-run:
-
-* @consume@ runs twice for a failing case, so it must not contain @forAll@
-  (the second run would draw different values) and must not perform one-shot
-  IO. Assertions and forcing, which is what a property body is.
-
-* the re-run must reproduce the failure, which holds for a simulation whose
-  inputs are all supplied by the test. Where it does not, nothing is written
-  and the report says so, rather than offering the waveform of a run that
-  worked as if it were the failure's.
-
-The file is written here, and the failure report ends with its absolute path —
-'Clash.CircuitContext.Waveform.waveformDir' is relative to the working
-directory, which differs between @cabal test@ and @cabal run@, so a relative
-path would be a small treasure hunt.
+The waveform is @waveforms\/\<name\>.vcd@ (and its @.json@ sidecar); give each
+property its own name.
 -}
-withWaveformOnCounterexample ::
+simulateWaveform ::
   (NFDataX a) =>
-  -- | This test's slot; the counterexample is recorded into it.
-  WaveformSlot ->
-  -- | Cycles to simulate.
+  Capture ->
+  -- | The name of the waveform: @waveforms\/\<name\>.vcd@
+  String ->
+  -- | Number of samples
   Int ->
-  -- | The signal to sample, under a recording context.
+  -- | The signal to observe
   (HasCircuitContext => Signal dom a) ->
-  -- | Assertions over its samples; run twice when they fail.
-  ([a] -> PropertyT IO b) ->
-  PropertyT IO b
-withWaveformOnCounterexample = withWaveformCase False
+  PropertyT IO [a]
+simulateWaveform capture name n sig = do
+  keepThis <- case capture of
+    Counterexample -> pure False
+    AtSize size -> firstAtSize name size
+  out <-
+    liftIO $
+      if keepThis
+        then do
+          (xs, traces, probes) <- record n sig
+          _ <- save name traces probes
+          pure xs
+        else simulate n sig
+  footnote (onPrint (recordCounterexample name n sig))
+  pure out
 
--- | 'withWaveformOnCounterexample' for a simulation that is not one 'Signal'.
-withWaveformOnCounterexampleSim ::
-  (NFDataX r) =>
-  WaveformSlot ->
-  -- | Trailing capture window in cycles; see
-  -- 'Clash.CircuitContext.Waveform.withWaveformLazySim'.
-  Int ->
-  (HasCircuitContext => r) ->
-  (r -> PropertyT IO a) ->
-  PropertyT IO a
-withWaveformOnCounterexampleSim = withWaveformCaseSim False
-
-{- | 'withWaveformOnCounterexample', plus: keep THIS case's waveform even
-though it passed.
-
-One combinator for both reasons a property leaves a waveform, because a case
-either passes or fails and so needs simulating only once either way. Pass the
-flag from 'recordLargestCase' (itself usually behind
-'Clash.CircuitContext.Waveform.waveformsRequested') and a green run captures
-the biggest case while a red one captures the counterexample — which
-overwrites it, since a failure is the more interesting of the two.
-
-'True' records as the case runs, so it needs no re-run and no reproducibility;
-'False' is exactly 'withWaveformOnCounterexample' and costs nothing while the
-property passes.
+{- | Record this case again and write its waveform. Run only when Hedgehog
+prints the footnote; never throws, as it runs inside Hedgehog's report.
 -}
-withWaveformCase ::
-  (NFDataX a) =>
-  -- | Keep this case's waveform even if it passes?
-  Bool ->
-  WaveformSlot ->
-  -- | Cycles to simulate.
-  Int ->
-  (HasCircuitContext => Signal dom a) ->
-  ([a] -> PropertyT IO b) ->
-  PropertyT IO b
-withWaveformCase keep slot n sig = withWaveformCaseSim keep slot n (sampleN n sig)
+recordCounterexample ::
+  (NFDataX a) => String -> Int -> (HasCircuitContext => Signal dom a) -> IO String
+recordCounterexample name n sig = do
+  result <- try $ do
+    (_, traces, probes) <- record n sig
+    save name traces probes
+  case result of
+    Right True -> ("waveform: " <>) <$> makeAbsolute (waveformPath name)
+    Right False -> pure ("no waveform for " <> name <> ": nothing was recorded")
+    Left (err :: SomeException) ->
+      pure ("no waveform for " <> name <> ": " <> displayException err)
 
--- | 'withWaveformCase' for a simulation that is not one 'Signal'.
-withWaveformCaseSim ::
-  (NFDataX r) =>
-  Bool ->
-  WaveformSlot ->
-  Int ->
-  (HasCircuitContext => r) ->
-  (r -> PropertyT IO a) ->
-  PropertyT IO a
-withWaveformCaseSim = withWaveformCaseWith forceSim
+{- | A string whose evaluation runs an action: the footnote text above.
 
-{- | 'withWaveformCase' for a simulation that must NOT be forced whole: a
-firmware test reading a UART stream until it sees its result, where the
-consumer's own exit condition is what bounds the run.
-
-@n@ is then an upper bound: the waveform covers exactly the cycles the
-consumer forced, which is the point — but it also means a consumer that stops
-early records little. See 'withWaveformCase' for what that costs when it is
-not deliberate.
+NOINLINE, so that each footnote is its own thunk and runs only when it is
+evaluated, at most once.
 -}
-withWaveformCaseLazy ::
-  (NFDataX a) =>
-  Bool ->
-  WaveformSlot ->
-  -- | Upper bound on the cycles simulated.
-  Int ->
-  (HasCircuitContext => Signal dom a) ->
-  ([a] -> PropertyT IO b) ->
-  PropertyT IO b
-withWaveformCaseLazy keep slot n sig = withWaveformCaseLazySim keep slot n (sampleN n sig)
+onPrint :: IO String -> String
+onPrint = unsafePerformIO
+{-# NOINLINE onPrint #-}
 
--- | 'withWaveformCaseLazy' for a simulation that is not one 'Signal'.
-withWaveformCaseLazySim ::
-  Bool ->
-  WaveformSlot ->
-  Int ->
-  (HasCircuitContext => r) ->
-  (r -> PropertyT IO a) ->
-  PropertyT IO a
-withWaveformCaseLazySim = withWaveformCaseWith pure
-
-{- | Force a simulation result to normal form so that every traced signal
-records its whole run.
-
-Bound to ONE monomorphic thunk before forcing: forcing @sim@ twice would
-instantiate its @?circuitContext@ twice and register every signal twice
-(spurious @name_0@\/@name_1@ siblings).
+{- | Is this the first case of at least this size for this name? Asked inside
+a generator, because that is where Hedgehog gives the size; it renders as
+nothing and has no shrinks.
 -}
-forceSim :: (NFDataX r) => r -> IO r
-forceSim r = evaluate (r `deepseqX` r)
-
-withWaveformCaseWith ::
-  (r -> IO r) ->
-  Bool ->
-  WaveformSlot ->
-  Int ->
-  (HasCircuitContext => r) ->
-  (r -> PropertyT IO a) ->
-  PropertyT IO a
-withWaveformCaseWith force keep slot window sim consume
-  | keep = do
-      (outcome, traces, probes) <-
-        withCircuitContextWindowM window $ do
-          recorded <- liftIO (force sim)
-          attempt (consume recorded)
-      wrote <- liftIO $ do
-        captured <- captureRun slot traces probes
-        when captured (writeWaveformSlot slot)
-        if captured
-          then Just <$> makeAbsolute (waveformSlotPath slot)
-          else pure Nothing
-      case outcome of
-        Right a -> pure a
-        Left failure -> do
-          -- A failure's report must say where its waveform went whichever
-          -- branch captured it; the re-run branch below already does.
-          forM_ wrote $ \path -> footnote ("waveform: " <> path)
-          reraise failure
-  | otherwise = do
-      outcome <- attempt (consume (withoutCircuitContext sim))
-      case outcome of
-        Right a -> pure a
-        Left failure -> do
-          -- Second run of THIS case, recording. Instantiating the constrained
-          -- @sim@ again gives an independent simulation; the journal of the
-          -- re-run is dropped so the report shows each annotation once.
-          (again, traces, probes) <-
-            withCircuitContextWindowM window $ do
-              recorded <- liftIO (force sim)
-              attemptQuietly (consume recorded)
-          case again of
-            Left _ -> do
-              wrote <- liftIO $ do
-                captured <- captureRun slot traces probes
-                when captured (writeWaveformSlot slot)
-                if captured
-                  then Just <$> makeAbsolute (waveformSlotPath slot)
-                  else pure Nothing
-              -- Into the JOURNAL rather than onto stderr: hedgehog prints the
-              -- journal of the case it finally reports, so the path appears
-              -- once, beside the counterexample it belongs to — and not once
-              -- per step down the shrink path.
-              forM_ wrote $ \path -> footnote ("waveform: " <> path)
-            Right _ ->
-              footnote
-                ( "no waveform: re-running this case did not reproduce the"
-                    <> " failure, so "
-                    <> waveformSlotPath slot
-                    <> " would have shown a working run."
-                )
-          reraise failure
-
-{- | Run a property action and hand back its failure as a value instead of
-letting it short-circuit the rest of the property. The journal (annotations,
-footnotes, @forAll@ renderings) is kept, so the report is unchanged.
--}
-attempt :: PropertyT IO a -> PropertyT IO (Either Failure a)
-attempt (PropertyT p) = PropertyT (mkTestT (fmap keepJournal (runTestT p)))
- where
-  keepJournal (r, journal) = (Right r, journal)
-
--- | 'attempt', discarding the journal: for a re-run whose annotations the
--- report has already shown.
-attemptQuietly :: PropertyT IO a -> PropertyT IO (Either Failure a)
-attemptQuietly (PropertyT p) = PropertyT (mkTestT (fmap dropJournal (runTestT p)))
- where
-  dropJournal (r, _) = (Right r, mempty)
-
--- | Put back a failure taken out by 'attempt', exactly as it was.
-reraise :: Failure -> PropertyT IO a
-reraise failure = PropertyT (mkTestT (pure (Left failure, mempty)))
-
-{- | The largest 'Size' hedgehog runs a case at.
-
-The runner increments the size once per test and wraps back to 0 past this,
-so a property left at the default 100 tests runs sizes 0..99 and its LAST
-case is the biggest — the most thorough one, and the usual choice to keep.
-
-Note a property with @withTests 1@ only ever runs at size 0; such a test
-wants @'recordThisCase' fired (const True)@ instead.
--}
-maxSize :: Size
-maxSize = 99
-
-{- | Decide, before simulating, whether THIS case should leave the waveform,
-firing at most once per property.
-
-@want@ sees the current 'Size'. The 'IORef' is the caller's — one per test,
-same ownership as the waveform slot itself — and is claimed atomically, so
-the first case satisfying @want@ wins and every later one (including the
-re-runs shrinking performs) gets 'False'.
-
-The decision is made inside a generator because that is the only place
-hedgehog exposes 'Size'. It is rendered as nothing in the report and has no
-shrinks, so it neither clutters output nor perturbs the shrink tree.
--}
-recordThisCase :: IORef Bool -> (Size -> Bool) -> PropertyT IO Bool
-recordThisCase fired want =
-  forAllWithT (const "") . Gen.sized $ \size ->
-    if want size
-      then liftIO (atomicModifyIORef' fired (\f -> (True, not f)))
+firstAtSize :: String -> Size -> PropertyT IO Bool
+firstAtSize name size =
+  forAllWithT (const "") . Gen.sized $ \current ->
+    if current >= size
+      then liftIO (atomicModifyIORef' fired (\names -> (Set.insert name names, Set.notMember name names)))
       else pure False
 
-{- | 'recordThisCase' at a chosen size: the first case hedgehog runs at least
-that big leaves the waveform.
-
-'Size' is hedgehog's one knob on how large a case is — how long a generated
-list, how wide a generated word — so it is also the knob on how big the
-waveform is. Small sizes give a waveform you can read end to end; large ones
-exercise the design properly. Ask for whichever the design question needs:
-
-> keep <- recordCaseOfSize fired 10   -- a few cycles, readable by eye
-> keep <- recordCaseOfSize fired 90   -- near the biggest case the run makes
+{- | The waveform names an 'AtSize' capture has used in this process. Only
+names, so it does not grow with the waveforms. It is what makes "once" hold
+across cases, and across the reruns Hedgehog makes while it shrinks.
 -}
-recordCaseOfSize :: IORef Bool -> Size -> PropertyT IO Bool
-recordCaseOfSize fired n = recordThisCase fired (>= n)
-
--- | 'recordCaseOfSize' at the biggest size hedgehog generates: the last, most
--- thorough case of a default-configured property. See 'maxSize'.
-recordLargestCase :: IORef Bool -> PropertyT IO Bool
-recordLargestCase fired = recordCaseOfSize fired maxSize
-
-{- | Replay one specific case WITH recording, to get the waveform of a
-counterexample hedgehog already found.
-
-A failing property prints the size and seed needed to reproduce it; feeding
-those here re-runs exactly that case. Nothing is recorded during ordinary
-runs, so this costs nothing until you go looking:
-
-> recheckWithWaveform (Size 27) someSeed (prop_roundtrip fired)
-
-(The property must be built so that this run records — e.g. its flag comes
-from @'recordThisCase' fired (const True)@.)
--}
-recheckWithWaveform :: Size -> Seed -> Hedgehog.Property -> IO ()
-recheckWithWaveform = Hedgehog.recheck
+fired :: IORef (Set.Set String)
+fired = unsafePerformIO (newIORef Set.empty)
+{-# NOINLINE fired #-}

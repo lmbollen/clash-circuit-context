@@ -367,91 +367,60 @@ design question, tracked as finding F1 in
 
 ## Waveforms from your test suite
 
-`withCircuitContext` + `dumpVCDC` is the raw API. In a real test suite you
-also want to decide *which* run survives, write the file atomically, and —
-above all — not pay for waveforms nobody will look at.
-`Clash.CircuitContext.Waveform` is that lifecycle, so a project does not have
-to grow its own (two suites in the proof-of-concept repository had):
+`withCircuitContext` + `dumpVCDC` is the raw API. `Clash.CircuitContext.Waveform`
+writes the files for you, and in a test suite records only the run you will
+look at. Every function takes what `dumpVCD` takes: the `Signal` to observe
+(it supplies the `HasCircuitContext`) and the number of samples. Several
+outputs in one domain become one signal with `bundle`; a `clash-protocols`
+circuit becomes one with `toSignals`.
 
 ```haskell
 import Clash.CircuitContext.Waveform
 
-case_myDesign :: Assertion
-case_myDesign = withWaveformSlot "my_design" $ \wf -> do
-  out <- withWaveform wf 1000 (top (fromList [1 ..]))
-  expected @=? out
+-- Anywhere in IO: simulate, write waveforms/counter.vcd (+ .json), get the samples.
+main = writeWaveform "counter" 1000 (top (fromList [1 ..])) >>= print
+
+-- In a test: nothing is recorded while it passes; the failing run's waveform when it fails.
+case_counter :: Assertion
+case_counter = withWaveform "counter" 1000 (top (fromList [1 ..])) $ \out ->
+  out @?= expected
 ```
 
-Every capture takes the design as the `Signal` to observe plus a cycle count,
-and samples it itself (with `Clash.Explicit.Signal.sampleN`). That writes
-`waveforms/my_design.vcd`, and its typed-waveform sidecar
-`waveforms/my_design.json` beside it. A *slot* is one test's pending
-waveform, created and owned by that test — deliberately not a global registry,
-which would have to retain every rendered VCD until the whole suite finished.
+`withWaveform` runs the simulation without recording. When the check throws,
+it runs it again with recording, writes the waveform, prints its absolute path
+and rethrows. When the check passes, it deletes a waveform an earlier failing
+run left. The check therefore runs twice on a failure (assertions and forcing,
+not one-shot IO), and gets the samples lazily: the waveform has the cycles it
+evaluated. With `CCC_WAVEFORMS=1`, every test records its first run and keeps
+the waveform, passing or not.
 
-### Capture only what you will keep
-
-Recording is not free, and under a parallel runner peak memory is the sum over
-concurrently running tests. So decide *before* simulating rather than
-discarding afterwards — a run that will not be kept executes under
-`noCircuitContext`, where `traceSignalC` is identity and nothing is recorded,
-rendered or written:
-
-```haskell
--- Only when asked for (CCC_WAVEFORMS=1), e.g. to regenerate documentation.
-keep <- waveformsRequested
-out  <- withWaveformWhen keep wf 1000 (top inp)
-
--- Or: nothing while the test passes, the failing run's waveform when it does
--- not. `consume` runs twice, so it must be assertions and forcing, not
--- one-shot IO.
-withWaveformOnFailure wf 1000 (top inp) $ \out ->
-  expected @=? out
-```
-
-On a real 24-core suite that took unconditional recording from 25.2 GB and
-6m22s to **8.2 GB and 1m06s**, with no waveform at all on a green run and the
-failing test's waveform when one goes red. `withWaveformOnFailure'` covers a
-design whose re-run may not reproduce (a CPU model resolving undefined inputs
-randomly): it records as it goes but still renders only on failure.
-
-For a design whose consumer decides how far to simulate — firmware reading a
-UART stream until it prints its result — use `withWaveformLazy`, which
-captures exactly the cycles the consumer forced instead of a fixed window;
-its cycle count is then only an upper bound.
-
-A simulation that is not one `Signal` — outputs in several clock domains, or a
-`clash-protocols` circuit run with `sampleC` — goes through a dedicated
-combinator built on the `…Sim` variants (`withWaveformSim`,
-`withWaveformOnFailureSim`, …), which take the simulation *result* and an
-explicit capture window instead.
+Recording only on failure matters under a parallel runner, where peak memory
+is the sum over concurrently running tests: on a real 24-core suite it took
+unconditional recording from 25.2 GB and 6m22s to **8.2 GB and 1m06s**.
 
 ### Hedgehog properties
 
-A hedgehog failure is a value in `PropertyT`'s error layer, not a thrown
-exception, so no `try` in IO can see one — a property fails, prints a perfect
-counterexample, and leaves no waveform.
-`Clash.CircuitContext.Waveform.Hedgehog` closes that:
+A Hedgehog failure is a value in `PropertyT`'s error layer, not a thrown
+exception, and Hedgehog knows which case it reports only after shrinking.
+`Clash.CircuitContext.Waveform.Hedgehog` records exactly that case:
 
 ```haskell
 import Clash.CircuitContext.Waveform.Hedgehog
 
-prop_roundtrip :: IORef Bool -> WaveformSlot -> Property
-prop_roundtrip fired wf = property $ do
-  input <- forAll genInput
-  keep  <- recordLargestCase fired          -- which PASSING case to keep
-  withWaveformCase keep wf nCycles (dut input) $ \out ->
-    out === model input
+prop_counter :: Property
+prop_counter = property $ do
+  xs  <- forAll genInputs
+  out <- simulateWaveform Counterexample "counter" (length xs) (top (fromList xs))
+  out === model xs
 ```
 
-If the property fails, the waveform you get is of the **shrunk
-counterexample** — shrinking re-runs the property on smaller inputs and each
-failing case overwrites the slot, so what survives is the minimal case
-hedgehog reports, and its absolute path is printed in the failure report.
-If it passes, `recordLargestCase` keeps the biggest case and fires exactly
-once however often shrinking re-runs the generators; `recordCaseOfSize` picks
-a smaller, readable one instead (hedgehog's `Size` is also the knob on how big
-the waveform is).
+Every case simulates without recording. Each case also leaves a footnote that,
+when Hedgehog prints it, simulates that case again with recording and writes
+the waveform. Hedgehog prints footnotes only for the case it reports, so the
+waveform is of the **shrunk counterexample**, recorded once, and the report
+ends with its path. `AtSize s` additionally keeps the first passing case of at
+least size `s` (once per waveform name): a small size gives a short waveform
+you can read end to end, and a property of `n` tests reaches sizes below `n`.
 
 A worked version of all of this is the Example level of the test suite,
 which `check.sh` builds and runs:

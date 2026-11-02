@@ -22,7 +22,7 @@ import qualified Test.Recorder
 
 main :: IO ()
 main = do
-  artifacts <- Example.Hedgehog.newArtifacts
+  Example.Hedgehog.scrubExamples
   defaultMain $
     testGroup
       "waveform-tests"
@@ -34,8 +34,8 @@ main = do
           [ testGroup
               "Example"
               [ Example.SingleRun.tests
-              , Example.Hedgehog.tests artifacts
+              , Example.Hedgehog.tests
               ]
-          , Test.ExampleOutput.tests artifacts
+          , Test.ExampleOutput.tests
           ]
       ]

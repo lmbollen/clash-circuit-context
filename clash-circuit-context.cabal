@@ -59,6 +59,7 @@ library
 
   other-modules:
     Clash.CircuitContext.Internal.BitPackCompat
+    Clash.CircuitContext.Internal.Waveform
     Clash.CircuitContext.Internal.Wide64
 
   -- On `clash-shockwaves`: supplies the ADT description (constructors, fields,

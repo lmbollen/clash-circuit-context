@@ -49,7 +49,7 @@ module Main where
 
 import qualified Prelude as P
 
-import Control.Exception (Exception, SomeException, evaluate, fromException, throwIO, try)
+import Control.Exception (Exception, evaluate, fromException, throwIO, try)
 import Control.Monad (when)
 import Data.List (intercalate, isInfixOf, isSuffixOf)
 import System.Directory (doesFileExist, removeFile)
@@ -65,11 +65,7 @@ import Clash.Explicit.Prelude
 
 import Clash.CircuitContext
 import Clash.CircuitContext.Shockwaves (dumpVCDSW)
-import Clash.CircuitContext.Waveform (
-  newWaveformSlot,
-  waveformSlotPath,
-  withWaveformOnFailure,
- )
+import Clash.CircuitContext.Waveform (withWaveform)
 import Clash.Shockwaves.LUT (WaveformForLut (..), WaveformLUT)
 import Clash.Shockwaves.Waveform (Waveform (translator))
 
@@ -324,16 +320,15 @@ main = do
         ("Opcode 3" `isInfixOf` lutsJson)
 
   -- A broken descriptor, captured the way a failing test is: through
-  -- 'withWaveformOnFailure', whose rendering used to throw shockwaves' error
-  -- in place of the failure and before either file was written.
-  slot <- newWaveformSlot "adt-sidecar-broken"
-  let vcdFile = waveformSlotPath slot
+  -- 'withWaveform', whose rendering used to throw shockwaves' error in place
+  -- of the failure and before either file was written.
+  let vcdFile = "waveforms/adt-sidecar-broken.vcd"
       jsonFile = vcdFile -<.> "json"
   P.mapM_ (\f -> doesFileExist f >>= (`when` removeFile f)) [vcdFile, jsonFile]
   outcome <-
     try
-      $ withWaveformOnFailure
-        slot
+      $ withWaveform
+        "adt-sidecar-broken"
         4
         ( bundle
             ( traceSignalSW "skewed" (fromList (P.map Skewed (P.cycle [1, 2, 3])))
