@@ -67,7 +67,7 @@ writeWaveform ::
   IO [a]
 writeWaveform name n sig = do
   (out, traces, probes) <- record n sig
-  written <- save name traces probes
+  written <- save Requested name traces probes
   unless written $
     hPutStrLn
       stderr
@@ -87,7 +87,8 @@ The simulation runs without recording, so a passing test costs nothing extra.
 When the check throws (a failed assertion is an exception), the simulation runs
 a second time with recording, the waveform is written, its absolute path is
 printed on stderr, and the check's exception is rethrown. When the check
-passes, a waveform left by an earlier failing run is deleted.
+passes, a waveform left by an earlier failing run is deleted (one written on
+purpose, by 'writeWaveform' or with @CCC_WAVEFORMS@, is kept).
 
 * The check gets the samples lazily. The waveform has the cycles the check
   evaluated, so a check that stops at the first wrong value gives a waveform
@@ -123,13 +124,13 @@ withWaveform name n sig check = do
         -- Cancellation (Ctrl-C, a runner timeout) is not a result to show.
         Left err | isAsync err -> throwIO err
         _ -> do
-          written <- save name traces probes
+          written <- save (either (const Failure) (const Requested) outcome) name traces probes
           when written (either (const (announce name)) (const (pure ())) outcome)
           either throwIO pure outcome
     else do
       first <- try (check (withoutCircuitContext (sampleN n sig)))
       case first of
-        Right b -> removeWaveform name >> pure b
+        Right b -> removeFailureWaveform name >> pure b
         -- Re-simulating a large design on the way out of a cancelled test
         -- would turn "stop now" into minutes of work.
         Left err | isAsync err -> throwIO err
@@ -137,7 +138,7 @@ withWaveform name n sig check = do
           (again, traces, probes) <- recorded
           case again of
             Left _ -> do
-              written <- save name traces probes
+              written <- save Failure name traces probes
               when written (announce name)
             Right _ ->
               hPutStrLn

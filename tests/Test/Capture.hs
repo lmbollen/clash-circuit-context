@@ -23,7 +23,7 @@ import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (when)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (isPrefixOf)
-import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
+import System.Directory (doesFileExist, removeFile)
 import System.FilePath ((-<.>), (<.>), (</>))
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -65,12 +65,12 @@ twins =
 vcdOf :: String -> FilePath
 vcdOf name = "waveforms" </> name <.> "vcd"
 
--- | Leave both files of a name behind, as an earlier failing run would.
-plantStale :: String -> IO ()
-plantStale name = do
-  createDirectoryIfMissing True "waveforms"
-  writeFile (vcdOf name) "stale"
-  writeFile (vcdOf name -<.> "json") "stale"
+-- | Leave the waveform of a failing run behind, as an earlier run would.
+plantFailure :: String -> IO ()
+plantFailure name = do
+  _ <- try @SomeException $ withWaveform name 8 counter $ \xs -> evaluate (P.length xs) >> errorX "an earlier failure"
+  (v, j) <- filesFor name
+  assertBool "the earlier failure left its waveform" (v P.&& j)
 
 -- | Do the files of a name exist? (VCD and its ADT sidecar.)
 filesFor :: String -> IO (Bool, Bool)
@@ -125,10 +125,18 @@ tests =
       -- passes: from withWaveform, a file means "this test failed".
       testCase "withWaveform deletes an earlier failure's files when the test passes" $
         withName "capture-stale" $ \name -> do
-          plantStale name
+          plantFailure name
           _ <- withWaveform name 8 counter evaluate
           (v, j) <- filesFor name
           assertBool "no stale VCD, no stale sidecar" (P.not v P.&& P.not j)
+    , -- …but keeps a waveform that was written on purpose (by writeWaveform,
+      -- or by a CCC_WAVEFORMS=1 run): a plain run must not delete it.
+      testCase "withWaveform keeps a waveform written on purpose when the test passes" $
+        withName "capture-requested" $ \name -> do
+          _ <- writeWaveform name 8 counter
+          _ <- withWaveform name 8 counter evaluate
+          (v, j) <- filesFor name
+          assertBool "the requested waveform is still there" (v P.&& j)
     , -- A FAILING run writes both, and the check's exception propagates.
       testCase "withWaveform writes both files when the test fails" $
         withName "capture-failing" $ \name -> do

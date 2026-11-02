@@ -389,7 +389,8 @@ case_counter = withWaveform "counter" 1000 (top (fromList [1 ..])) $ \out ->
 `withWaveform` runs the simulation without recording. When the check throws,
 it runs it again with recording, writes the waveform, prints its absolute path
 and rethrows. When the check passes, it deletes a waveform an earlier failing
-run left. The check therefore runs twice on a failure (assertions and forcing,
+run left (a waveform written on purpose, by `writeWaveform` or with
+`CCC_WAVEFORMS`, is kept). The check therefore runs twice on a failure (assertions and forcing,
 not one-shot IO), and gets the samples lazily: the waveform has the cycles it
 evaluated. With `CCC_WAVEFORMS=1`, every test records its first run and keeps
 the waveform, passing or not.
@@ -421,6 +422,7 @@ waveform is of the **shrunk counterexample**, recorded once, and the report
 ends with its path. `AtSize s` additionally keeps the first passing case of at
 least size `s` (once per waveform name): a small size gives a short waveform
 you can read end to end, and a property of `n` tests reaches sizes below `n`.
+With `CCC_WAVEFORMS=1`, every case records and the last one is kept.
 
 A worked version of all of this is the Example level of the test suite,
 which `check.sh` builds and runs:
