@@ -52,8 +52,15 @@ only touches top-level binders whose *written signature* carries
 the same code. Measured on a real repository, flipping 13 per-module pragmas
 to one package-wide flag left seven waveforms bit-for-bit identical. You can
 still enable it per module with
-`{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}` — but do not do
-both, or the plugin runs twice.
+`{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}`. Doing both is
+harmless: the renamer pass is idempotent.
+
+When you run the `clash` executable on a source file directly (`clash
+Design.hs --verilog`), Clash does not load a plugin that only an `OPTIONS_GHC`
+pragma names. Pass `-fplugin=Clash.CircuitContext.Plugin` on the command
+line. Without it, a design with an empty `Traceable` instance does not
+compile. A module that `clash` loads precompiled from a package built with
+the plugin is not affected, and neither is `clashi`.
 
 Requires GHC 9.6, 9.8, 9.10 or 9.12, `clash-prelude >= 1.9 && < 1.12` and
 `clash-shockwaves` 1.1.1 to 1.1.3 (from Hackage; 1.1.3 on GHC 9.6, and no
@@ -545,11 +552,16 @@ machinery:
 
 You can therefore instrument a design in place — add `HasCircuitContext`,
 `component`, `mealyProbed`, `probe` — and still synthesize it: the generated
-HDL is byte-for-byte what the un-instrumented design would produce (the
-`OPAQUE`/`unsafePerformIO` workers live behind `clashSimulation` and are
-never reached by the compiler). The only thing a caller must do is discharge
-the `HasCircuitContext` constraint, e.g. `let ?circuitContext =
-noCircuitContext in …` at the synthesis entry point.
+HDL is functionally equivalent to what the un-instrumented design would
+produce, with no extra registers or logic (the `OPAQUE`/`unsafePerformIO`
+workers live behind `clashSimulation` and are never reached by the
+compiler). It is *not* textually identical: the plugin moves `where`
+bindings into a `let` inside the component wrap, so Clash's generated wire
+names and declaration order can differ, and a traced `Vec` binding can leave
+an identity generate loop. Compare the two with an equivalence checker (e.g.
+Yosys `equiv_make`/`equiv_induct`), not with `diff`. The only thing a caller
+must do is discharge the `HasCircuitContext` constraint, e.g. `let
+?circuitContext = noCircuitContext in …` at the synthesis entry point.
 
 The same gate keeps **simulation cheap when you are not recording**: under
 `noCircuitContext` (i.e. not inside `withCircuitContext`) the combinators
