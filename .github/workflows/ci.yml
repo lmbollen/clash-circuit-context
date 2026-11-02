@@ -11,7 +11,7 @@ concurrency:
 
 jobs:
   check:
-    name: check.sh (GHC ${{ matrix.ghc }})
+    name: check.sh (GHC ${{ matrix.ghc }}, ${{ matrix.project }})
     strategy:
       fail-fast: false
       matrix:
@@ -25,6 +25,14 @@ jobs:
         # 9.14 also needs hedgehog 1.7 and a ghc-tcplugin-api past 0.19. Add it
         # back once those move.
         ghc: ["9.12.4", "9.10.3", "9.8.4", "9.6.7"]
+        # cabal.project pins the clash-prelude commit this package is developed
+        # against. Most users take clash-prelude from Hackage, so one job builds
+        # with a released one (cabal.project.hackage), which the supported
+        # range includes.
+        project: ["cabal.project"]
+        include:
+          - ghc: "9.10.3"
+            project: "cabal.project.hackage"
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
@@ -58,9 +66,9 @@ jobs:
           path: |
             ${{ steps.setup.outputs.cabal-store }}
             dist-newstyle
-          key: ${{ runner.os }}-ghc-${{ matrix.ghc }}-cabal-${{ steps.setup.outputs.cabal-version }}-${{ hashFiles('cabal.project', '*.cabal') }}
+          key: ${{ runner.os }}-ghc-${{ matrix.ghc }}-${{ matrix.project }}-cabal-${{ steps.setup.outputs.cabal-version }}-${{ hashFiles(matrix.project, '*.cabal') }}
           restore-keys: |
-            ${{ runner.os }}-ghc-${{ matrix.ghc }}-cabal-${{ steps.setup.outputs.cabal-version }}-
+            ${{ runner.os }}-ghc-${{ matrix.ghc }}-${{ matrix.project }}-cabal-${{ steps.setup.outputs.cabal-version }}-
 
       # Dependencies first, in parallel: with more than one job cabal keeps each
       # package's compiler output in a log and prints it only on failure. Under
@@ -73,9 +81,9 @@ jobs:
       # and fail the step whatever that second build does.
       - name: Build dependencies
         run: |
-          cabal build all --only-dependencies -j && exit 0
+          cabal build all --project-file=${{ matrix.project }} --only-dependencies -j && exit 0
           echo "::group::Dependency build failed; again on one job, for its output"
-          cabal build all --only-dependencies -j1 || true
+          cabal build all --project-file=${{ matrix.project }} --only-dependencies -j1 || true
           echo "::endgroup::"
           exit 1
 
@@ -89,4 +97,4 @@ jobs:
           key: ${{ steps.cache.outputs.cache-primary-key }}
 
       - name: Build and run checks
-        run: ./check.sh
+        run: ./check.sh --project-file=${{ matrix.project }}
