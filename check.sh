@@ -84,6 +84,14 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     "'bothModes' has both HasProbe and HasCircuitContext" \
     "not traced: Signal dom Undescribed" \
     "no instance for: BitPack Undescribed" \
+    "not traced: Pair dom" \
+    "Give it a Traceable instance" \
+    "not probed: Undescribed" \
+    "not traced: Signal dom Tags" \
+    "type instance NonTranslatable Tags = 'True" \
+    "not traced: Both" \
+    "not traced: Signal dom (Maybe Integer)" \
+    "use Signed 64 in its place" \
     "recorded as raw bits, not described: Bare" \
     "no instance for: Waveform Bare" \
     "the oracle could not decide: 1 <= n"
@@ -121,6 +129,23 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
       fi
     done
     [ -n "$quiet" ] && echo "ok: higher-rank bindings are instrumented or left alone, without a word"
+  fi
+  # Integer inside a composite: no BitPack, and the fix is Signed 64, never a
+  # NonTranslatable declaration (that would silence every later real fix).
+  if grep -qF "NonTranslatable Integer" "$log"; then
+    echo "FAIL: offered to declare Integer NonTranslatable"; fail=1
+  fi
+  # Bindings no recorder could ever take are not reported: plain values in a
+  # traced component, types declared NonTranslatable (lists, functions, a
+  # String, a user's Names), a signal or a clock inside a probed step
+  # (Test/PluginDiagnostics.hs neverWires and probedStep). A warning about
+  # them has no fix. Integer and Natural are NOT among them: Clash translates
+  # them, so the recorder records them, and must not report them either.
+  never=$(grep -E "not (traced|probed): (\[Char\]|String|Integer|Natural|Bool|Vec 4 Bool|Int -> Int|Signal dom \[Int\]|Signal dom Integer|Signal dom Natural|Signal dom Names|Signal System Int|Clock System|SNat [0-9]+|Ptr Int|FunPtr \(Int -> Int\)|TypeRep|Dynamic|SomeException|Signal dom \(Ptr Int\))$" "$log")
+  if [ -n "$never" ]; then
+    echo "FAIL: reported a binding no recorder could take:"; echo "$never"; fail=1
+  else
+    echo "ok: bindings no recorder could take are not reported"
   fi
   # ...and the marker must silence exactly the binder it vouches for, while
   # the same shape without it still reports (Helios F4). Absence is the
@@ -172,8 +197,9 @@ case "$ghcver" in
 {-# LANGUAGE ImplicitParams #-}
 {-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
 
--- | Two bindings the oracle declines, so plugin warnings fire and nothing
--- else does. Deliberately free of clash-prelude imports: this is compiled
+-- | A binding the oracle declines and could have recorded (a polymorphic
+-- value: it might hold a signal), so a plugin warning fires and nothing else
+-- does. Deliberately free of clash-prelude imports: this is compiled
 -- through `cabal exec ghc`, whose ambient package environment is not ours to
 -- control, and a module that names only this package cannot trip over a
 -- duplicate registration of someone else's.
@@ -181,11 +207,10 @@ module StrictProbe where
 
 import Clash.CircuitContext (HasCircuitContext)
 
-notTraced :: (HasCircuitContext) => Int -> Int
+notTraced :: (HasCircuitContext) => a -> a
 notTraced k = out
  where
-  out = length msg
-  msg = replicate k 'x'
+  out = k
 HS
     # The script's own arguments are cabal's (-w <ghc>); probe's are GHC's.
     cabalargs=("$@")

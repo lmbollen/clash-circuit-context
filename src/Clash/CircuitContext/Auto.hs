@@ -2,12 +2,16 @@
 {-# LANGUAGE ConstraintKinds #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DefaultSignatures #-}
+{-# LANGUAGE DerivingStrategies #-}
+{-# LANGUAGE DerivingVia #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# LANGUAGE TypeOperators #-}
@@ -60,19 +64,54 @@ module Clash.CircuitContext.Auto (
   CanDescribe,
   Describable (..),
   AutoDescribe (..),
+
+  -- * Never recorded
+  NonTranslatable,
 ) where
 
+import Clash.Magic (SimOnly)
 import Clash.Prelude (
-  BitPack,
+  BitPack (..),
+  DSignal,
+  Enable,
+  Index,
   KnownDomain,
   KnownNat,
   NFDataX,
+  Reset,
+  SNat (..),
+  SNatLE (..),
   Signal,
   Vec,
+  compareSNat,
+  d1,
+  fromEnable,
   imap,
+  snatToInteger,
+  succSNat,
+  toEnable,
+  toSignal,
+  unsafeFromReset,
+  unsafeFromSignal,
+  unsafeToReset,
  )
+import Control.Concurrent (ThreadId)
+import Control.Concurrent.Chan (Chan)
+import Control.Concurrent.MVar (MVar)
+import Control.Exception (SomeException)
+import Control.Monad.ST (ST)
+import Data.Coerce (coerce)
+import Data.Dynamic (Dynamic)
+import Data.IORef (IORef)
 import Data.Kind (Type)
+import Data.List.NonEmpty (NonEmpty)
+import Data.STRef (STRef)
 import Data.Tagged (Tagged (..))
+import Data.Type.Bool (type (||))
+import Data.Typeable (TypeRep)
+import Foreign.ForeignPtr (ForeignPtr)
+import Foreign.Ptr (FunPtr, Ptr)
+import Foreign.StablePtr (StablePtr)
 import GHC.Generics (
   C,
   D,
@@ -87,6 +126,11 @@ import GHC.Generics (
   (:+:) (..),
  )
 import GHC.Stack (HasCallStack, withFrozenCallStack)
+import GHC.TypeLits (type (+))
+import Numeric.Natural (Natural)
+import System.IO (Handle)
+import System.Mem.StableName (StableName)
+import System.Mem.Weak (Weak)
 
 import Clash.CircuitContext.Core (
   HasCircuitContext,
@@ -96,6 +140,7 @@ import Clash.CircuitContext.Core (
   traceSignalC,
   traceSignalSW,
  )
+import Clash.CircuitContext.Internal.Wide64 (Integer64 (..), Natural64 (..))
 import Clash.Shockwaves.Waveform (Waveform)
 
 --------------------------------------------------------------------------------
@@ -166,6 +211,38 @@ instance
   Traceable (Signal dom a)
   where
   traceNamed = traceDescribedAt @(CanDescribe a) @a
+
+{- $integer
+'Integer' and 'Natural' have no 'BitPack' instance, yet Clash translates
+both: to 64 bits, two's complement for 'Integer'. A signal (or probe) of
+either records exactly that, wrapping where the hardware would, so a design
+computing in @Integer@ is still traced. These instances are INCOHERENT so
+they can never get in the way of the general ones: they apply to 'Integer'
+and 'Natural' themselves, and a payload polymorphic in @a@ keeps the general
+instance and its 'BitPack' requirement. Inside a composite payload (@Maybe
+Integer@) there is still no 'BitPack', so use @Signed 64@ there.
+-}
+
+-- | See $integer.
+instance {-# INCOHERENT #-} (KnownDomain dom) => Traceable (Signal dom Integer) where
+  traceNamed nm = coerce . traceSignalSW @dom @Integer64 nm . coerce
+
+-- | See $integer.
+instance {-# INCOHERENT #-} (KnownDomain dom) => Traceable (Signal dom Natural) where
+  traceNamed nm = coerce . traceSignalSW @dom @Natural64 nm . coerce
+
+{- | The other wires: a delayed signal, a reset and an enable each trace as
+the 'Signal' underneath them (a reset as its raw level, in the domain's own
+polarity). They are newtypes, so this is a coercion and adds no strictness.
+-}
+instance (Traceable (Signal dom a)) => Traceable (DSignal dom d a) where
+  traceNamed nm = unsafeFromSignal . traceNamed nm . toSignal
+
+instance (KnownDomain dom) => Traceable (Reset dom) where
+  traceNamed nm = unsafeToReset . traceSignalSW nm . unsafeFromReset
+
+instance (KnownDomain dom) => Traceable (Enable dom) where
+  traceNamed nm = toEnable . traceSignalSW nm . fromEnable
 
 {- | Vectors of traceable things trace element-wise, names indexed by
 structural position.
@@ -405,6 +482,30 @@ instance
   where
   probeNamed = probeDescribedAt @(CanDescribe t) @t
 
+-- | See $integer.
+instance {-# INCOHERENT #-} Probeable Integer where
+  probeNamed nm = coerce . probeSW @Integer64 nm . coerce
+
+-- | See $integer.
+instance {-# INCOHERENT #-} Probeable Natural where
+  probeNamed nm = coerce . probeSW @Natural64 nm . coerce
+
+{- | An 'SNat' has no 'BitPack' (it is a type-level constant), but its value
+is a number: it is probed as the @'Index' (n + 1)@ holding @n@, the narrowest
+type that can. @SNat 0@ would be zero bits wide and is not recorded.
+
+There is no instance context: the 'KnownNat' comes out of the 'SNat' itself,
+so the oracle has nothing to prove, and an @SNat (len - tap)@ in a step
+polymorphic in both probes as readily as a literal one. INCOHERENT for the
+same reason as the 'Integer' instance (see $integer).
+-}
+instance {-# INCOHERENT #-} Probeable (SNat n) where
+  probeNamed nm s@SNat = case (compareSNat d1 s, succSNat s) of
+    (SNatLE, n1@SNat) -> case compareSNat d1 n1 of
+      SNatLE -> probeSW @(Index (n + 1)) nm (fromInteger (snatToInteger s)) `seq` s
+      SNatGT -> s
+    (SNatGT, _) -> s
+
 class AutoProbe (flag :: Bool) t where
   autoProbeAt :: (HasProbe) => String -> t -> t
 
@@ -425,6 +526,94 @@ autoProbe ::
   t
 autoProbe = autoProbeAt @(CanProbe t) @t
 {-# INLINE autoProbe #-}
+
+--------------------------------------------------------------------------------
+-- Never recorded
+--------------------------------------------------------------------------------
+
+{- | ''True' for a type Clash cannot translate to hardware, so no trace or
+probe can ever record it: a list, a function, @IO@, 'SimOnly'. The plugin
+does not warn about a binding it declined to record when the binding's type,
+or the requirement it stopped at, reduces to ''True' here — that warning
+would have no fix.
+
+Open, and only ever answered ''True' (or passed through a container): a type
+nobody declared stays unreduced, and a binding of it that cannot be recorded
+still warns, prompting for the instance it is missing. For a type of your
+own that Clash cannot translate, declare it next to the type —
+
+> data Config = Config {names :: [String], limit :: Int}
+>
+> type instance NonTranslatable Config = 'True
+
+'Integer' and 'Natural' are NOT in here: Clash translates both, to 64 bits,
+and they are recorded as such (see $integer).
+
+The containers below pass the question on to their contents. Tuples do so up
+to eight components; a wider tuple holding a list still warns, and a
+@type instance@ for it settles that.
+-}
+type family NonTranslatable (t :: Type) :: Bool
+
+type instance NonTranslatable [a] = 'True
+type instance NonTranslatable (NonEmpty a) = 'True
+type instance NonTranslatable (a -> b) = 'True
+type instance NonTranslatable (IO a) = 'True
+
+-- | Clash translates 'SimOnly' to nothing at all: it is not hardware.
+type instance NonTranslatable (SimOnly a) = 'True
+
+{- $base
+The rest of @base@ that can never be hardware: mutable references, pointers,
+handles, threads, state threads, and values that describe the running
+program rather than data. Types @base@ defines as plain data ('Data.Ratio.Ratio',
+'Data.Complex.Complex', 'Data.Fixed.Fixed', 'Data.Void.Void') are NOT here:
+Clash translates an algebraic type field by field, whether or not it has a
+'BitPack' instance, so a binding of one that is declined has a fix.
+-}
+
+type instance NonTranslatable (IORef a) = 'True
+type instance NonTranslatable (STRef s a) = 'True
+type instance NonTranslatable (MVar a) = 'True
+type instance NonTranslatable (Chan a) = 'True
+type instance NonTranslatable (ST s a) = 'True
+type instance NonTranslatable ThreadId = 'True
+type instance NonTranslatable Handle = 'True
+type instance NonTranslatable (Ptr a) = 'True
+type instance NonTranslatable (FunPtr a) = 'True
+type instance NonTranslatable (ForeignPtr a) = 'True
+type instance NonTranslatable (StablePtr a) = 'True
+type instance NonTranslatable (StableName a) = 'True
+type instance NonTranslatable (Weak a) = 'True
+type instance NonTranslatable TypeRep = 'True
+type instance NonTranslatable Dynamic = 'True
+type instance NonTranslatable SomeException = 'True
+
+-- Containers Clash translates are untranslatable when their contents are.
+type instance NonTranslatable (Signal dom a) = NonTranslatable a
+type instance NonTranslatable (DSignal dom d a) = NonTranslatable a
+type instance NonTranslatable (Vec n a) = NonTranslatable a
+type instance NonTranslatable (Maybe a) = NonTranslatable a
+type instance NonTranslatable (Either a b) = NonTranslatable a || NonTranslatable b
+type instance NonTranslatable (a, b) = NonTranslatable a || NonTranslatable b
+type instance
+  NonTranslatable (a, b, c) =
+    NonTranslatable a || NonTranslatable b || NonTranslatable c
+type instance
+  NonTranslatable (a, b, c, d) =
+    NonTranslatable a || NonTranslatable b || NonTranslatable c || NonTranslatable d
+type instance
+  NonTranslatable (a, b, c, d, e) =
+    NonTranslatable a || NonTranslatable (b, c, d, e)
+type instance
+  NonTranslatable (a, b, c, d, e, f) =
+    NonTranslatable a || NonTranslatable (b, c, d, e, f)
+type instance
+  NonTranslatable (a, b, c, d, e, f, g) =
+    NonTranslatable a || NonTranslatable (b, c, d, e, f, g)
+type instance
+  NonTranslatable (a, b, c, d, e, f, g, h) =
+    NonTranslatable a || NonTranslatable (b, c, d, e, f, g, h)
 
 --------------------------------------------------------------------------------
 -- Describing a trace or probe
