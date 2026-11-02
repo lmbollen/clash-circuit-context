@@ -6,9 +6,9 @@ Initial version.
 
 * Runtime (`Clash.CircuitContext.Core`): scoped simulation context on
   unmodified clash-prelude — `component` hierarchy, per-simulation trace
-  maps (`traceSignalC`), probes inside mealy/moore step functions
-  (`mealyProbed`/`mooreProbed`/`probe`), hierarchical VCD dumping
-  (`dumpVCDC`).
+  recorders (`traceSignalC`), probes inside mealy/moore step functions
+  (`mealyProbed`/`mooreProbed`/`probe`), hierarchical VCD writing
+  (`Clash.CircuitContext.Recording`).
   Instance identity is heap identity (StableName), resolved to `_0`/`_1`
   sibling names ordered by the design call site of `component`;
   `imapComponents` names replicated instances by structural position.
@@ -23,7 +23,7 @@ Initial version.
   then its child scopes by name, with numbers compared as numbers
   (`lane_2` before `lane_10`). Signals with one call site, such as the
   elements of a `Vec` or the fields of a record, follow by name too. The
-  order used to be the order `dumpVCD1#` returned, which had no meaning.
+  order used to be the order stock `dumpVCD` returned, which had no meaning.
 * GHC plugin (`Clash.CircuitContext.Plugin`): automatic instrumentation.
   `OPAQUE` + `HasCircuitContext` toplevel functions become components
   (guarded equations are case-encoded when they cannot fall through, and a
@@ -175,14 +175,12 @@ Initial version.
 * Typed waveforms, from `clash-shockwaves`: every traced or probed signal
   whose payload type has a `Waveform` instance carries that type's ADT
   description (constructors, fields, bit ranges, styles), captured at
-  registration where the type is still known. `dumpVCDSW`
-  (`Clash.CircuitContext.Shockwaves`) writes the hierarchical VCD and a JSON
+  registration where the type is still known. Beside every VCD goes a JSON
   sidecar in shockwaves' own format, keyed by the full scope paths the VCD
-  declares (`vcdPath`: a top-level name is `logic.<name>`), so shockwaves'
-  Surfer plugin decodes our output unmodified. The waveform
-  lifecycle in `Clash.CircuitContext.Waveform` writes the pair through
+  declares (a top-level name is `logic.<name>`), so shockwaves' Surfer
+  plugin decodes our output unmodified. The pair is written through
   temp + rename, sidecar first: if the `.vcd` exists, its `.json` is complete.
-  `dumpVCDSW` renders each signal's description on its own, so one that
+  Each signal's description is rendered on its own, so one that
   fails (`clash-shockwaves` calls `error` for a `Waveform` instance whose
   width differs from `BitSize`) is left out of the sidecar and reported on
   stderr; the VCD, every other description, and under `withWaveform` the
@@ -236,14 +234,15 @@ Initial version.
   `maybeUnpack` while keeping the version number 1.11.0. A Template Haskell
   check asks `BitPack` whether it has the method, so one instance serves
   both; CPP could not tell the two apart.
-* `ProbeMap` holds `ProbeEntry` records (period, width, runs and the ADT
-  descriptor) instead of tuples, mirroring `TraceEntry`, which gains the same
-  descriptor as `teAdt` (`Nothing` for a `traceSignalC`). `Core` also exports
-  `disambiguate` and `vcdPath`, the key transforms a dump applies, for
-  anything that has to name the VCD's vars from outside it.
+* Recording by hand, for what the waveform functions do not cover (outputs
+  in more than one domain): `Clash.CircuitContext.Recording`.
+  `withRecording spill action` runs the action under a recording context and
+  returns what it returned or threw with the `Recording`; `writeVCD (start,
+  stop) rec path` writes the VCD and its sidecar, with the window in units of
+  the timescale as `dumpVCD`'s; `discardRecording` deletes the spill file.
+  `recordedSignals` and `recordedChanges` show what was recorded, for tests.
 * Tracing a `Signal dom a` requires `(KnownDomain dom, BitPack a,
-  NFDataX a)` — no `Typeable`, and no `Waveform`. Registration stores an
-  empty `TypeRep` encoding (unused by `dumpVCDC`), so size-polymorphic payloads
+  NFDataX a)` — no `Typeable`, and no `Waveform`, so size-polymorphic payloads
   (`Unsigned n`, `BitVector n`) trace inside polymorphic components.
   Describing one is the separate requirement `Waveform a`, whose superclass
   is `(Typeable a, BitPack a)`: where a polymorphic component has no
@@ -265,11 +264,10 @@ Initial version.
   duplicate the callee's whole type signature.
 * Simulation is cheap when not recording: under `noCircuitContext` the
   combinators short-circuit before any `IORef`/hierarchy/counter work.
-* `dumpVCDC` returns `Left` (never throws) when nothing was traced or
-  probed — e.g. a run of zero cycles, or one where no traced signal was
-  forced. Previously it propagated stock `dumpVCD1#`'s `error "no traces
-  found"`, which could crash an otherwise-passing simulation that had
-  instrumentation left in.
+* Writing a waveform returns `Left` (never throws) when nothing was traced
+  or probed — e.g. a run of zero cycles, or one where no traced signal was
+  forced. Stock `dumpVCD` calls `error "no traces found"` there, which could
+  crash an otherwise-passing simulation that had instrumentation left in.
 * Tracing is robust to partial and undefined signals. Auto-instrumentation
   traces every named local binding, including ones the design only evaluates
   under a condition (e.g. `fromJust`/`head` on a signal that is `Nothing`/empty
@@ -283,18 +281,13 @@ Initial version.
   binding) to an all-undefined entry rendered as `x`. A tracer never decides
   whether the simulation crashes; a signal the design leaves undefined at a
   cycle simply shows `x` in the waveform.
-* Live, single-run capture support: `withCircuitContextWindow` bounds
-  recording to a trailing capture window (logic-analyzer style — full-history
-  recording of a program counter is intrinsically unbounded; RLE cannot
-  compress a value that changes every cycle), implemented as a two-chunk gap
-  buffer with O(1) amortized pruning; window-dropped history renders `x`.
-  `recordedCycles` reports how far a simulation actually ran, so a dump after
-  an early-exiting consumer (an assertion that found its answer) covers
-  exactly the simulated cycles instead of draining a fixed window. Together
-  these enable the intended usage: ONE lazy simulation shared by assertion
-  and waveform, instead of a second strict full-window re-run per test —
-  measured on a real CPU-DUT suite: 155 s → 3.5 s and 654 s → 22 s per test,
-  with recorder memory below the simulation's own footprint.
+* Live, single-run capture: a recording ends where the simulation stopped
+  (`recordingEnd`), so a waveform after an early-exiting consumer (an
+  assertion that found its answer) covers exactly the simulated cycles
+  instead of simulating a fixed window. That enables the intended usage: ONE
+  lazy simulation shared by assertion and waveform, instead of a second
+  strict full-window re-run per test — measured on a real CPU-DUT suite:
+  155 s → 3.5 s and 654 s → 22 s per test.
 * Probe recording no longer re-derives its identity every cycle. `simProbe`
   used to resolve the hierarchy (StableName per segment), build the
   qualified-name string, and insert into a global string-keyed map — per
@@ -332,13 +325,19 @@ Initial version.
   simulation: `traceSignalC` returns a tapped signal that packs each cycle's
   value as the design forces it and keeps only the un-consumed packed tail,
   so raw history is released immediately; probes append strictly to their run
-  history. `withCircuitContext` now returns this compressed `TraceData`
-  (replacing the stored-lazy-list `TraceMap`) and `ProbeMap` holds `Runs`;
-  `dumpVCDC` expands runs lazily into the dense form the VCD builder needs —
-  cycles the design never forced are still drained on demand and probe gaps
-  still render `x`, so dumps are bit-identical (goldens unchanged). Same
-  100 k-cycle capture after: 295 MB live — below the simulation's own
-  no-recording footprint.
+  history. Same 100 k-cycle capture after: 295 MB live — below the
+  simulation's own no-recording footprint.
+* Recording no longer keeps a history in memory at all. Every recorded
+  signal appends its value CHANGES to a spill file next to the waveform
+  (`waveforms/<name>.spill`) while the simulation runs, in 16 KiB chunks per
+  signal, and the VCD is written by reading the changes back and merging
+  them by time, straight to the file. The run-length lists this replaces
+  cost about 150 bytes per change, and the whole VCD was built in memory
+  before it was written. The output is byte-identical for one domain
+  (goldens unchanged); a signal of a slower domain now changes at its own
+  clock edges, where stock `dumpVCD` shifts its values. Signals with the
+  same history are found by a hash of their changes, confirmed by comparing
+  them, so a collision cannot merge two signals.
 * New probe combinators for the two Clash idioms `mealyProbed` could not reach:
   `mealyBProbed`/`mooreBProbed` (bundled-I/O mealy/moore — the `mealyB`/`mooreB`
   form, the most common in real designs) and `probeFmap`, an `fmap` that binds a
@@ -425,9 +424,12 @@ Initial version.
   tree is `-Wall -Wcompat`-clean on GHC 9.6.7 and 9.10.3.
 * Waveforms from IO and from a test suite: `Clash.CircuitContext.Waveform`
   writes the pair of files atomically, and takes what `dumpVCD` takes, the
-  `Signal` to observe and a number of samples. `writeWaveform name n sig`
+  `Signal` to observe and a window `(start, stop)` of cycles: the simulation
+  runs `stop` cycles and the waveform shows `[start, stop)`, which the
+  recorder does not write before `start`. As VCD time is unsigned, `start`
+  is at least 0. `writeWaveform name (start, stop) sig`
   simulates, writes `waveforms/<name>.vcd` and returns the samples.
-  `withWaveform name n sig check` records only what will be kept: it runs
+  `withWaveform name (start, stop) sig check` records only what will be kept: it runs
   the simulation without recording, and only when the check throws runs it
   again with recording, writes the waveform and rethrows. When the check
   passes it deletes a waveform an earlier failing run left: a failure's
@@ -441,17 +443,16 @@ Initial version.
   25.2 GB and 6m22s became 8.2 GB and 1m06s. Nothing keeps a rendered
   waveform after its run (a process-global registry once held 26 GB).
 * `Clash.CircuitContext.Waveform.Hedgehog` for properties:
-  `simulateWaveform capture name n sig` inside a property. Every case
+  `simulateWaveform capture name (start, stop) sig` inside a property. Every case
   simulates without recording, and leaves a footnote that records that case
   when Hedgehog PRINTS it. Hedgehog prints footnotes only for the case it
   reports, so the waveform is of the shrunk counterexample, recorded once,
   and the report ends with its path. `AtSize s` additionally keeps the first
   passing case of at least size `s`, once per waveform name. The test
   suite pins the Hedgehog behaviour this relies on.
-* `withCircuitContextWindowE` returns what was recorded even when the action
-  threw (the plain version reads the recorder refs after the action, so an
-  exception escaped with the recording); `withCircuitContextWindowM` runs the
-  action in any monad over IO, for monads that report failure as a value.
+* `withRecording` returns what was recorded even when the action threw, so
+  a failing run's waveform can be written. A cancelled test (an asynchronous
+  exception) deletes the spill file and is not delayed.
 * Signals with an identical recorded history now share one VCD identifier,
   with the copies re-attached as extra `$var` declarations. Cuts VCD size
   roughly 3x on real designs, where a bus and its aliases carry the same bits.
@@ -466,13 +467,13 @@ Initial version.
   patch marks its synthesised binders accordingly. Removed 979 of 4823
   declarations (20%) across a real suite, each a duplicate of a signal
   already present under its own name.
-* `recordedCycles` no longer stops one cycle short. A recorder commits cycle
+* A waveform no longer stops one cycle short. A recorder commits cycle
   `i` only when cell `i+1` is forced — the one-cell delay `registerTrace`
   takes deliberately, because packing a value while producing its own cell
-  blackholes on a combinational knot — so the last forced cycle was never in
-  the runs; it sits packed in the continuation, which the dump drains. Every
-  lazily-captured waveform was therefore one cycle short, which is invisible
-  on a 600k-cycle trace and fatal on a 3-cycle counterexample.
+  blackholes on a combinational knot — so the last forced cycle is still in
+  the tap when the run stops, and is recorded when the recording ends. It
+  used to be left out, which is invisible on a 600k-cycle trace and fatal
+  on a 3-cycle counterexample.
 * The test suite is structured in two levels, both run by `check.sh`.
   `tests/Example/` is the runnable worked example of all of the above —
   `Example.SingleRun` captures one run's waveform in the unit-test shapes,

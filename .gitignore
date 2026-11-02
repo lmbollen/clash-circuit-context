@@ -19,3 +19,6 @@ cabal.project.local*
 /deps/
 /waveforms/
 dist-hackage/
+/manual-instrumentation.json
+/auto-instrumentation.json
+*.spill

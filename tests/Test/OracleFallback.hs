@@ -31,7 +31,6 @@ import qualified Prelude as P
 
 import Control.Exception (evaluate)
 import Data.List (isInfixOf)
-import qualified Data.Map.Strict as Map
 import Data.Tagged (Tagged (..), unTagged)
 import System.Exit (exitFailure)
 
@@ -40,8 +39,13 @@ import Clash.Explicit.Prelude
 import Clash.CircuitContext.Auto (Traceable, autoTrace)
 import Clash.CircuitContext.Core (
   HasCircuitContext,
-  TraceEntry (teAdt),
-  withCircuitContext,
+  withRecording,
+ )
+import Clash.CircuitContext.Recording (
+  discardRecording,
+  recordedSignals,
+  signalDescribed,
+  signalKey,
  )
 import Clash.Shockwaves.Waveform (Waveform)
 
@@ -108,7 +112,7 @@ check what ok
 
 main :: IO ()
 main = do
-  (_, traces, _probes) <- withCircuitContext $ do
+  (_, rec) <- withRecording "oracle-fallback.spill" $ do
     let
       mono =
         autoTrace "mono" (fromList [1, 2, 3, 4] :: Signal System (Unsigned 8))
@@ -175,8 +179,10 @@ main = do
     _ <- evaluate (P.head (sampleN 2 (unTagged tagBlocked)))
     _ <- evaluate (P.head (sampleN 2 (snd (unTagged tagMixed))))
     pure ()
+  discardRecording rec
   let
-    keys = Map.keys traces
+    traces = recordedSignals rec
+    keys = P.map signalKey traces
     has nm = P.any (nm `isInfixOf`) keys
   putStrLn ("trace keys: " <> show keys)
   check "mono traced" (has "mono@")
@@ -193,8 +199,8 @@ main = do
   let
     described nm =
       P.any
-        (\(k, e) -> nm `isInfixOf` k P.&& P.maybe False (P.const True) (teAdt e))
-        (Map.toList traces)
+        (\e -> nm `isInfixOf` signalKey e P.&& signalDescribed e)
+        traces
   check "poly with a Waveform given is described" (described "polyyes@")
   check "poly without a Waveform given is not" (P.not (described "polynowave@"))
   check "record without instance fell back to identity" (P.not (has "recn"))

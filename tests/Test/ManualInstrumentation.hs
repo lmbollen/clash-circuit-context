@@ -10,7 +10,7 @@ probes inside a mealy step function, on stock clash-prelude.
 
 Expected: a VCD with nested scopes @top@, @top.acc_0@ and @top.acc_1@ — two
 instances of the SAME accumulator under the same parent, disambiguated
-downstream by 'dumpVCDC' in call-site (design) order — plus @top.vacc_0@ and
+downstream by the VCD writer in call-site (design) order — plus @top.vacc_0@ and
 @top.vacc_1@, a vector of instances named by structural position via
 'imapComponents'. Each instance contains its traced @sum@ plus @step@, the
 probe recorded per cycle from INSIDE the mealy transition function,
@@ -21,14 +21,15 @@ module Main where
 
 import qualified Prelude as P
 
-import Control.Exception (evaluate)
-import qualified Data.Map.Strict as Map
+import Control.Exception (evaluate, throwIO)
+import Data.List (sort)
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TIO
 
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext.Core
+import Clash.CircuitContext.Recording
 
 clk :: Clock System
 clk = clockGen
@@ -55,7 +56,7 @@ acc = mealyProbed clk rst ena step 0
 -- a @where@ binding, give it an explicit @HasCircuitContext =>@ signature to keep it
 -- polymorphic in the context.
 -- Two instances of the same sub-circuit under the same component: both named
--- "acc", both tracing "sum" and probing "step". Neither collides — dumpVCDC
+-- "acc", both tracing "sum" and probing "step". Neither collides — the VCD writer
 -- renders them as acc_0 and acc_1, ordered by call site (design order).
 -- A further two instances are replicated over a Vec and named by structural
 -- position (vacc_0, vacc_1) via imapComponents.
@@ -78,25 +79,29 @@ top inp =
 
 main :: IO ()
 main = do
-  (samples, traces, probes) <- withCircuitContext $ do
+  (result, rec) <- withRecording "manual-instrumentation.spill" $ do
     let out = top (fromList [1, 1 ..])
         xs = sampleN 8 out
-    _ <- evaluate (deepseqX xs xs)
-    pure xs
+    evaluate (deepseqX xs xs)
+  samples <- either throwIO pure result
   putStrLn ("samples:      " <> show samples)
-  putStrLn ("trace names:  " <> show (Map.keys traces))
   putStrLn
-    ( "probe map:    "
-        <> show
-          [ (nm, w, [(c, v) | (cs, ce, v) <- P.reverse runs, c <- [cs .. ce]])
-          | (nm, ProbeEntry{peWidth = w, peRuns = runs}) <- Map.toList probes
-          ]
+    ( "trace names:  "
+        <> show (sort [signalKey s | s <- recordedSignals rec, signalKind s P.== TraceKind])
     )
-  vcd <- dumpVCDC (0, 8) traces probes
+  probes <-
+    sequence
+      [ (,,) (signalKey s) (signalWidth s) <$> recordedChanges rec s
+      | s <- recordedSignals rec
+      , signalKind s P.== ProbeKind
+      ]
+  putStrLn ("probe changes: " <> show (sort probes))
+  vcd <- writeVCD (0, 8) rec "manual-instrumentation.vcd"
+  discardRecording rec
   case vcd of
     Left err -> putStrLn ("VCD error: " <> err)
-    Right txt -> do
-      TIO.writeFile "manual-instrumentation.vcd" txt
+    Right () -> do
+      txt <- TIO.readFile "manual-instrumentation.vcd"
       putStrLn
         ( "VCD lines:    "
             <> show (P.length (Text.lines txt))

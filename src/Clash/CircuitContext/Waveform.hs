@@ -2,6 +2,7 @@
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
+{-# LANGUAGE TypeApplications #-}
 
 {- |
 Copyright  :  (C) 2026, QBayLogic B.V.
@@ -11,13 +12,18 @@ Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
 Write the waveform of a simulation, from any IO code or from a test.
 
 Both functions take what 'Clash.Signal.Trace.dumpVCD' takes: the 'Signal' to
-observe and the number of samples. The signal carries 'HasCircuitContext',
-which they supply. A design with outputs in one domain gives one signal with
-@bundle@; a @clash-protocols@ circuit gives one with @toSignals@.
+observe and a window @(start, stop)@ of cycles. The simulation runs @stop@
+cycles, and the waveform shows cycles @start@ to @stop - 1@; use @(0, n)@ to
+see all @n@. The signal carries 'HasCircuitContext', which they supply. A
+design with outputs in one domain gives one signal with @bundle@; a
+@clash-protocols@ circuit gives one with @toSignals@. For outputs in more
+than one domain, see "Clash.CircuitContext.Recording".
 
 A waveform is a pair of files, @waveforms\/\<name\>.vcd@ and the
 @waveforms\/\<name\>.json@ sidecar a typed viewer reads, relative to the working
 directory. One name is one pair of files, so two tests must not share a name.
+While a simulation records, its values go to @waveforms\/\<name\>.spill@
+instead of memory; the file is deleted when the waveform is written.
 
 For a Hedgehog property, see "Clash.CircuitContext.Waveform.Hedgehog".
 -}
@@ -29,6 +35,7 @@ module Clash.CircuitContext.Waveform (
 import Control.Exception (
   SomeAsyncException,
   SomeException,
+  evaluate,
   fromException,
   throwIO,
   try,
@@ -37,37 +44,42 @@ import Control.Monad (unless, when)
 import System.IO (hPutStrLn, stderr)
 
 import Clash.Explicit.Signal (Signal, sampleN)
-import Clash.Prelude (NFDataX)
+import Clash.Prelude (KnownDomain, NFDataX, deepseqX)
 
 import Clash.CircuitContext.Core (
   HasCircuitContext,
-  withCircuitContextWindowE,
   withoutCircuitContext,
  )
 import Clash.CircuitContext.Internal.Waveform
 
-{- | Simulate @n@ samples of a design and write its waveform. Returns the
-samples.
+{- | Simulate @stop@ cycles of a design and write the waveform of cycles
+@[start, stop)@. Returns all @stop@ samples.
 
 > main = do
->   out <- writeWaveform "counter" 100 (top clockGen resetGen enableGen)
+>   out <- writeWaveform "counter" (0, 100) (top clockGen resetGen enableGen)
 >   print out
 
-If nothing in the simulation was recorded, no file is written, and a message
-on stderr says so.
+Cycles before @start@ are simulated, but not recorded. If nothing in the
+simulation was recorded, no file is written, and a message on stderr says
+so. If the simulation throws, the waveform up to there is written, and the
+exception goes on.
 -}
 writeWaveform ::
-  (NFDataX a) =>
+  forall dom a.
+  (KnownDomain dom, NFDataX a) =>
   -- | The name of the waveform: @waveforms\/\<name\>.vcd@
   String ->
-  -- | Number of samples
-  Int ->
+  -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
+  (Int, Int) ->
   -- | The signal to observe
   (HasCircuitContext => Signal dom a) ->
   IO [a]
-writeWaveform name n sig = do
-  (out, traces, probes) <- record n sig
-  written <- save Requested name traces probes
+writeWaveform name window@(start, stop) sig = do
+  checkWindow name window
+  (out, rec) <- record name (start * period) $ do
+    let xs = sampleN stop sig
+    evaluate (xs `deepseqX` xs)
+  written <- save Requested name (start * period, stop * period) rec
   unless written $
     hPutStrLn
       stderr
@@ -75,12 +87,14 @@ writeWaveform name n sig = do
           <> name
           <> ": nothing was recorded, so no waveform was written."
       )
-  pure out
+  either throwIO pure out
+ where
+  period = domainPeriod @dom
 
-{- | Run a test's check on @n@ samples of a design, and write the waveform only
-when the check fails.
+{- | Run a test's check on @stop@ cycles of a design, and write the waveform
+of cycles @[start, stop)@ only when the check fails.
 
-> case_counter = withWaveform "counter" 100 (top clockGen resetGen enableGen) $ \out ->
+> case_counter = withWaveform "counter" (0, 100) (top clockGen resetGen enableGen) $ \out ->
 >   out @?= expected
 
 The simulation runs without recording, so a passing test costs nothing extra.
@@ -90,9 +104,9 @@ printed on stderr, and the check's exception is rethrown. When the check
 passes, a waveform left by an earlier failing run is deleted (one written by
 'writeWaveform' is kept).
 
-* The check gets the samples lazily. The waveform has the cycles the check
-  evaluated, so a check that stops at the first wrong value gives a waveform
-  that ends there.
+* The check gets all @stop@ samples, lazily. The waveform has the cycles the
+  check evaluated, so a check that stops at the first wrong value gives a
+  waveform that ends there.
 * The check runs twice when it fails. Give it a check that only tests values,
   not work that must happen once.
 * The second run must fail in the same way. If it passes, no waveform is
@@ -106,30 +120,34 @@ record anything.
 -}
 withWaveform ::
   forall dom a b.
-  (NFDataX a) =>
+  (KnownDomain dom, NFDataX a) =>
   -- | The name of the waveform: @waveforms\/\<name\>.vcd@
   String ->
-  -- | Number of samples
-  Int ->
+  -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
+  (Int, Int) ->
   -- | The signal to observe
   (HasCircuitContext => Signal dom a) ->
   -- | The check
   ([a] -> IO b) ->
   IO b
-withWaveform name n sig check = do
-  first <- try (check (withoutCircuitContext (sampleN n sig)))
+withWaveform name window@(start, stop) sig check = do
+  checkWindow name window
+  first <- try (check (withoutCircuitContext (sampleN stop sig)))
   case first of
     Right b -> removeFailureWaveform name >> pure b
     -- Re-simulating a large design on the way out of a cancelled test
     -- would turn "stop now" into minutes of work.
     Left err | isAsync err -> throwIO err
     Left err -> do
-      (again, traces, probes) <- recorded
+      -- A fresh instantiation of the signal, under a recording context: an
+      -- independent simulation, recorded as far as the check forces it.
+      (again, rec) <- record name (start * period) (check (sampleN stop sig))
       case again of
         Left _ -> do
-          written <- save Failure name traces probes
+          written <- save Failure name (start * period, stop * period) rec
           when written (announce name)
-        Right _ ->
+        Right _ -> do
+          discard rec
           hPutStrLn
             stderr
             ( "clash-circuit-context: "
@@ -140,9 +158,7 @@ withWaveform name n sig check = do
             )
       throwIO err
  where
-  -- A fresh instantiation of the signal, under a recording context: an
-  -- independent simulation, recorded as far as the check forces it.
-  recorded = withCircuitContextWindowE maxBound (check (sampleN n sig))
+  period = domainPeriod @dom
 
   isAsync :: SomeException -> Bool
   isAsync err = case fromException err of

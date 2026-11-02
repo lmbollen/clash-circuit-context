@@ -5,6 +5,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE StandaloneDeriving #-}
 {-# LANGUAGE TypeApplications #-}
@@ -17,8 +18,8 @@ tracing calls:
   local bindings are auto-traced by the plugin's renamer;
 * the ADT DESCRIPTION comes from @clash-shockwaves@ — a payload with a
   'Waveform' instance has its constructors, fields and bit ranges captured at
-  registration, and 'adtSidecar' emits them in the schema a typed-waveform
-  viewer reads.
+  registration, and 'writeVCD' writes them beside the VCD, in the schema a
+  typed-waveform viewer reads.
 
 The design below is deliberately ADT-shaped rather than a counter: a sum type
 (@Phase@) so constructor names have to survive, and a record over that sum
@@ -52,9 +53,9 @@ import qualified Prelude as P
 import Control.Exception (Exception, evaluate, fromException, throwIO, try)
 import Control.Monad (when)
 import Data.List (intercalate, isInfixOf, isSuffixOf)
-import System.Directory (doesFileExist, removeFile)
+import System.Directory (createDirectoryIfMissing, doesFileExist, removeFile)
 import System.Exit (exitFailure)
-import System.FilePath ((-<.>))
+import System.FilePath (takeDirectory, (-<.>))
 
 import qualified Data.Aeson as Json
 import qualified Data.ByteString.Lazy.Char8 as ByteStringLazyChar8
@@ -64,7 +65,7 @@ import qualified Data.Text.IO as TextIO
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext
-import Clash.CircuitContext.Shockwaves (dumpVCDSW)
+import Clash.CircuitContext.Recording (discardRecording, writeVCD)
 import Clash.CircuitContext.Waveform (withWaveform)
 import Clash.Shockwaves.LUT (WaveformForLut (..), WaveformLUT)
 import Clash.Shockwaves.Waveform (Waveform (translator))
@@ -227,22 +228,35 @@ check what ok
   | ok = putStrLn ("ok: " <> what)
   | otherwise = putStrLn ("FAIL: " <> what) >> exitFailure
 
+{- | Record an action and write its first @n@ cycles to this VCD path (and
+its sidecar beside it). Returns the action's result, the VCD and the sidecar.
+-}
+dump :: FilePath -> Int -> ((HasCircuitContext) => IO a) -> IO (a, P.Either String (Text.Text, Json.Value))
+dump path n k = do
+  createDirectoryIfMissing True (takeDirectory path)
+  (r, rec) <- withRecording (path -<.> "spill") k
+  a <- P.either throwIO pure r
+  written <- writeVCD (0, n) rec path
+  discardRecording rec
+  case written of
+    P.Left err -> pure (a, P.Left err)
+    P.Right () -> do
+      vcd <- TextIO.readFile path
+      meta <- Json.decodeFileStrict (path -<.> "json")
+      pure (a, P.maybe (P.Left "the sidecar is not JSON") (\m -> P.Right (vcd, m)) meta)
+
 main :: IO ()
 main = do
   let clk = clockGen
       rst = resetGenN (SNat @2)
-  (samples, traces, probes) <- withCircuitContext $ do
+  (samples, rendered) <- dump "adt-sidecar.vcd" 16 $ do
     let xs = sampleN 16 (top clk rst (fromList [0 ..]))
-    _ <- evaluate (xs `deepseqX` xs)
-    pure xs
+    evaluate (xs `deepseqX` xs)
   putStrLn ("samples: " <> show samples)
 
-  rendered <- dumpVCDSW (0, 16) traces probes
   case rendered of
     Left err -> putStrLn ("FAIL: dump failed: " <> err) >> exitFailure
     Right (vcd, meta) -> do
-      TextIO.writeFile "adt-sidecar.vcd" vcd
-      Json.encodeFile "adt-sidecar.json" meta
       let
         v = Text.unpack vcd
         j = ByteStringLazyChar8.unpack (Json.encode meta)
@@ -285,21 +299,19 @@ main = do
         "an undescribable probe records anyway, and stays out of it"
         (P.not ("ticks" `isInfixOf` describedPaths meta))
 
-  -- LUT entries must cover the DRAINED cycles too. Sampling 4 cells commits
+  -- LUT entries must cover the FINISHED cycles too. Sampling 4 cells records
   -- cycles 0..2 (recording runs one cell behind), so cycle 3 — the only
-  -- occurrence of @Opcode 3@ — reaches the VCD by being drained from the
-  -- packed tail. Its LUT entry has to exist all the same, or the viewer
-  -- decodes every cycle except the last one: for a counterexample, exactly
-  -- the cycle the capture exists to show.
-  (_, traces2, probes2) <- withCircuitContext $ do
+  -- occurrence of @Opcode 3@ — is recorded from the packed tail when the run
+  -- ends. Its LUT entry has to exist all the same, or the viewer decodes
+  -- every cycle except the last one: for a counterexample, exactly the cycle
+  -- the capture exists to show.
+  (_, rendered2) <- dump "waveforms/adt-sidecar-lut.vcd" 4 $ do
     let op :: Signal System Opcode
         op = fromList (P.map Opcode [0, 0, 0, 3, 0])
         -- 'traceSignalSW', the describing variant: an explicit 'traceSignalC'
         -- records raw bits only, as 'probe' does.
         xs = sampleN 4 (traceSignalSW "op" op)
-    _ <- evaluate (xs `deepseqX` xs)
-    pure xs
-  rendered2 <- dumpVCDSW (0, 4) traces2 probes2
+    evaluate (xs `deepseqX` xs)
   case rendered2 of
     Left err -> putStrLn ("FAIL: LUT dump failed: " <> err) >> exitFailure
     Right (vcd2, meta2) -> do
@@ -316,7 +328,7 @@ main = do
                 $ KeyMap.lookup "luts" o
             _ -> ""
       check
-        "a value first occurring at the drained last cycle has its LUT entry"
+        "a value first occurring at the finished last cycle has its LUT entry"
         ("Opcode 3" `isInfixOf` lutsJson)
 
   -- A broken descriptor, captured the way a failing test is: through
@@ -329,7 +341,7 @@ main = do
     try
       $ withWaveform
         "adt-sidecar-broken"
-        4
+        (0, 4)
         ( bundle
             ( traceSignalSW "skewed" (fromList (P.map Skewed (P.cycle [1, 2, 3])))
             , traceSignalSW "phase" (fromList (P.cycle [Idle, Busy, Done]))
