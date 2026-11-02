@@ -123,14 +123,10 @@ recordRun ::
   (Int, Int) ->
   (HasCircuitContext => Signal dom a) ->
   IO (Either SomeException [a], Recording)
-recordRun name (start, stop) sig =
-  record name (start * domainPeriod @dom) $ do
+recordRun name window@(_, stop) sig =
+  record name (fst (psWindow @dom window)) $ do
     let xs = sampleN stop sig
     evaluate (xs `deepseqX` xs)
-
--- | A window of cycles of a domain, in ps.
-psWindow :: forall dom. (KnownDomain dom) => (Int, Int) -> (Int, Int)
-psWindow (start, stop) = (start * domainPeriod @dom, stop * domainPeriod @dom)
 
 {- | Record this case again and write its waveform. Run only when Hedgehog
 prints the footnote; never throws, as it runs inside Hedgehog's report.

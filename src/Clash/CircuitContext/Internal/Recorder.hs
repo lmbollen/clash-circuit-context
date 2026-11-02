@@ -357,4 +357,7 @@ timescale rec = case map signalPeriod (recordingSignals rec) of
 
 -- | A time in ps, in units of the 'timescale', rounded up.
 ticks :: Recording -> Int -> Int
-ticks rec ps = let t = timescale rec in (ps + t - 1) `div` t
+ticks rec ps = case ps `divMod` timescale rec of
+  (q, 0) -> q
+  -- No @ps + t - 1@: a window that ends at 'maxBound' must not overflow.
+  (q, _) -> q + 1

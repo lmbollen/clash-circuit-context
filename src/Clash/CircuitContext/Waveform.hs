@@ -74,12 +74,12 @@ writeWaveform ::
   -- | The signal to observe
   (HasCircuitContext => Signal dom a) ->
   IO [a]
-writeWaveform name window@(start, stop) sig = do
+writeWaveform name window@(_, stop) sig = do
   checkWindow name window
-  (out, rec) <- record name (start * period) $ do
+  (out, rec) <- record name (fst ps) $ do
     let xs = sampleN stop sig
     evaluate (xs `deepseqX` xs)
-  written <- save Requested name (start * period, stop * period) rec
+  written <- save Requested name ps rec
   unless written $
     hPutStrLn
       stderr
@@ -89,7 +89,7 @@ writeWaveform name window@(start, stop) sig = do
       )
   either throwIO pure out
  where
-  period = domainPeriod @dom
+  ps = psWindow @dom window
 
 {- | Run a test's check on @stop@ cycles of a design, and write the waveform
 of cycles @[start, stop)@ only when the check fails.
@@ -130,7 +130,7 @@ withWaveform ::
   -- | The check
   ([a] -> IO b) ->
   IO b
-withWaveform name window@(start, stop) sig check = do
+withWaveform name window@(_, stop) sig check = do
   checkWindow name window
   first <- try (check (withoutCircuitContext (sampleN stop sig)))
   case first of
@@ -141,10 +141,10 @@ withWaveform name window@(start, stop) sig check = do
     Left err -> do
       -- A fresh instantiation of the signal, under a recording context: an
       -- independent simulation, recorded as far as the check forces it.
-      (again, rec) <- record name (start * period) (check (sampleN stop sig))
+      (again, rec) <- record name (fst ps) (check (sampleN stop sig))
       case again of
         Left _ -> do
-          written <- save Failure name (start * period, stop * period) rec
+          written <- save Failure name ps rec
           when written (announce name)
         Right _ -> do
           discard rec
@@ -158,7 +158,7 @@ withWaveform name window@(start, stop) sig check = do
             )
       throwIO err
  where
-  period = domainPeriod @dom
+  ps = psWindow @dom window
 
   isAsync :: SomeException -> Bool
   isAsync err = case fromException err of

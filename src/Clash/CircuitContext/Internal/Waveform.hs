@@ -28,6 +28,7 @@ module Clash.CircuitContext.Internal.Waveform (
   waveformPath,
   checkWindow,
   domainPeriod,
+  psWindow,
   simulate,
   record,
   Origin (..),
@@ -93,6 +94,18 @@ checkWindow name (start, stop) =
 domainPeriod :: forall dom. (KnownDomain dom) => Int
 domainPeriod = case knownDomain @dom of
   SDomainConfiguration{sPeriod} -> snatToNum sPeriod
+
+{- | A window of cycles of a domain, in ps. Saturates at 'maxBound', so a
+window that ends at @maxBound@ cycles (\"as long as the check runs\") stays
+the end of time instead of overflowing.
+-}
+psWindow :: forall dom. (KnownDomain dom) => (Int, Int) -> (Int, Int)
+psWindow (start, stop) = (toPs start, toPs stop)
+ where
+  period = domainPeriod @dom
+  toPs c
+    | c > maxBound `div` period = maxBound
+    | otherwise = c * period
 
 {- | @n@ samples of the signal, forced, without recording: every recorder is
 the identity under 'withoutCircuitContext', so nothing registers and nothing
