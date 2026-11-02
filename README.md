@@ -241,7 +241,7 @@ tests/Test/PluginDiagnostics.hs:147:3: warning: [-Wx-circuit-context-undecided]
     not traced: Signal dom (Awkward n)
     the oracle could not decide: 1 <= n
     This may be a limit of the approximation rather than a fact about the type.
-    Name the binding with traceSignalC, which takes Traceable as a real
+    Name the binding with traceNamed, which takes Traceable as a real
     constraint, to find out which.
     |
 147 |   held = inp

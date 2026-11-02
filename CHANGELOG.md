@@ -77,11 +77,12 @@ Initial version.
   `type WithRst dom r = (HiddenReset dom => r) -> r` in a signature is
   recognised like the type it stands for. A type-abstraction pattern
   (`f @dom x = …`) binds a forall, so it consumes no arrow.
-* A binding whose right-hand side already applies `traceSignalC`,
-  `traceSignalSW`, `probe` or `probeSW` under the binder's own name does not
-  get an injected recorder on top. It used to record the signal twice, rendered `name_0`/`name_1`. A
-  different name still gets both, since that is two signals the author asked
-  for.
+* A binding whose right-hand side already applies `traceNamed`,
+  `traceSignalC`, `traceSignalSW`, `probe` or `probeSW` under the binder's
+  own name does not get an injected recorder on top. It used to record the
+  signal twice, rendered `name_0`/`name_1`. A different name still gets both,
+  since that is two signals the author asked for. The `undecided` warning
+  recommends `traceNamed`, because it takes `Traceable` as a real constraint.
 * Regression tests lifted from a downstream consumer's reproducers
   (`tests/Test/Downstream.hs`), inverted to assert the fixes rather than the
   defects. Their F1 case reproduced here exactly against the audited pin.

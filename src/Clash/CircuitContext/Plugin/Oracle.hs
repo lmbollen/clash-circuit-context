@@ -372,7 +372,7 @@ reportDeclined env loc cls t = \case
         , "the oracle could not decide: " <> Diag.renderPlain blame
         , "This may be a limit of the approximation rather than a fact about"
             <> " the type."
-        , "Name the binding with traceSignalC, which takes Traceable as a real"
+        , "Name the binding with traceNamed, which takes Traceable as a real"
             <> " constraint, to find out which."
         ]
   _ -> pure ()
