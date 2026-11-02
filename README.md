@@ -31,7 +31,8 @@ source-repository-package
   tag: <commit-sha>   -- a branch name works, but pins nothing
 
 -- clash-prelude 1.11 is not on Hackage yet either; this package is developed
--- against the commit below. Drop this stanza if you are on a released 1.9/1.10.
+-- against the commit below. Drop this stanza if you are on a released 1.9/1.10
+-- (CI also tests a Hackage release: cabal.project.hackage).
 source-repository-package
   type: git
   location: https://github.com/clash-lang/clash-compiler.git
