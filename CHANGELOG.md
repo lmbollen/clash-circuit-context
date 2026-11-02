@@ -139,8 +139,9 @@ Initial version.
   synonym was the only way to alias the constraint.
 * `Traceable` derives generically for records of traceable parts (signal
   bundles): derive `Generic` and write an empty instance. Fields trace as
-  `name.field` sub-scopes in the VCD hierarchy; nested records nest. The
-  umbrella module re-exports `Traceable`.
+  siblings named `name_field` (nested records `name_inner_field`), not as
+  sub-scopes: see the entry on VCD scopes below. The umbrella module
+  re-exports `Traceable`.
 * `clash-shockwaves` 1.1.1 and 1.1.2 are accepted as well as 1.1.3, except on
   GHC 9.6, where only 1.1.3 builds. A project whose freeze file pins 1.1.1
   (found on Helios) can take this package without moving its index-state.
