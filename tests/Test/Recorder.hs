@@ -33,12 +33,14 @@ import qualified Hedgehog.Range as Range
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext (
+  HasCircuitContext,
+  component,
   dumpVCDC,
   recordedCycles,
   traceSignalC,
   withCircuitContextWindowM,
  )
-import Test.Vcd (asInts, bitsToInteger, decodeVCD, isZ, model)
+import Test.Vcd (asInts, bitsToInteger, decodeVCD, decodeVCDPaths, isZ, model)
 
 -- | Generated stimulus, padded so the signal is total however far a
 -- consumer looks.
@@ -133,11 +135,41 @@ prop_windowKeepsTheTailTruthfully = property $ do
     , P.not (isZ bits)
     ]
 
+{- | Two instances of one component under one parent are numbered by where
+they are written, never by which one the simulation reaches first. The
+generator picks the evaluation order. Before the call site skipped the
+library's own frames, every instance had the same call site, and @acc_0@
+was whichever instance was evaluated first.
+-}
+prop_siblingsFollowSourceOrder :: Property
+prop_siblingsFollowSourceOrder = property $ do
+  secondFirst <- forAll Gen.bool
+  (_, traces, probes) <- withCircuitContextWindowM P.maxBound $ do
+    let a = sampleN 3 writtenFirst
+        b = sampleN 3 writtenSecond
+        force x = liftIO (evaluate (x `deepseqX` x))
+    if secondFirst then force b *> force a else force a *> force b
+  vcd <- evalEither =<< liftIO (dumpVCDC (0, 3) traces probes)
+  let waves = decodeVCDPaths 3 (Text.unpack vcd)
+      waveAt p = maybe (annotate (p P.<> " missing") *> failure) pure (Map.lookup p waves)
+  wave0 <- waveAt "acc_0.total"
+  wave1 <- waveAt "acc_1.total"
+  asInts wave0 === model [0, 0, 1]
+  asInts wave1 === model [0, 0, 100]
+ where
+  writtenFirst, writtenSecond :: (HasCircuitContext) => Signal System (Unsigned 8)
+  writtenFirst = component "acc" (counting 1)
+  writtenSecond = component "acc" (counting 100)
+  counting step =
+    let total = register clockGen resetGen enableGen 0 (total + pure step)
+     in traceSignalC "total" total
+
 tests :: TestTree
 tests =
   testGroup
     "Test.Recorder"
     [ testProperty "every dumped cycle is the simulated value" prop_dumpIsFaithful
+    , testProperty "sibling instances are numbered in source order" prop_siblingsFollowSourceOrder
     , testProperty "recordedCycles counts forced cells, down to one" prop_recordedCyclesCountsForcing
     , testProperty "aliasing never changes a signal's decoded values" prop_aliasingNeverChangesValues
     , testProperty "a capture window keeps the tail, truthfully" prop_windowKeepsTheTailTruthfully

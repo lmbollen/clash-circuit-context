@@ -114,7 +114,7 @@ main = do
 ```
 
 The VCD scope tree mirrors the design hierarchy; the two `acc` instances
-are disambiguated deterministically by instantiation call site:
+are numbered by the call sites of their `component` calls:
 
 ```
 top
@@ -221,12 +221,14 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
   `Traceable` of both would drop the bus response too. Keep such instance
   contexts to ordinary class constraints, as above — the oracle recognizes
   an instance by recursing on its written context.
-* Multiple instances of the same component under one parent are
-  disambiguated **design-deterministically**: siblings are ordered by
-  instantiation call site (never by evaluation order) and named
-  `name_0`, `name_1`, …. Instances born at the *same* call site (e.g.
-  `fmap acc`-style replication) cannot be design-ordered — name those by
-  structural position with `imapComponents`.
+* Multiple instances of the same component under one parent are named
+  `name_0`, `name_1`, …, ordered by the call site of `component` in the
+  design. Instances with the *same* call site are numbered in the order the
+  simulation first reaches them. Two cases have one call site:
+  `fmap acc`-style replication, and every instance of one automatic
+  component, because the plugin writes `component "f"` inside `f`. To fix
+  the names, use `imapComponents` (structural position) or call
+  `component` by hand at each site.
 
 ### When something isn't traced
 

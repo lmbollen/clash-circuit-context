@@ -9,10 +9,15 @@ Initial version.
   maps (`traceSignalC`), probes inside mealy/moore step functions
   (`mealyProbed`/`mooreProbed`/`probe`), hierarchical VCD dumping
   (`dumpVCDC`).
-  Instance identity is heap identity (StableName), resolved to
-  design-deterministic `_0`/`_1` sibling names ordered by instantiation
-  call site; `imapComponents` names replicated instances by structural
-  position.
+  Instance identity is heap identity (StableName), resolved to `_0`/`_1`
+  sibling names ordered by the design call site of `component`;
+  `imapComponents` names replicated instances by structural position.
+  Instances with the same call site are numbered in the order the
+  simulation first reaches them. That includes every instance of one
+  automatic component, because the plugin writes `component "f"` inside
+  `f` itself. The call site skips the frames of this library: it used to
+  stop at the library's own internal call, so all instances had one call
+  site and were numbered in evaluation order.
 * GHC plugin (`Clash.CircuitContext.Plugin`): automatic instrumentation.
   `OPAQUE` + `HasCircuitContext` toplevel functions become components
   (guarded equations are case-encoded when they cannot fall through);

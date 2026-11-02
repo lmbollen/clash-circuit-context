@@ -10,6 +10,7 @@ would follow the alias and hide it.
 -}
 module Test.Vcd (
   decodeVCD,
+  decodeVCDPaths,
   bitsToInteger,
   isZ,
   asInts,
@@ -24,14 +25,31 @@ import qualified Data.Map.Strict as Map
 between change lines.
 -}
 decodeVCD :: Int -> String -> Map.Map String [String]
-decodeVCD n vcd = Map.fromList [(nm, waveFor code) | (nm, code) <- vars]
+decodeVCD n vcd = decodeWith n vcd [(nm, code) | (_, nm, code) <- declared vcd]
+
+{- | 'decodeVCD', keyed by the full dotted path (@top.acc_0.total@) instead
+of the bare name, for signals whose names repeat across scopes.
+-}
+decodeVCDPaths :: Int -> String -> Map.Map String [String]
+decodeVCDPaths n vcd =
+  decodeWith n vcd [(scopeDots p nm, code) | (p, nm, code) <- declared vcd]
+ where
+  scopeDots p nm = foldr (\sc acc -> sc <> "." <> acc) nm p
+
+-- | Each @$var@ with the scopes around it (outermost first), name and code.
+declared :: String -> [([String], String, String)]
+declared = go [] . map words . lines
+ where
+  go st (["$scope", "module", sc, "$end"] : rest) = go (st <> [sc]) rest
+  go st (["$upscope", "$end"] : rest) = go (take (length st - 1) st) rest
+  go st (["$var", "wire", _w, code, nm, "$end"] : rest) = (st, nm, code) : go st rest
+  go st (_ : rest) = go st rest
+  go _ [] = []
+
+decodeWith :: Int -> String -> [(String, String)] -> Map.Map String [String]
+decodeWith n vcd vars = Map.fromList [(nm, waveFor code) | (nm, code) <- vars]
  where
   ls = lines vcd
-  vars =
-    [ (nm, code)
-    | l <- ls
-    , ["$var", "wire", _w, code, nm, "$end"] <- [words l]
-    ]
   events = go (0 :: Int) ls
   go t (l : rest) = case l of
     '#' : num -> go (read num) rest
