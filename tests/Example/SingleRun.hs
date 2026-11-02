@@ -87,46 +87,37 @@ design = top clockGen resetGen stimulus
 
 -- | Where the always-capture example writes; "Test.ExampleOutput" reads it.
 singleRunVcd :: FilePath
-singleRunVcd = waveformPath "example-single-run"
+singleRunVcd = "waveforms/example-single-run.vcd"
 
 tests :: TestTree
 tests =
   testGroup
     "Example.SingleRun"
-    [ -- 'withWaveformSlot' brackets the test with its slot and writes
-      -- whatever was captured -- even if the test throws, so a failing test
-      -- still leaves the waveform that shows why.
-      testCase "a bracketed test always leaves its waveform" $ do
-        out <- withWaveformSlot "example-single-run" $ \wf ->
-          withWaveform wf 32 design
+    [ -- 'writeWaveform' simulates, writes the waveform, and returns the
+      -- samples: dumpVCD's arguments, plus a name for the file.
+      testCase "writeWaveform always leaves its waveform" $ do
+        out <- writeWaveform "example-single-run" 32 design
         P.length out @?= 32
         wrote <- doesFileExist singleRunVcd
-        assertBool "the waveform was written when the bracket closed" wrote
-    , -- Capture only what will be kept. This is what makes a big suite
-      -- affordable: a run nobody keeps never enters a recording context.
-      -- Nothing is recorded, rendered or written while the test passes.
-      testCase "on-failure capture costs a passing test nothing" $ do
-        passing <- newWaveformSlot "example-on-failure-passing"
-        withWaveformOnFailure passing 32 design $ \out ->
+        assertBool "the waveform was written" wrote
+    , -- A test records only when it fails. A passing test never enters a
+      -- recording context: nothing is recorded, rendered or written.
+      testCase "withWaveform costs a passing test nothing" $ do
+        withWaveform "example-on-failure-passing" 32 design $ \out ->
           P.length out @?= 32
-        wrote <- doesFileExist (waveformSlotPath passing)
+        wrote <- doesFileExist "waveforms/example-on-failure-passing.vcd"
         assertBool "a passing test writes no waveform at all" (P.not wrote)
-    , -- If the consumer throws, the simulation is re-run WITH recording and
-      -- that run's waveform is written before the original exception is
-      -- rethrown. Because it re-runs, the consumer must be re-runnable:
-      -- assertions and forcing, not one-shot IO. Where a re-run may not
-      -- reproduce (a CPU model that resolves undefined inputs randomly), use
-      -- withWaveformOnFailure' instead, which records as it goes and still
-      -- renders only on failure.
+    , -- If the check throws, the simulation runs again WITH recording and its
+      -- waveform is written before the check's exception is rethrown. The
+      -- check therefore runs twice: assertions and forcing, not one-shot IO.
       testCase "a failing test leaves the waveform that shows why" $ do
-        failing <- newWaveformSlot "example-on-failure-failing"
         outcome <-
           try @SomeException $
-            withWaveformOnFailure failing 32 design $ \out ->
+            withWaveform "example-on-failure-failing" 32 design $ \out ->
               P.length out @?= 99 -- fails on purpose
         assertBool
           "the original failure still propagates"
           (P.either (P.const True) (P.const False) outcome)
-        wrote <- doesFileExist (waveformSlotPath failing)
+        wrote <- doesFileExist "waveforms/example-on-failure-failing.vcd"
         assertBool "the failing run's waveform was written" wrote
     ]

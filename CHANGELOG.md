@@ -185,8 +185,8 @@ Initial version.
   `dumpVCDSW` renders each signal's description on its own, so one that
   fails (`clash-shockwaves` calls `error` for a `Waveform` instance whose
   width differs from `BitSize`) is left out of the sidecar and reported on
-  stderr; the VCD, every other description, and under
-  `withWaveformOnFailure` the test's own failure all survive it.
+  stderr; the VCD, every other description, and under `withWaveform` the
+  test's own failure all survive it.
 * Describing is decided separately from recording (`CanDescribe`/
   `Describable` beside `CanTrace`/`CanProbe`), so a payload `Waveform`
   cannot describe is still traced or probed, as raw bits, exactly as before.
@@ -423,41 +423,28 @@ Initial version.
   `FOURMOLU_DISABLE`); `packMaskValue` uses `unsafeDupablePerformIO` (the
   guard is pure, so duplicate-suppression bought nothing per sample); the
   tree is `-Wall -Wcompat`-clean on GHC 9.6.7 and 9.10.3.
-* Waveforms from a test suite: `Clash.CircuitContext.Waveform` ships the
-  lifecycle every instrumented project otherwise re-derives — a `WaveformSlot`
-  owning one test's pending waveform, `withWaveform`/`withWaveformLazy` by who
-  decides how far to simulate, and atomic writes. Deliberately not a global
-  registry, which can only be drained once every test has finished and so must
-  retain every rendered VCD until then (measured: 26 GB resident across a
-  suite).
-* Captures take the design as the `Signal` to observe plus a cycle count and
-  sample it themselves, so a test no longer writes `sampleN n` beside the `n`
-  it already passed: `withWaveform wf 32 (top clk rst inp)`. Consumers get the
-  samples as a lazy list of at most `n` cycles, so a lazy capture's `n` is
-  only an upper bound. A simulation that is not one `Signal` (several clock
-  domains, a protocol circuit) uses the `…Sim` variants, which take the
-  simulation result plus an explicit capture window.
-* Capture only what will be kept. `withWaveformWhen` (and
-  `waveformsRequested`, reading `CCC_WAVEFORMS`) decide BEFORE simulating: a
-  run that will not be kept executes under `noCircuitContext`, where nothing
-  registers, accumulates, renders or is written. `withWaveformOnFailure` runs
-  with recording off and re-runs only if the consumer throws;
-  `withWaveformOnFailure'` records as it goes for a design whose re-run may
-  not reproduce, and still renders only on failure. Under a parallel runner
-  peak memory is the sum over concurrent tests, so this is the dominant cost:
-  measured on a 24-core suite, 25.2 GB and 6m22s became 8.2 GB and 1m06s,
-  with no waveform at all on a green run. When the test passes, both
-  on-failure captures delete the files of the slot, so a waveform from an
-  earlier failing run does not stay behind and look current.
-* `Clash.CircuitContext.Waveform.Hedgehog` for properties. A hedgehog failure
-  is a value in `PropertyT`'s error layer, not a thrown exception, so no `try`
-  in IO can observe one — a property would fail, print a counterexample and
-  leave no waveform. `withWaveformCase` runs the property monad itself, re-runs
-  the failing case with recording on, and re-raises the failure unchanged, so
-  what survives is the waveform of the SHRUNK counterexample (each failing
-  case overwrites the slot as hedgehog shrinks). `recordThisCase` /
-  `recordCaseOfSize` / `recordLargestCase` choose which passing case to keep,
-  deciding inside a generator — the only place hedgehog exposes `Size`.
+* Waveforms from IO and from a test suite: `Clash.CircuitContext.Waveform`
+  writes the pair of files atomically, and takes what `dumpVCD` takes, the
+  `Signal` to observe and a number of samples. `writeWaveform name n sig`
+  simulates, writes `waveforms/<name>.vcd` and returns the samples.
+  `withWaveform name n sig check` records only what will be kept: it runs
+  the simulation without recording, and only when the check throws runs it
+  again with recording, writes the waveform and rethrows. When the check
+  passes it deletes a waveform an earlier failing run left. The check gets
+  the samples lazily, so the waveform has the cycles it evaluated.
+  `CCC_WAVEFORMS=1` records every test's first run and keeps it. Under a
+  parallel runner peak memory is the sum over concurrent tests, so not
+  recording passing runs is the dominant saving: measured on a 24-core suite,
+  25.2 GB and 6m22s became 8.2 GB and 1m06s. Nothing keeps a rendered
+  waveform after its run (a process-global registry once held 26 GB).
+* `Clash.CircuitContext.Waveform.Hedgehog` for properties:
+  `simulateWaveform capture name n sig` inside a property. Every case
+  simulates without recording, and leaves a footnote that records that case
+  when Hedgehog PRINTS it. Hedgehog prints footnotes only for the case it
+  reports, so the waveform is of the shrunk counterexample, recorded once,
+  and the report ends with its path. `AtSize s` additionally keeps the first
+  passing case of at least size `s`, once per waveform name. The test suite
+  pins the Hedgehog behaviour this relies on.
 * `withCircuitContextWindowE` returns what was recorded even when the action
   threw (the plain version reads the recorder refs after the action, so an
   exception escaped with the recording); `withCircuitContextWindowM` runs the
