@@ -217,13 +217,19 @@ data CircuitContext = CircuitContext
   {- ^ Per-simulation instance-ordinal registry; 'Nothing' disables
   instance tagging (fine while nothing is recorded)
   -}
+  , ccFields :: [Int]
+  {- ^ The position of the record field being traced, outermost first:
+  @[1, 0]@ is field 0 of field 1. The leaves of one record trace share its
+  call site, so this is what puts them in DECLARATION order in the VCD (see
+  'fieldLoc'). Empty outside a record trace.
+  -}
   }
 
 type HasCircuitContext = ?circuitContext :: CircuitContext
 
 -- | Tracing and probing disabled; hierarchy still works.
 noCircuitContext :: CircuitContext
-noCircuitContext = CircuitContext [] Nothing Nothing
+noCircuitContext = CircuitContext [] Nothing Nothing []
 
 {- | Run an instrumented ('HasCircuitContext'-constrained) computation with a
 disabled context, /without/ the caller having to acquire the constraint itself.
@@ -340,6 +346,14 @@ callLoc cs = case dropWhile skipped (getCallStack cs) of
   fileHash :: String -> Word
   fileHash = List.foldl' (\h c -> h * 31 + fromIntegral (fromEnum c)) 5381
 
+{- | A call site with the position of a record field added, as @P\<i\>@ per
+level (see 'ccFields'). A call site without a location stays empty.
+-}
+fieldLoc :: [Int] -> String -> String
+fieldLoc fields loc
+  | null loc = loc
+  | otherwise = loc <> concatMap (\i -> 'P' : show i) fields
+
 {- | Run a simulation action under a fresh recording context, and return
 what the action returned (or threw) with the 'Recording'. The recording's
 values go to a spill file at this path while the simulation runs, so the
@@ -378,7 +392,7 @@ withRecordingFrom start path k = do
   ords <- newIORef emptyOrdinals
   r <-
     try
-      ( let ?circuitContext = CircuitContext [] (Just (Live rec taps)) (Just ords)
+      ( let ?circuitContext = CircuitContext [] (Just (Live rec taps)) (Just ords) []
          in k
       )
   case r of
@@ -594,7 +608,7 @@ simTraceSignalC adt nm sig = case (ccRecorder ctx, ccOrdinals ctx) of
   _ -> sig
  where
   ctx = ?circuitContext
-  loc = callLoc callStack
+  loc = fieldLoc (ccFields ctx) (callLoc callStack)
   period :: Int
   period = case knownDomain @dom of
     SDomainConfiguration{sPeriod} -> snatToNum sPeriod

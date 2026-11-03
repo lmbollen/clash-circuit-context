@@ -22,6 +22,8 @@ dist-hackage/
 dist-nix/
 /manual-instrumentation.json
 /auto-instrumentation.json
+/auto-instrumentation-fo.vcd
+/auto-instrumentation-fo.json
 *.spill
 
 # Nix build results (nix build)

@@ -7,6 +7,7 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
+{-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE RankNTypes #-}
@@ -133,6 +134,7 @@ import System.Mem.StableName (StableName)
 import System.Mem.Weak (Weak)
 
 import Clash.CircuitContext.Core (
+  CircuitContext (ccFields),
   HasCircuitContext,
   HasProbe,
   probe,
@@ -418,8 +420,11 @@ the cause.
 -}
 instance (Selector s, AutoTrace (CanTrace c) c) => GTraceable (M1 S s (K1 r c)) where
   gtraceNamed nm i m@(M1 (K1 c)) =
-    (i + 1, M1 (K1 (autoTraceAt @(CanTrace c) fieldName c)))
+    (i + 1, M1 (K1 (let ?circuitContext = inField in autoTraceAt @(CanTrace c) fieldName c)))
    where
+    -- The position of the field, so that the VCD lists the fields in
+    -- declaration order: they all share the call site of the record trace.
+    inField = ?circuitContext{ccFields = ccFields ?circuitContext <> [i]}
     -- '_', never '.': a dot is the COMPONENT separator, and the VCD renderer
     -- turns every dotted segment into a '$scope'. Qualifying a field with one
     -- would claim the value is a design hierarchy level, which it is not — a
