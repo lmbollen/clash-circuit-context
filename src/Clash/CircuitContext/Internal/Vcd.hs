@@ -25,7 +25,7 @@ module Clash.CircuitContext.Internal.Vcd (
   renderVCD,
 ) where
 
-import Data.Bits (testBit)
+import Data.Bits (shiftR, testBit)
 import Data.Char (isDigit, ord)
 import Data.List (foldl', intercalate, sortOn)
 import qualified Data.Map.Strict as Map
@@ -33,6 +33,9 @@ import Data.Maybe (fromMaybe, isNothing)
 import Data.Ord (Down (..))
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
+import Data.Word (Word64, Word8)
+import Foreign.Marshal.Utils (fillBytes)
+import Foreign.Storable (pokeByteOff)
 import System.Directory (createDirectoryIfMissing, removeFile, renameFile)
 import System.FilePath (takeDirectory, takeFileName, (-<.>), (<.>))
 import System.IO (
@@ -45,7 +48,9 @@ import System.IO (
  )
 
 import qualified Data.Aeson as Json
+import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Internal as ByteString (unsafeCreate)
 import qualified Data.ByteString.Lazy as ByteStringLazy
 
 import Clash.CircuitContext.Internal.Sidecar (sidecar)
@@ -218,21 +223,31 @@ renderVCD spill comment (start, stop0) rec out
 -- | One value line: @0!@ for one bit, @b0x1 !@ for more.
 valueLine :: RecordedSignal -> String -> Maybe Value -> Builder.Builder
 valueLine s l mv = case signalWidth s of
-  1 -> Builder.char7 (digit 0) <> Builder.string7 l <> "\n"
-  w ->
-    "b"
-      <> foldMap (Builder.char7 . digit) [w - 1, w - 2 .. 0]
-      <> " "
-      <> Builder.string7 l
-      <> "\n"
+  1 -> Builder.byteString (bits 1 mv) <> Builder.string7 l <> "\n"
+  w -> "b" <> Builder.byteString (bits w mv) <> " " <> Builder.string7 l <> "\n"
+
+{- | A value's bits, most significant first: 0/1 defined, @x@ evaluated but
+undefined, @z@ not evaluated. Filled 64 bits at a time from machine words:
+this is most of the work of writing a VCD.
+-}
+bits :: Int -> Maybe Value -> ByteString.ByteString
+bits w mv = ByteString.unsafeCreate w $ \p -> case mv of
+  Nothing -> fillBytes p (c2w 'z') w
+  Just (mask, val) -> mapM_ (word p mask val) [0 .. (w - 1) `div` 64]
  where
-  -- Per bit: 0/1 defined, @x@ evaluated but undefined, @z@ not evaluated.
-  digit d = case mv of
-    Nothing -> 'z'
-    Just (mask, val) -> case (testBit mask d, testBit val d) of
-      (False, False) -> '0'
-      (False, True) -> '1'
-      (True, _) -> 'x'
+  word p mask val k = do
+    let
+      m = fromIntegral (mask `shiftR` (64 * k)) :: Word64
+      v = fromIntegral (val `shiftR` (64 * k)) :: Word64
+      digit d
+        | testBit m d = c2w 'x'
+        | testBit v d = c2w '1'
+        | otherwise = c2w '0'
+    mapM_
+      (\d -> pokeByteOff p (w - 1 - (64 * k + d)) (digit d))
+      [0 .. min 63 (w - 1 - 64 * k)]
+  c2w :: Char -> Word8
+  c2w = fromIntegral . ord
 
 -- | Identifier codes, as stock @dumpVCD@ makes them: @!@ to @~@, then @!!@, @!"@, …
 labels :: [String]
