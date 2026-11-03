@@ -418,9 +418,14 @@ unconditional recording from 25.2 GB and 6m22s to **8.2 GB and 1m06s**.
 A recording does not keep its history in memory: each signal's value changes
 go to a spill file next to the waveform, `waveforms/<name>.spill`, while the
 simulation runs, and the VCD is written from there, straight to disk. The
-spill file is deleted when the waveform is written. A long run needs about the
-same memory as a short one; it needs disk space instead, roughly the size of
-the VCD.
+spill file is deleted when the waveform is written. The recorded history costs
+disk space, roughly the size of the VCD, instead of memory.
+
+A recorded run still needs memory that grows with its length, though: while it
+runs, the trace taps keep raw design values alive
+([#38](https://github.com/lmbollen/clash-circuit-context/issues/38)). On a CPU
+design, 237,000 recorded cycles took the maximum residency from 3.4 GB, with
+the history in memory, to 1.05 GB: lower, but not constant.
 
 ### Hedgehog properties
 

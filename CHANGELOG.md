@@ -330,7 +330,7 @@ Initial version.
   so raw history is released immediately; probes append strictly to their run
   history. Same 100 k-cycle capture after: 295 MB live — below the
   simulation's own no-recording footprint.
-* Recording no longer keeps a history in memory at all. Every recorded
+* Recording no longer keeps the recorded history in memory. Every recorded
   signal appends its value CHANGES to a spill file next to the waveform
   (`waveforms/<name>.spill`) while the simulation runs, in 16 KiB chunks per
   signal, and the VCD is written by reading the changes back and merging
@@ -340,7 +340,10 @@ Initial version.
   (goldens unchanged); a signal of a slower domain now changes at its own
   clock edges, where stock `dumpVCD` shifts its values. Signals with the
   same history are found by a hash of their changes, confirmed by comparing
-  them, so a collision cannot merge two signals.
+  them, so a collision cannot merge two signals. Memory still grows with the
+  length of a recorded run, because the trace taps keep raw design values
+  alive while it runs (#38): on a CPU design the maximum residency went from
+  3.4 GB to 1.05 GB, not to a constant.
 * New probe combinators for the two Clash idioms `mealyProbed` could not reach:
   `mealyBProbed`/`mooreBProbed` (bundled-I/O mealy/moore — the `mealyB`/`mooreB`
   form, the most common in real designs) and `probeFmap`, an `fmap` that binds a
