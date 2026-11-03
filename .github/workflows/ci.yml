@@ -99,6 +99,28 @@ jobs:
       - name: Build and run checks
         run: ./check.sh --project-file=${{ matrix.project }}
 
+  # The flake, as clash-protocols and clash-cores check theirs: the package
+  # (which runs the test suites) and the development shell. One GHC only, the
+  # flake's default: the cabal jobs above cover all four, and a Nix store for
+  # each GHC would not fit in the cache next to theirs. The public clash-lang
+  # cache has no clash-prelude for the pinned commit, so the first run builds
+  # it; the store is cached for the runs after.
+  nix:
+    name: Nix package and shell (ghc9124)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702  # v31.11.2
+      - uses: nix-community/cache-nix-action@7df957e333c1e5da7721f60227dbba6d06080569  # v7
+        with:
+          primary-key: nix-${{ runner.os }}-ghc9124-${{ hashFiles('flake.lock', '*.cabal') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-ghc9124-
+      - name: Build the package and run its test suites
+        # The -L flag outputs build logs to stderr
+        run: nix build -L .#ghc9124.clash-circuit-context
+      - name: Build the development shell
+        run: nix develop --command cabal --version
+
   changelog:
     name: Check changelog entries
     if: github.event_name == 'pull_request'
@@ -107,10 +129,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
         with:
           fetch-depth: 0
-      - uses: cachix/install-nix-action@v25
+      - uses: cachix/install-nix-action@448cde739abec1eaf0646249e3d25bb8d9bc7702  # v31.11.2
       # The entries a pull request adds or changes; `-t` also checks that the
-      # issues and PRs they link to exist. The qlog revision is the one
-      # changelog/README.md names.
+      # issues and PRs they link to exist. qlog is the one the flake pins.
       - name: Check added and changed entries
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -118,5 +139,5 @@ jobs:
           git diff --name-only --diff-filter=d "origin/${{ github.base_ref }}...HEAD" -- changelog/entries \
             | grep '\.md$' > changed-entries.txt || true
           while read -r entry; do
-            nix run github:QBayLogic/qlog/3bea2429e555e969984fbf897216cee74df2f73d -- check -t "$entry"
+            nix run .#qlog -- check -t "$entry"
           done < changed-entries.txt
