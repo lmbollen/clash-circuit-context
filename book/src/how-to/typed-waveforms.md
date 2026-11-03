@@ -44,7 +44,10 @@ a signal as its type: `Busy 2`, not `0b0110`.
 2. Write the waveform with a function of `Clash.CircuitContext.Waveform`, as
    in [How to keep waveforms from a test suite](test-suite.md). Beside each
    `.vcd` file, it writes a `.json` file: the sidecar. The sidecar describes
-   each signal whose payload type has a `Waveform` instance.
+   each signal that the plugin records and whose payload type has a
+   `Waveform` instance. A value that you record by hand with `traceSignalC`
+   or `probe` is recorded as bits. Use `traceSignalSW` or `probeSW` to have
+   it described.
 
    ```haskell,clash group=typed
    record :: IO ()

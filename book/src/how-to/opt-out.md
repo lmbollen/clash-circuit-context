@@ -51,6 +51,9 @@ Call it under `withoutCircuitContext`:
 topEntity clk rst = withoutCircuitContext (myInstrumentedCircuit clk rst)
 ```
 
-The call then records nothing, in simulation and in HDL. This is also how a
-top entity calls an instrumented design: see [How to generate HDL from an
+The call then records nothing, in simulation and in HDL: no scope and no
+signal under it. A binding that holds the result of the call is in the
+function that makes the call, so it is still recorded there, as each other
+binding of that function. This is also how a top entity calls an
+instrumented design: see [How to generate HDL from an
 instrumented design](hdl.md).

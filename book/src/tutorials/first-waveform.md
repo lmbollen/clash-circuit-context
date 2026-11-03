@@ -4,17 +4,72 @@ In this tutorial, we make a small design with two counters, simulate it, and
 write its waveform to a VCD file. At the end, the VCD has one scope for each
 counter, and each scope holds the signals of that counter.
 
-You need a Clash project that can use clash-circuit-context. If you do not
-have one, follow [How to add clash-circuit-context to a
-project](../how-to/add-to-project.md) first, and then come back here.
+You need GHC and Cabal, in a version from
+[Requirements](../reference/requirements.md).
+
+## Make the project
+
+Make a directory `counters`, with these two files.
+
+`cabal.project`: the package is not on Hackage, so take it from Git. For
+`<commit>`, use a commit of its main branch. The second package is the
+clash-prelude that the package is tested with. Copy its `tag` and the
+`index-state` from the [`cabal.project` of the
+package](https://github.com/lmbollen/clash-circuit-context/blob/main/cabal.project):
+
+```cabal
+packages: .
+
+source-repository-package
+  type: git
+  location: https://github.com/lmbollen/clash-circuit-context.git
+  tag: <commit>
+
+source-repository-package
+  type: git
+  location: https://github.com/clash-lang/clash-compiler.git
+  tag: e16599387a68d6361134b4fe7e63bf4ad3ae8408
+  subdir: clash-prelude
+
+index-state: 2026-09-23T00:00:00Z
+```
+
+`counters.cabal`: one library, with the plugin on for the whole package,
+and the language extensions that Clash code uses:
+
+```cabal
+cabal-version: 2.4
+name:          counters
+version:       0.1.0.0
+
+library
+  hs-source-dirs:     src
+  exposed-modules:    Counters
+  default-language:   Haskell2010
+  default-extensions:
+    BinaryLiterals
+    DataKinds
+    DeriveAnyClass
+    DeriveGeneric
+    FlexibleContexts
+    NoImplicitPrelude
+    NoStarIsType
+    ScopedTypeVariables
+    TypeApplications
+    TypeFamilies
+    TypeOperators
+  ghc-options:        -fplugin=Clash.CircuitContext.Plugin
+  build-depends:
+    base,
+    clash-prelude,
+    clash-circuit-context,
+```
 
 ## Write the design
 
 Make the file `src/Counters.hs`, with this content:
 
 ```haskell,clash group=tutorial
-{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
-
 module Counters where
 
 import Clash.Explicit.Prelude
@@ -60,20 +115,30 @@ declarations path = do
   mapM_ putStrLn (P.takeWhile (not . ("$enddefinitions" `isPrefixOf`)) fromScopes)
 ```
 
-Now load the module in a Clash session (`cabal repl`, or `clashi`), and run
-the simulation:
+`writeWaveform "counters" (0, 8)` simulates 8 cycles of the design, writes
+the waveform of the cycles 0 to 7, and returns the 8 output values.
+
+`top` needs `HasCircuitContext`, but `runCounters` does not have that
+constraint. `writeWaveform` supplies the context: its design argument has
+the type `(HasCircuitContext) => Signal dom a`. This is where the hierarchy
+starts.
+
+Now start a session with `cabal repl`, and run the simulation:
 
 ```haskell,clash group=tutorial
 >>> runCounters
 [0,0,1,2,3,4,5,6]
 ```
 
-The output of `top` is the sum of the two counters. The reset holds both
-counters at 0 in the first cycle. After that, one of them counts in each
-cycle, so the sum goes up by one in each cycle.
+The output of `top` is the sum of the two counters. The output is 0 in the
+first two cycles: cycle 0 shows the initial value of each register, and
+cycle 1 shows the reset value, because the reset is active in cycle 0. From
+cycle 2, one of the counters counts in each cycle, so the sum goes up by one
+in each cycle.
 
 The simulation also wrote the file `waveforms/counters.vcd`, and a file
-`waveforms/counters.json` beside it. Look at what the VCD declares:
+`waveforms/counters.json` beside it. The directory `waveforms` is in the
+working directory of the session. Look at what the VCD declares:
 
 ```haskell,clash group=tutorial
 >>> declarations "waveforms/counters.vcd"
@@ -97,19 +162,26 @@ Notice three things:
   name of the binding. The signals of a scope come in the order of their
   bindings in the source.
 - The two calls of `counter` are two scopes, `counter_0` and `counter_1`.
+  The numbers come from the order in which the simulation first reaches
+  each call (see [About the design
+  hierarchy](../explanation/hierarchy.md#how-instances-are-named)).
 
 ## Look at the waveform
 
 Open `waveforms/counters.vcd` in a waveform viewer, for example
 [Surfer](https://surfer-project.org/) or GTKWave. Expand `top`, then
-`counter_0` and `counter_1`. The `count` of `counter_0` goes up in the high
-cycles of the input. The `count` of `counter_1` goes up in the low cycles.
+`counter_0` and `counter_1`. The `count` of one counter goes up in the high
+cycles of the input. The `count` of the other goes up in the low cycles.
 
 ## What you made
 
 You made a design with two components, and you recorded all its named
-signals without a call to a trace function. The plugin did the work, and
-`writeWaveform` simulated the design and wrote the file.
+signals without a call to a trace function. The plugin did the work: it
+wrapped the body of each function in a `component`, and each named binding
+in a trace. [What the plugin does to your
+code](../introduction.md#what-the-plugin-does-to-your-code) shows the
+rewrite. `writeWaveform` supplied the context, simulated the design, and
+wrote the file.
 
 Next, read [How to keep waveforms from a test suite](../how-to/test-suite.md)
 to record waveforms from tests, or [About the design
