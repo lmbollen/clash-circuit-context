@@ -40,6 +40,19 @@ source-repository-package
   subdir: clash-prelude
 ```
 
+With Nix, take the overlay of the flake. It is built on the Clash package set
+of [clash-compiler](https://github.com/clash-lang/clash-compiler)'s flake,
+with one overlay for each GHC that clash-compiler supports, as in
+clash-protocols and clash-cores:
+
+```nix
+inputs.clash-circuit-context.url = "github:lmbollen/clash-circuit-context";
+
+# For one GHC, e.g. ghc9124:
+hs-pkgs = pkgs."clashPackages-ghc9124".extend
+  clash-circuit-context.overlays.${system}.ghc9124;
+```
+
 In the `.cabal` file of the package whose designs you want traced:
 
 ```cabal
@@ -612,6 +625,25 @@ actually collects a waveform.
 ```
 ./check.sh                       # default GHC
 ./check.sh -w ghc-9.10.3         # or any other GHC ≥ 9.6
+```
+
+With Nix, the flake has a development shell for each supported GHC, with
+`cabal`, `fourmolu` and `qlog` (for the changelog, see
+[changelog/README.md](changelog/README.md)). The `-full` shells also have
+the Haskell language server:
+
+```
+nix develop                      # GHC 9.12.4, without HLS
+nix develop .#ghc9103-full       # GHC 9.10.3, with HLS
+nix build .#ghc967.clash-circuit-context   # build and run the test suites
+```
+
+The flake pins the same clash-compiler commit as `cabal.project`. Inside the
+shell, give cabal `cabal.project.nix`, which leaves that pin out, so cabal
+uses the shell's dependencies instead of building clash-prelude again:
+
+```
+nix develop --command ./check.sh --project-file=cabal.project.nix --builddir=dist-nix
 ```
 
 `check.sh` builds everything and runs six suites — `manual-instrumentation`

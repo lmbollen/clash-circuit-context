@@ -1,12 +1,7 @@
 The changelog is managed using [qlog](https://github.com/QBayLogic/qlog/).
-Run it with Nix, at the revision CI uses:
-
-```sh
-nix run github:QBayLogic/qlog/3bea2429e555e969984fbf897216cee74df2f73d -- entry
-```
-
-or install it as the `qlog` README describes. Later revisions of its flake
-miss the `colorama` dependency, which is why the revision is pinned.
+It is part of the Nix development shell, so `nix develop` provides it without
+any installation. Without the shell, `nix run .#qlog -- entry` runs the same
+revision. See the `qlog` README for how to install it otherwise.
 
 Each pull request that changes what users see adds an entry to
 `changelog/entries`, for example with:

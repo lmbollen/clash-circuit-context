@@ -17,10 +17,11 @@ The version is set in `clash-circuit-context.cabal` only.
    qlog clean -D
    ```
    Read the new section of `CHANGELOG.md`, and edit it where needed.
-   (`qlog` is run as `changelog/README.md` describes.)
+   Run these in the development shell (`nix develop`), which has `qlog`.
 4. Check that the package is complete and that its documentation builds:
    ```sh
    cabal check
+   nix build .#ghc9124.clash-circuit-context
    cabal sdist
    cabal haddock --haddock-for-hackage
    ```

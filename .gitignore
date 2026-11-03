@@ -19,6 +19,10 @@ cabal.project.local*
 /deps/
 /waveforms/
 dist-hackage/
+dist-nix/
 /manual-instrumentation.json
 /auto-instrumentation.json
 *.spill
+
+# Nix build results (nix build)
+/result*
