@@ -66,14 +66,13 @@ slave a = mux (ack port) 0 (addr (req port))
 
 >>> printWaveform 3 (slave (fromList [1, 4, 5]))
 slave
-  port_ack
   port_req_addr
   port_req_strobe
+  port_ack
 ```
 
-The fields of one binding all have the position of that binding in the
-source, so they come in the order of their names, not in the order of the
-declaration.
+The fields come in the order of their declaration, also inside a nested
+record.
 
 ## Notes
 
