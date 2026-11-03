@@ -51,15 +51,21 @@ kind recorded each test of a suite at the same time, and the memory of the
 whole suite became the problem. To record nothing, build without the
 plugin.
 
-## Why a recording does not grow without limit
+## Where a recording keeps its history
 
 A recorder packs the value of each cycle into bits as the simulation makes
-it, and writes only the changes, as a VCD does. It does not keep the values
-of the design, and it does not keep the bits in memory: the changes of each
-signal go to the spill file in small blocks. So a recording needs about the
-same memory for a long simulation as for a short one. The VCD is written by
-a merge of the changes of all signals by time, straight to the file, so the
+it, and writes only the changes, as a VCD does. It does not keep the bits in
+memory: the changes of each signal go to the spill file in small blocks. So
+the recorded history is on the disk, not in memory. The VCD is written by a
+merge of the changes of all signals by time, straight to the file, so the
 text of the VCD is never in memory either.
+
+This does not yet make the memory of a recording constant. While the
+simulation runs, the recorders of traced signals keep values of the design
+alive, so the memory of a recorded simulation still grows with its length
+(issue [#38](https://github.com/lmbollen/clash-circuit-context/issues/38)).
+On the firmware test of one CPU design, 237,000 recorded cycles took the
+maximum residency from 3.4 GB, with the history in memory, to 1.05 GB.
 
 Signals with the same history share one identifier in the VCD. The same
 wire often has a name at each level of the hierarchy that it passes, and

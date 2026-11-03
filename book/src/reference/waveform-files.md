@@ -22,9 +22,11 @@ the message gives the absolute path.
 ## How the files are written
 
 - The values of each recorded signal go to the spill file while the
-  simulation runs. The VCD is written from the spill file, so a long
-  simulation needs about as much memory as a short one. It needs disk space
-  instead, about the size of the VCD.
+  simulation runs. The VCD is written from the spill file. The recorded
+  history needs disk space, about the size of the VCD, not memory.
+- The memory of a recorded simulation still grows with its length. See
+  [About the cost of
+  recording](../explanation/cost.md#where-a-recording-keeps-its-history).
 - Each file is written to a temporary file first, and then renamed.
 - The sidecar is renamed first. If a `.vcd` file exists, its `.json` file is
   complete. A crash between the two renames can leave a new `.json` file
