@@ -82,10 +82,10 @@ file: for a binding that the plugin records, the position of the binding.
   caller in the file, its signals come first, wherever the call is. If the
   helper is in another file, its signals are in a group of their own,
   before or after the signals of the caller.
-- The elements of a `Vec` and the fields of a record have the position of
-  their binding, so they come in the order of their names, with numbers
-  compared as numbers: `outs_2` before `outs_10`, `bus_addr` before
-  `bus_strobe`.
+- The fields of a record have the position of their binding, and then come
+  in the order of their declaration, also inside a nested record.
+- The elements of a `Vec` have the position of their binding, and come in
+  the order of their index: `outs_2` before `outs_10`.
 - Signals without a position come last, by name.
 
 ### The window
