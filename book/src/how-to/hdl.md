@@ -27,30 +27,82 @@ topEntity :: Clock System -> Reset System -> Signal System Bool -> Signal System
 topEntity clk rst enable = withoutCircuitContext (counter clk rst enable)
 ```
 
-When the book is built, Clash generates Verilog for this `topEntity`. You do
-not need anything else. The instrumentation adds no registers and no logic to
-the HDL:
+The top entity itself has no `HasCircuitContext`, so Clash can use it. When
+the book is built, Clash generates Verilog for this `topEntity`. The
+instrumentation adds no registers and no logic to the HDL:
 
 - Each recording function (`component`, the traces and the probes) is the
-  identity in HDL.
+  identity in HDL. `withoutCircuitContext` is also the identity, and
+  `imapComponents` is an ordinary `imap`.
 - `mealyProbed` is an ordinary `mealy`. The cycle counter that it uses in
   simulation is not in the HDL.
+- Each `OPAQUE` function is a module of its own in the HDL, so the
+  components of the waveform are also the modules of the HDL.
 
 For the reason, see [About the cost of recording](../explanation/cost.md).
 
-## Run `clash` on a source file
+## Get a `clash` executable
 
-If you give a source file to the `clash` executable, for example
-`clash Design.hs --verilog`, Clash does not load a plugin that only an
-`OPTIONS_GHC` pragma names. Give the plugin on the command line:
+The `clash` executable comes from the package `clash-ghc`. It must be built
+from the same commit as your clash-prelude. If you pin clash-prelude as in
+[How to add clash-circuit-context to a project](add-to-project.md), add
+`clash-lib` and `clash-ghc` to the `subdir` of that pin:
 
-```text
-clash Design.hs --verilog -fplugin=Clash.CircuitContext.Plugin
+```cabal
+source-repository-package
+  type: git
+  location: https://github.com/clash-lang/clash-compiler.git
+  tag: e16599387a68d6361134b4fe7e63bf4ad3ae8408
+  subdir:
+    clash-prelude
+    clash-lib
+    clash-ghc
 ```
 
-If you do not, a design with an empty `Traceable` instance does not compile.
-A module that `clash` loads from a package that was built with the plugin is
-not affected. `clashi` loads the plugin from the pragma.
+Then build it, together with your package:
+
+```text
+cabal build clash-ghc:exe:clash <your-package>
+```
+
+The first build takes a long time.
+
+## Run `clash` on a module of your package
+
+This is the recommended way. Build your package with the plugin, as in
+[How to add clash-circuit-context to a
+project](add-to-project.md), and run `clash` in the environment of the
+project:
+
+```text
+cabal exec -- clash -package <your-package> <Module> --verilog
+```
+
+- `-package <your-package>` is necessary: `cabal exec` does not expose the
+  packages of the project itself.
+- Clash reads the code of a module of a package from its interface file.
+  Build the package with `-fexpose-all-unfoldings -fno-worker-wrapper` in
+  its `ghc-options`, as the Clash starter projects do.
+- The module was compiled with the plugin when the package was built, so
+  you do not give the plugin again.
+
+## Run `clash` on a source file
+
+If you give a source file to `clash`, for example
+`clash Design.hs --verilog`, Clash compiles it again. It does not read the
+`.cabal` file, and it does not load a plugin that only an `OPTIONS_GHC`
+pragma names. Give the plugin on the command line, and also the source
+directories, the language extensions and the other plugins of your package:
+
+```text
+cabal exec -- clash -isrc src/Design.hs --verilog -fplugin=Clash.CircuitContext.Plugin <extensions and plugins of the package>
+```
+
+If you do not give the plugin, a design with an empty `Traceable` instance
+does not compile. The error names `AutoTrace`, `CanTrace` and
+`$dmtraceNamed` (see [If the plugin is not
+on](add-to-project.md#if-the-plugin-is-not-on)). `clashi` loads the plugin
+from the pragma.
 
 ## Compare with the HDL of the design without instrumentation
 

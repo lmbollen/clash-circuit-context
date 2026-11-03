@@ -15,11 +15,17 @@ module Probe where
 
 import Clash.Explicit.Prelude
 import Clash.CircuitContext
-import Clash.Shockwaves.Waveform (Waveform)
 import BookSupport
 ```
 
+The type of the state derives `Waveform`, so that a viewer can show its
+constructors (see [How to show payload types in a waveform
+viewer](typed-waveforms.md)). `Waveform` is from the package
+clash-shockwaves: add it to `build-depends`.
+
 ```haskell,clash group=probe
+import Clash.Shockwaves.Waveform (Waveform)
+
 data Phase = Idle | Busy | Done
   deriving (Generic, NFDataX, BitPack, Waveform, Show, Eq)
 
@@ -40,7 +46,8 @@ control start = done
 
 The named value `phase'` of the step function is a probe. It is in the scope
 of the component that calls `mealyProbed`, beside the signals of that
-component:
+component. (`printWaveform` is a helper of this book: see [the
+introduction](../introduction.md#the-examples-are-checked).)
 
 ```haskell,clash group=probe
 >>> printWaveform 4 (control (fromList [True, False, False, False]))
@@ -49,13 +56,66 @@ control
   phase'
 ```
 
-## Variants
+The arguments of the step function (`phase`, `go`) are not probed. `phase'`
+is the new state, so it shows each state one cycle before the machine holds
+it.
 
-- For a Moore machine, use `mooreProbed`.
-- For a machine with a bundled input and output, use `mealyBProbed` or
-  `mooreBProbed`.
-- To probe a value without a name, apply `probe "<name>"` to it inside the
-  step function. `probe` needs `BitPack` of the value.
+## A Moore machine
+
+Use `mooreProbed`. It takes two functions: the transition function and the
+output function. Only the transition function has `HasProbe` and is probed.
+The output function is an ordinary function of the state.
+
+```haskell,clash group=probe
+blink :: (HasCircuitContext) => Signal System Bool -> Signal System Bool
+blink run = led
+ where
+  led = mooreProbed clockGen resetGen enableGen next (== 3) (0 :: Index 4) run
+
+  next :: (HasProbe) => Index 4 -> Bool -> Index 4
+  next n go = n'
+   where
+    n' = if go then satSucc SatWrap n else n
+{-# OPAQUE blink #-}
+
+>>> printWaveform 4 (blink (pure True))
+blink
+  led
+  n'
+```
+
+For a machine with a bundled input and output, use `mealyBProbed` or
+`mooreBProbed`. For the types, see [Modules](../reference/modules.md#probes).
+
+## Probe a value by hand
+
+To probe a value that has no name, or an argument of the step function,
+apply `probe "<name>"` to it inside the step function:
+
+```haskell,clash group=probe
+toggle :: (HasCircuitContext) => Signal System Bool -> Signal System Bool
+toggle press = on
+ where
+  on = mealyProbed clockGen resetGen enableGen step False press
+
+  step :: (HasProbe) => Bool -> Bool -> (Bool, Bool)
+  step s p = (if probe "pressed" p then not s else s, s)
+{-# OPAQUE toggle #-}
+
+>>> printWaveform 4 (toggle (fromList [False, True, False, True]))
+toggle
+  on
+  pressed
+```
+
+- `probe` needs `BitPack` and `NFDataX` of the value. It records the value
+  as bits only: the sidecar does not describe it, also when its type has a
+  `Waveform` instance.
+- To have the sidecar describe the value, use `probeSW`. It also needs
+  `Waveform` of the value.
+
+A probe that the plugin adds is described when the type has a `Waveform`
+instance, and is recorded as bits when it has not.
 
 ## What a probe can record
 

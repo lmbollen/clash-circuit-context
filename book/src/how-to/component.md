@@ -38,7 +38,10 @@ pair inp = both
 Each named local binding is a signal in the scope of its function. Two calls
 of the same function are two scopes, `lag_0` and `lag_1`. They are numbered
 in the order in which the simulation first reaches them (see [About the
-design hierarchy](../explanation/hierarchy.md#how-instances-are-named)):
+design hierarchy](../explanation/hierarchy.md#how-instances-are-named)).
+`printWaveform` is a helper of this book, not of the package: it prints the
+scopes and signals of the waveform (see [the
+introduction](../introduction.md#the-examples-are-checked)):
 
 ```haskell,clash group=component
 >>> printWaveform 4 (pair (pure 1))
@@ -66,6 +69,15 @@ Instances made by `fmap` or `map` over a vector all come from one call site,
 so they are numbered in the order in which the simulation reaches them. To
 name them by their position, use `imapComponents`. It makes element `i` of
 the vector a component with the name `<name>_<i>`:
+
+```haskell
+imapComponents ::
+  (HasCircuitContext, KnownNat n) =>
+  String -> ((HasCircuitContext) => Index n -> a -> b) -> Vec n a -> Vec n b
+```
+
+The elements can be of each type, not only signals. Here, each element is
+the signal of one lane:
 
 ```haskell,clash group=lanes hidden
 {-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}

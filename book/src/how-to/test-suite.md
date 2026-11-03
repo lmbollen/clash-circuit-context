@@ -14,13 +14,15 @@ The signal must be one `Signal`:
 - If the design has more outputs in one domain, combine them with `bundle`.
 - If the design is a `clash-protocols` circuit, make a signal of it with
   `toSignals`.
-- If the outputs are in more than one domain, see [Record a design with more
-  than one domain](#record-a-design-with-more-than-one-domain).
+- If the outputs are in more than one domain, see [How to record a design
+  with more than one domain](multi-domain.md).
 
 ## Always write the waveform
 
 Use `writeWaveform "<name>"`. It simulates the design, writes
 `waveforms/<name>.vcd` and `waveforms/<name>.json`, and returns the samples.
+It makes the directory `waveforms` in the working directory if necessary.
+For the types of the functions, see [Modules](../reference/modules.md#in-a-simulation).
 In a [tasty](https://hackage.haskell.org/package/tasty) suite with HUnit:
 
 ```haskell
@@ -40,6 +42,19 @@ recording](../explanation/cost.md)). In most runs, the waveform of a passing
 test is not useful. Use `withWaveform`, and give it the check of the test.
 It runs the simulation without recording. If the check throws an exception,
 it runs the simulation again with recording, and writes that waveform.
+
+A failed HUnit assertion, such as `@?=`, is an exception, so a check can be
+an ordinary assertion:
+
+```haskell
+case_accumulate :: Assertion
+case_accumulate =
+  withWaveform "accumulate" (0, 4) (accumulate (pure 1)) $ \out ->
+    out @?= [0, 0, 1, 2]
+```
+
+The examples below use a check that calls `error`, so that the book can
+show what happens:
 
 ```haskell,clash group=suite hidden
 {-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
@@ -116,6 +131,10 @@ Keep these rules in mind:
 - The check gets the samples lazily. The waveform has the cycles that the
   check evaluated. A check that stops at the first wrong value gives a
   waveform that ends at that value.
+- The path of the waveform is on stderr, not in the message of the failed
+  test. A test runner that redraws its progress line, such as tasty in a
+  terminal, can print that line in the middle of its own output. Look for
+  `clash-circuit-context: wrote`, or open `waveforms/<name>.vcd`.
 
 ## Show only some cycles
 
@@ -148,30 +167,16 @@ case_firmware =
     takeWhile (/= '\n') (decode bytes) @?= "RESULT: OK"
 ```
 
-## Record a design with more than one domain
-
-A `Signal` has one domain. For outputs in more than one domain, record the
-simulation with `Clash.CircuitContext.Recording`:
-
-```haskell
-main :: IO ()
-main = do
-  (result, rec) <- withRecording "waveforms/top.spill" $ do
-    let (a, b) = top clkA clkB
-    evaluate (deepseqX (sampleN 100 a, sampleN 50 b) ())
-  _ <- writeVCD (0, recordingEnd rec) rec "waveforms/top.vcd"
-  discardRecording rec
-  either throwIO pure result
-```
-
-The window of `writeVCD` is in units of the VCD timescale, not in cycles of
-one domain. For the timescale, see [Waveform files](../reference/waveform-files.md).
-
 ## Write no waveforms at all
 
-Build without the plugin. Then only the recorders that you wrote yourself
-record. For the plugin flags, see [How to add clash-circuit-context to a
-project](add-to-project.md).
+Use `withWaveform` for each test: it writes a waveform only when a test
+fails. To simulate an instrumented design without recording, call it under
+`withoutCircuitContext` and sample it as usual (see [How to leave a binding
+or a function out](opt-out.md#one-call-and-everything-under-it)).
+
+To build a project without the plugin is not a general solution. A design
+with an empty `Traceable` instance does not compile without it, and the
+recorders that you wrote yourself still record.
 
 For property tests, see [How to keep the waveform of a failing
 property](hedgehog.md). For the names and the place of the files, see

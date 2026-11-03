@@ -52,6 +52,13 @@ did not mark.
 ## Make tracing a requirement
 
 A warning never stops the build on its own. To make the build fail when one
-signal cannot be recorded, call `traceSignalC` for that signal. It takes
-`Traceable` as a real constraint, so a type that cannot be recorded is a type
-error.
+binding cannot be recorded, record it by hand:
+
+- `traceNamed "<name>" x`, the method of `Traceable`, for each type that
+  `Traceable` has: a signal, a record of signals, a vector, a tuple.
+- `traceSignalC "<name>" s` for a signal.
+
+Both take their requirements as real constraints, so a type that cannot be
+recorded is a type error. This is also how to find out what an
+`x-circuit-context-undecided` warning hides. For the types, see
+[Modules](../reference/modules.md#traces).

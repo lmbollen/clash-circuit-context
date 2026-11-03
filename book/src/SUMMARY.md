@@ -14,6 +14,7 @@
 - [How to trace a record of signals](how-to/trace-record.md)
 - [How to keep waveforms from a test suite](how-to/test-suite.md)
 - [How to keep the waveform of a failing property](how-to/hedgehog.md)
+- [How to record a design with more than one domain](how-to/multi-domain.md)
 - [How to show payload types in a waveform viewer](how-to/typed-waveforms.md)
 - [How to generate HDL from an instrumented design](how-to/hdl.md)
 - [How to control the warnings of the plugin](how-to/warnings.md)

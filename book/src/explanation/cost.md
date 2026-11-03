@@ -48,8 +48,8 @@ shrinking.
 
 There is no switch that turns recording on for all tests. A switch of that
 kind recorded each test of a suite at the same time, and the memory of the
-whole suite became the problem. To record nothing, build without the
-plugin.
+whole suite became the problem. To record nothing, simulate the design
+under `withoutCircuitContext`.
 
 ## Where a recording keeps its history
 
