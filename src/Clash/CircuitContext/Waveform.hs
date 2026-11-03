@@ -114,9 +114,10 @@ passes, a waveform left by an earlier failing run is deleted (one written by
   values at random can do that; simulate it with 'writeWaveform' instead, and
   check the samples it returns.
 
-To get the waveform of a test that passes, use 'writeWaveform'. To get no
-waveforms at all, build without the plugin: then only hand-written recorders
-record anything.
+To get the waveform of a test that passes, use 'writeWaveform'. To simulate
+without recording at all, sample the design under 'withoutCircuitContext'.
+(Building without the plugin is no substitute: an empty 'Traceable' instance
+needs the plugin, and hand-written recorders still record.)
 -}
 withWaveform ::
   forall dom a b.

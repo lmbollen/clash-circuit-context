@@ -27,7 +27,8 @@ module Clash.CircuitContext.Internal.Vcd (
 
 import Data.Bits (shiftR, testBit)
 import Data.Char (isDigit, ord)
-import Data.List (foldl', intercalate, sortOn)
+import Data.List (intercalate, sortOn)
+import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isNothing)
 import Data.Ord (Down (..))
@@ -42,9 +43,8 @@ import System.IO (
   BufferMode (BlockBuffering),
   Handle,
   hClose,
-  hSetBinaryMode,
   hSetBuffering,
-  openTempFile,
+  openBinaryTempFileWithDefaultPermissions,
  )
 
 import qualified Data.Aeson as Json
@@ -72,15 +72,16 @@ this path, and its typed-waveform sidecar beside it, with extension
 @.json@. Creates the directory.
 
 Both files go through a temporary file and a rename, and the SIDECAR LANDS
-FIRST: if the @.vcd@ is there, its @.json@ is there and complete. (Not that
+FIRST. The temporary files get the default permissions (the umask), not the
+owner-only ones of 'openTempFile', so a waveform is as readable as any other
+file the process writes: if the @.vcd@ is there, its @.json@ is there and complete. (Not that
 the two are from the same run: a crash between the renames leaves a new
 @.json@ beside the previous run's @.vcd@.) On 'Left' neither is written.
 -}
 writeFiles :: String -> (Int, Int) -> Recording -> FilePath -> IO (Either String ())
 writeFiles comment window rec path = withReader rec $ \spill -> do
   createDirectoryIfMissing True dir
-  (vTmp, vH) <- openTempFile dir (takeFileName path <.> "tmp")
-  hSetBinaryMode vH True
+  (vTmp, vH) <- openBinaryTempFileWithDefaultPermissions dir (takeFileName path <.> "tmp")
   hSetBuffering vH (BlockBuffering Nothing)
   rendered <- renderVCD spill comment window rec vH
   hClose vH
@@ -88,8 +89,7 @@ writeFiles comment window rec path = withReader rec $ \spill -> do
     Left err -> removeFile vTmp >> pure (Left err)
     Right () -> do
       meta <- sidecar spill [(vcdPath n, s) | (n, s) <- namedSignals rec]
-      (jTmp, jH) <- openTempFile dir (takeFileName sidecarPath <.> "tmp")
-      hSetBinaryMode jH True
+      (jTmp, jH) <- openBinaryTempFileWithDefaultPermissions dir (takeFileName sidecarPath <.> "tmp")
       ByteStringLazy.hPut jH (Json.encode meta)
       hClose jH
       renameFile jTmp sidecarPath
@@ -151,7 +151,7 @@ renderVCD spill comment (start, stop0) rec out
         starts = [(l, s, startAt Nothing (events s cs)) | (l, s, cs) <- streams]
       Builder.hPutBuilder out $
         header (formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%S" now)
-          <> renderScopes (foldl' (flip insertVar) emptyScope vars)
+          <> renderScopes (List.foldl' (flip insertVar) emptyScope vars)
           <> "$enddefinitions $end\n#"
           <> Builder.intDec start
           <> "\n$dumpvars\n"

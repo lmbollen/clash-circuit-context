@@ -153,6 +153,7 @@ test-suite waveform-tests
     tasty-hedgehog,
     tasty-hunit,
     text,
+    unix,
 
 -- Manual autoTrace calls (no renamer rewrite) against the real runtime;
 -- validates the oracle's trace/fallback decisions per type.

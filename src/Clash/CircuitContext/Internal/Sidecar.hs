@@ -45,7 +45,7 @@ import Control.Exception (
   throwIO,
   try,
  )
-import Data.List (foldl')
+import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (catMaybes)
 import System.IO (Handle, hPutStrLn, stderr)
@@ -151,7 +151,7 @@ they are skipped before their history is read at all.
 lut :: Translator -> Int -> [Value] -> LUTMap
 lut tr width values
   | hasGeneratedLutT tr =
-      foldl'
+      List.foldl'
         (\acc f -> f acc)
         Map.empty
         [update | value <- values, update <- addValueT tr (toBitList width value)]
