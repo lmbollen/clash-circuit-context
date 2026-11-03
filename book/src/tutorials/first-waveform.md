@@ -50,9 +50,7 @@ Add these two functions to the same file:
 ```haskell,clash group=tutorial
 -- | Simulate 'top' for eight cycles, and write waveforms/counters.vcd.
 runCounters :: IO [Unsigned 8]
-runCounters =
-  withWaveformSlot "counters" $ \slot ->
-    withWaveform slot 8 (sampleN 8 (top (fromList (P.cycle [True, False, True]))))
+runCounters = writeWaveform "counters" (0, 8) (top (fromList (P.cycle [True, False, True])))
 
 -- | Print the part of a VCD file that declares its scopes and signals.
 declarations :: FilePath -> IO ()
@@ -82,12 +80,12 @@ The simulation also wrote the file `waveforms/counters.vcd`, and a file
 $scope module top $end
   $var wire 8 ! out $end
   $scope module counter_0 $end
-    $var wire 8 $ next $end
     $var wire 8 % count $end
+    $var wire 8 $ next $end
   $upscope $end
   $scope module counter_1 $end
-    $var wire 8 " next $end
     $var wire 8 # count $end
+    $var wire 8 " next $end
   $upscope $end
 $upscope $end
 ```
@@ -96,9 +94,9 @@ Notice three things:
 
 - `top` and each `counter` are scopes. This is the hierarchy of the source.
 - Each named local binding (`out`, `count`, `next`) is a signal, with the
-  name of the binding.
-- The two calls of `counter` are two scopes, `counter_0` and `counter_1`. The
-  numbers come from the order of the calls in the source.
+  name of the binding. The signals of a scope come in the order of their
+  bindings in the source.
+- The two calls of `counter` are two scopes, `counter_0` and `counter_1`.
 
 ## Look at the waveform
 
@@ -111,7 +109,7 @@ cycles of the input. The `count` of `counter_1` goes up in the low cycles.
 
 You made a design with two components, and you recorded all its named
 signals without a call to a trace function. The plugin did the work, and
-the simulation was an ordinary `sampleN`.
+`writeWaveform` simulated the design and wrote the file.
 
 Next, read [How to keep waveforms from a test suite](../how-to/test-suite.md)
 to record waveforms from tests, or [About the design
