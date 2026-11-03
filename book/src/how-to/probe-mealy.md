@@ -60,6 +60,21 @@ The arguments of the step function (`phase`, `go`) are not probed. `phase'`
 is the new state, so it shows each state one cycle before the machine holds
 it.
 
+## Why a probe is `z` in the first and the last cycle
+
+A probe records a value when the simulation computes it. The simulation
+computes a value of the step function only when something uses it, and in
+two cycles nothing uses the new state:
+
+- In cycle 0, the reset is active, so the register of the machine takes its
+  reset value, not the new state.
+- In the last cycle, there is no later cycle to take the new state.
+
+These values are never computed, so the probes that depend only on them are
+`z` in those cycles. A probe of a value that the output also uses, for
+example a value that both the new state and the output read, has a value in
+these cycles.
+
 ## A Moore machine
 
 Use `mooreProbed`. It takes two functions: the transition function and the
