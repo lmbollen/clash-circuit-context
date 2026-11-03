@@ -28,8 +28,9 @@ Everything hangs off one implicit parameter @?circuitContext@:
 * 'traceSignalC' is 'Clash.Signal.Trace.traceSignal' against the context's
   own recorder instead of the global 'traceMap#'. The recorder writes value
   changes to a spill file as the simulation runs
-  ("Clash.CircuitContext.Internal.Recorder"), so memory does not grow with
-  the length of a run.
+  ("Clash.CircuitContext.Internal.Recorder"), so the recorded history is
+  not kept in memory. (The taps still keep raw design values alive while a
+  run records, so its memory still grows with its length: issue #38.)
 * 'mealyProbed' + 'probe' record values of expressions INSIDE a mealy step
   function. The step function has no cycle identity of its own, so the
   wrapper derives one from a companion counter register and binds a
@@ -340,8 +341,8 @@ callLoc cs = case dropWhile skipped (getCallStack cs) of
 
 {- | Run a simulation action under a fresh recording context, and return
 what the action returned (or threw) with the 'Recording'. The recording's
-values go to a spill file at this path while the simulation runs, so memory
-does not grow with the length of the run. Delete the file with
+values go to a spill file at this path while the simulation runs, so the
+recorded history is not kept in memory. Delete the file with
 'Clash.CircuitContext.Recording.discardRecording' when done.
 
 The action must /force/ the parts of the circuit it wants recorded (sampling

@@ -6,8 +6,8 @@ License    :  BSD2 (see the file LICENSE)
 Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
 
 The recorder's storage: every recorded signal appends its value CHANGES to a
-spill file while the simulation runs, so memory does not grow with the length
-of a run.
+spill file while the simulation runs, so the history of a run is not kept in
+memory.
 
 Each signal encodes its changes into a small buffer of its own. The buffer
 starts small and doubles as needed, so a signal that rarely changes costs a

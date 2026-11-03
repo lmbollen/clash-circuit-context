@@ -20,9 +20,10 @@ viewer reads, and how a signal is simulated with or without recording.
 
 A recording's values go to a spill file, @waveforms\/\<name\>.spill@, while
 the simulation runs, and are read from there when the files are written; the
-spill file is deleted after. So a recording needs about the same memory for
-a long run as for a short one. Nothing here serializes tests either, so a
-parallel runner is free to use every core.
+spill file is deleted after. So the recorded history is not kept in memory.
+(Memory still grows with the length of a recorded run, because the trace
+taps keep raw design values alive while it runs: issue #38.) Nothing here
+serializes tests either, so a parallel runner is free to use every core.
 -}
 module Clash.CircuitContext.Internal.Waveform (
   waveformPath,
