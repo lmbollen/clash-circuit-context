@@ -34,7 +34,8 @@ master a = mux (strobe bus) (addr bus) 0
 ```
 
 Each field of `bus` is a signal with the name `<binding>_<field>`, in the
-scope of the function:
+scope of the function. (`printWaveform` is a helper of this book: see [the
+introduction](../introduction.md#the-examples-are-checked).)
 
 ```haskell,clash group=record
 >>> printWaveform 3 (master (fromList [1, 4, 5]))
@@ -43,16 +44,46 @@ master
   bus_strobe
 ```
 
+## A record inside a record
+
+The inner record needs its own empty `Traceable` instance too. Its names
+join the field names with `_`:
+
+```haskell,clash group=record
+data Port dom = Port
+  { req :: Bus dom
+  , ack :: Signal dom Bool
+  }
+  deriving (Generic)
+
+instance (KnownDomain dom) => Traceable (Port dom)
+
+slave :: (HasCircuitContext) => Signal System (Unsigned 8) -> Signal System (Unsigned 8)
+slave a = mux (ack port) 0 (addr (req port))
+ where
+  port = Port{req = Bus{addr = a, strobe = (> 3) <$> a}, ack = strobe (req port)}
+{-# OPAQUE slave #-}
+
+>>> printWaveform 3 (slave (fromList [1, 4, 5]))
+slave
+  port_ack
+  port_req_addr
+  port_req_strobe
+```
+
+The fields of one binding all have the position of that binding in the
+source, so they come in the order of their names, not in the order of the
+declaration.
+
 ## Notes
 
 - A field that cannot be recorded is left out, and the other fields are
   still recorded. A port that mixes signals with other values, for example a
   memory map, therefore loses only the part that is not a signal.
-- A record inside a record is recorded the same way. Its names join the
-  field names with `_`: a field `req` that holds a `Bus` gives
-  `port_req_addr` and `port_req_strobe`.
 - A field is recorded only if the simulation uses it. A field that nothing
-  reads is never evaluated, so it has no values to record.
+  reads is never evaluated, so it is not in the waveform at all.
 - The oracle of the plugin reads the context of your instance. A context
   with type families or other constraints that are not class constraints
   can make the oracle give up: see [About the oracle](../explanation/oracle.md).
+- To record a record by hand, use `traceNamed "<name>"`, the method of
+  `Traceable`.

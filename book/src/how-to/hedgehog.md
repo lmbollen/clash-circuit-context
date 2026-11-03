@@ -12,7 +12,15 @@ exception, so `withWaveform` cannot see the failure.
 ## Keep the waveform of the counterexample
 
 Simulate the design with `simulateWaveform Counterexample`, and check the
-samples that it returns:
+samples that it returns. The first argument has the type `Capture`, with the
+constructors `Counterexample` and `AtSize Size`. The other arguments are the
+same as for `writeWaveform`:
+
+```haskell
+simulateWaveform ::
+  (KnownDomain dom, NFDataX a) =>
+  Capture -> String -> (Int, Int) -> ((HasCircuitContext) => Signal dom a) -> PropertyT IO [a]
+```
 
 ```haskell,clash group=hedgehog hidden
 {-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
@@ -70,6 +78,9 @@ Keep these rules in mind:
   true when the property supplies all inputs of the design.
 - The waveform is written when Hedgehog prints the report. A runner that
   does not print the report of a failure writes no waveform.
+- The waveform of a counterexample stays when the property passes again
+  later. `simulateWaveform` does not delete files, as `withWaveform` does.
+  Delete `waveforms/<name>.vcd` yourself when you do not need it.
 
 ## Keep the waveform of a passing case too
 
@@ -82,8 +93,9 @@ short waveform that is easy to read:
 out <- simulateWaveform (AtSize 10) "prop" (0, n) (accumulate (fromList xs))
 ```
 
-A property of `n` tests runs the sizes `0` to `n - 1`, so choose a size
-below the number of tests. If the property fails later, the waveform of the
+Hedgehog gives the tests of a property the sizes `0`, `1`, `2`, … up to
+`99`, and then starts at `0` again. So choose a size below the number of
+tests, and below 100. If the property fails later, the waveform of the
 counterexample replaces the waveform of the passing case.
 
 ## Record a failed case again

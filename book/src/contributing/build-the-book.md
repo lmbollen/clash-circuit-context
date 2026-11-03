@@ -26,6 +26,11 @@ nix build github:clash-lang/mdbook-clash -o result-mdbook-clash
 
 The binaries are then in `result-*/bin`.
 
+The Nix build of mdbook-clash compiles its Haskell dependencies from source,
+which takes a long time. You can also build the `mdbook-clash` preprocessor
+with `cargo build --release` in a checkout of mdbook-clash, and take only
+`mdbook-clash-doctest` from Nix.
+
 ## Build the Clash of the book
 
 The examples use clash-circuit-context and its plugin, so the `clash` that
