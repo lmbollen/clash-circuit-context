@@ -23,7 +23,8 @@ import Control.Exception (ErrorCall, SomeException, evaluate, try)
 import Control.Monad (when)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (isPrefixOf)
-import System.Directory (doesFileExist, removeFile)
+import System.Directory (doesFileExist, removeFile, removePathForcibly)
+import System.Posix.Files (accessModes, fileMode, getFileStatus, intersectFileModes)
 import System.FilePath ((-<.>), (<.>), (</>))
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -33,6 +34,7 @@ import Test.Tasty.HUnit (Assertion, assertBool, testCase, (@?=))
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext
+import Clash.CircuitContext.Recording (discardRecording)
 import Clash.CircuitContext.Waveform
 import Clash.CircuitContext.Waveform.Hedgehog (Capture (..), simulateWaveform)
 
@@ -119,6 +121,32 @@ tests =
           out @?= [0 .. 7]
           (v, j) <- filesFor name
           assertBool "both halves written" (v P.&& j)
+    , -- The files went through openTempFile, which makes them 0600 whatever
+      -- the umask: unreadable to a CI artifact step or a colleague. A file
+      -- written the ordinary way, beside them, has the modes to expect.
+      testCase "a waveform has the default permissions, not owner-only ones" $
+        withName "capture-modes" $ \name -> do
+          _ <- writeWaveform name (0, 3) counter
+          let reference = vcdOf name -<.> "reference"
+              modes p = intersectFileModes accessModes . fileMode <$> getFileStatus p
+          P.writeFile reference ""
+          expected <- modes reference
+          removeFile reference
+          vcd <- modes (vcdOf name)
+          json <- modes (vcdOf name -<.> "json")
+          (vcd, json) @?= (expected, expected)
+    , -- withRecording is the API for a design with more than one domain. It
+      -- used to open its spill file without making the directory, so the
+      -- first run in a fresh checkout failed with "does not exist".
+      testCase "withRecording makes the directory of its spill file" $ do
+        let dir = "waveforms" </> "capture-new-directory"
+        removePathForcibly dir
+        (out, rec) <- withRecording (dir </> "run.spill") (evaluate (sampleN 3 counter))
+        P.either (P.error . P.show) pure out >>= (@?= [0, 1, 2])
+        spill <- doesFileExist (dir </> "run.spill")
+        assertBool "the spill file is in the new directory" spill
+        discardRecording rec
+        removePathForcibly dir
     , -- A window shows its cycles only, and the samples are all of them.
       testCase "writeWaveform shows the window, and returns every sample" $
         withName "capture-window" $ \name -> do

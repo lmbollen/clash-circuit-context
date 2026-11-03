@@ -150,7 +150,8 @@ import Control.Monad (forM, forM_)
 import Data.Bits (xor, (.&.))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import qualified Data.IntMap.Strict as IntMap
-import Data.List (foldl', intercalate, isPrefixOf)
+import Data.List (intercalate, isPrefixOf)
+import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
 import GHC.Natural (Natural)
@@ -337,7 +338,7 @@ callLoc cs = case dropWhile skipped (getCallStack cs) of
   skipped (fn, l) =
     "$dm" `isPrefixOf` fn || "Clash.CircuitContext." `isPrefixOf` srcLocModule l
   fileHash :: String -> Word
-  fileHash = foldl' (\h c -> h * 31 + fromIntegral (fromEnum c)) 5381
+  fileHash = List.foldl' (\h c -> h * 31 + fromIntegral (fromEnum c)) 5381
 
 {- | Run a simulation action under a fresh recording context, and return
 what the action returned (or threw) with the 'Recording'. The recording's

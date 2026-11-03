@@ -408,8 +408,8 @@ samples lazily: the waveform has the cycles it evaluated.
 
 There is no switch to turn waveforms on or off. A test that should always
 leave its waveform uses `writeWaveform`; one that should leave it only on a
-failure uses `withWaveform`. To record nothing, build without the plugin:
-then only hand-written recorders record.
+failure uses `withWaveform`. To record nothing, sample the design under
+`withoutCircuitContext`.
 
 Recording only on failure matters under a parallel runner, where peak memory
 is the sum over concurrently running tests: on a real 24-core suite it took

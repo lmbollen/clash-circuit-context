@@ -70,6 +70,8 @@ import System.IO (
   hSeek,
   openBinaryFile,
  )
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath (takeDirectory)
 import System.IO.Unsafe (unsafeInterleaveIO)
 
 import qualified Data.ByteString as ByteString
@@ -134,10 +136,12 @@ chunkBytes :: Int
 chunkBytes = 16 * 1024
 
 {- | A recorder that writes its spill file at this path, and records the
-cycles in progress at or after this time (in ps). Truncates an existing file.
+cycles in progress at or after this time (in ps). Truncates an existing file,
+and creates the directory.
 -}
 newRecorder :: FilePath -> Int -> IO Recorder
 newRecorder path start = do
+  createDirectoryIfMissing True (takeDirectory path)
   h <- openBinaryFile path WriteMode
   Recorder path start <$> newMVar (Just h, 0) <*> newIORef []
 

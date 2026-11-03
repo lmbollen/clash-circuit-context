@@ -74,9 +74,10 @@ data Capture
   | {- | The counterexample, and the first case whose 'Size' is at least this
     one, once per waveform name in this process. 'Size' is Hedgehog's measure
     of how large a case is, so a small one gives a short waveform you can read
-    end to end. A property runs at sizes 0, 1, 2, … in order, so a property of
-    @n@ tests reaches sizes below @n@. If the property later fails, the
-    counterexample replaces this waveform.
+    end to end. A property runs at sizes 0, 1, 2, … in order, up to 99, and
+    then from 0 again, so a property of @n@ tests reaches sizes below
+    @min n 100@. If the property later fails, the counterexample replaces
+    this waveform.
     -}
     AtSize Size
   deriving (Show, Eq)
