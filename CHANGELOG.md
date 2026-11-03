@@ -1,4 +1,7 @@
-# Changelog
+# Changelog for clash-circuit-context
+
+This changelog is generated from the entries in `changelog/entries`, see
+[changelog/README.md](changelog/README.md).
 
 ## 0.1.0.0 — unreleased
 
