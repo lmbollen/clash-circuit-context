@@ -34,7 +34,7 @@ of `f`.
 |---|---|
 | One right-hand side | wrapped |
 | Guards, of which the last is `otherwise` or has no guard | wrapped, with the guards in a `case` |
-| Guards on the last equation of the function | wrapped, with the guards in a `case` |
+| Guards on the last equation of the function, which can all fail | wrapped, as a local equation with the name of the function. A failed match still gives `Non-exhaustive patterns in function f` |
 | Guards on an equation that is not the last, and that can fail | not wrapped. Warning: `x-circuit-context` |
 | A right-hand side with a higher-rank type | wrapped after eta-expansion (see below) |
 | Already wrapped in `component "f"` | not wrapped again |
@@ -72,9 +72,13 @@ Inside an instrumented function, each named local binding is wrapped in
 | A name that contains `:` (made by a code generator) | not wrapped |
 | A closed binding (no free local variables) without its own signature | not wrapped, and not reported |
 | A closed binding with its own signature | wrapped |
+| A closed binding that refers to itself, such as a free-running counter `cnt = register clockGen resetGen enableGen 0 (cnt + 1)` | wrapped, with or without a signature |
 | A binding with a higher-rank type | not wrapped, and not reported |
 
-A binding is closed when its right-hand side uses no local variable.
+A binding is closed when its right-hand side uses no local variable other
+than itself. An unconstrained binding that refers to itself and is not
+`NonTranslatable`, such as `s = Nothing :- s`, becomes monomorphic when it is
+wrapped.
 
 ## Modes
 

@@ -3,15 +3,16 @@
 A [Hedgehog](https://hackage.haskell.org/package/hedgehog) property runs
 many cases. This guide shows how to keep one waveform for it: the waveform
 of the counterexample when the property fails, and, if you want it, the
-waveform of one passing case. The functions are in
+waveform of one passing case. The function is `simulateWaveform`, in
 `Clash.CircuitContext.Waveform.Hedgehog`.
 
-Do not use `withWaveformOnFailure` in a property. A failed Hedgehog check is
-not an exception, so it cannot see the failure.
+Do not use `withWaveform` in a property. A failed Hedgehog check is not an
+exception, so `withWaveform` cannot see the failure.
 
 ## Keep the waveform of the counterexample
 
-Put the simulation and the check in `withWaveformOnCounterexample`:
+Simulate the design with `simulateWaveform Counterexample`, and check the
+samples that it returns:
 
 ```haskell,clash group=hedgehog hidden
 {-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
@@ -19,7 +20,6 @@ module Prop where
 
 import Clash.Explicit.Prelude
 import Clash.CircuitContext
-import Clash.CircuitContext.Waveform
 import Clash.CircuitContext.Waveform.Hedgehog
 import Hedgehog
 import qualified Hedgehog.Gen as Gen
@@ -39,24 +39,22 @@ accumulate inp = total
 model :: [Unsigned 8] -> [Unsigned 8]
 model xs = 0 : P.scanl (+) 0 (P.drop 1 xs)
 
-prop_accumulate :: WaveformSlot -> Property
-prop_accumulate slot = property $ do
+prop_accumulate :: Property
+prop_accumulate = property $ do
   xs <- forAll (Gen.list (Range.linear 1 20) (Gen.integral Range.linearBounded))
   let n = P.length xs
-  withWaveformOnCounterexample slot n (sampleN n (accumulate (fromList xs))) $ \out ->
-    out === P.take n (model xs)
+  out <- simulateWaveform Counterexample "prop" (0, n) (accumulate (fromList xs))
+  out === P.take n (model xs)
 
 >>> :t prop_accumulate
-prop_accumulate :: WaveformSlot -> Property
+prop_accumulate :: Property
 ```
 
 Each case runs without recording, so a property that passes costs nothing
-extra and writes no file. When a case fails, that case runs again with
-recording, and its waveform replaces the earlier one in the slot. Hedgehog
-then shrinks the case, and each smaller case that fails replaces the
-waveform again. The waveform that stays is the one of the smallest
-counterexample: the case that Hedgehog reports. The report ends with the
-path of the file:
+extra and writes no file. When the property fails, Hedgehog shrinks the
+case, and reports the smallest counterexample. Only that case is simulated
+again with recording, and its waveform is written once. The report ends
+with the path of the file:
 
 ```text
        ┃     │ ━━━ Failed (- lhs) (+ rhs) ━━━
@@ -65,29 +63,34 @@ path of the file:
     waveform: /home/you/project/waveforms/prop.vcd
 ```
 
-The check runs twice for a failed case. Do not put `forAll` or other
-one-time work inside it. The second run must fail in the same way, which is
-true when the test supplies all inputs of the simulation.
+Keep these rules in mind:
+
+- Give each property its own name. One name is one pair of files.
+- The second simulation must give the same result as the first. This is
+  true when the property supplies all inputs of the design.
+- The waveform is written when Hedgehog prints the report. A runner that
+  does not print the report of a failure writes no waveform.
 
 ## Keep the waveform of a passing case too
 
-Use `withWaveformCase keep` instead. When `keep` is `True`, the case is
-recorded as it runs, and its waveform is kept even if it passes. A failure
-still replaces it with the counterexample.
+Use `AtSize size` instead of `Counterexample`. The first case whose size is
+at least `size` is recorded, and its waveform is kept, also when it passes.
+This happens once for each waveform name in a process. A small size gives a
+short waveform that is easy to read:
 
-To choose the case, use a flag that fires once:
+```haskell
+out <- simulateWaveform (AtSize 10) "prop" (0, n) (accumulate (fromList xs))
+```
 
-- `recordLargestCase fired` is `True` for the first case at the largest
-  size.
-- `recordCaseOfSize fired size` is `True` for the first case at least that
-  size. A small size gives a small waveform that is easy to read.
+A property of `n` tests runs the sizes `0` to `n - 1`, so choose a size
+below the number of tests. If the property fails later, the waveform of the
+counterexample replaces the waveform of the passing case.
 
-`fired` is an `IORef Bool` that you make, one for each property. It stays
-`True` after the first case, also when Hedgehog runs the generators again
-during shrinking.
+## Record a failed case again
 
-## Record one case again
+A failed property prints a `recheckAt` line with a seed. Run that line to
+run the failed case again. Hedgehog reports it again, so its waveform is
+written again.
 
-A failed property prints a size and a seed. To record that case later, run
-`recheckWithWaveform size seed property`. The property must record that run,
-for example with `recordThisCase fired (const True)` as its flag.
+For the names and the place of the files, see [Waveform
+files](../reference/waveform-files.md).

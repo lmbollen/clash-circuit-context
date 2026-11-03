@@ -48,8 +48,8 @@ a signal as its type: `Busy 2`, not `0b0110`.
 
    ```haskell,clash group=typed
    record :: IO ()
-   record = withWaveformSlot "sequencer" $ \slot -> do
-     _ <- withWaveform slot 8 (sampleN 8 (sequencer (pure True)))
+   record = do
+     _ <- writeWaveform "sequencer" (0, 8) (sequencer (pure True))
      pure ()
 
    -- | The signals that a sidecar describes.

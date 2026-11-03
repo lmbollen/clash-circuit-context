@@ -39,8 +39,8 @@ scope of the function:
 ```haskell,clash group=record
 >>> printWaveform 3 (master (fromList [1, 4, 5]))
 master
-  bus_strobe
   bus_addr
+  bus_strobe
 ```
 
 ## Notes

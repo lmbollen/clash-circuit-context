@@ -11,4 +11,5 @@ set -euo pipefail
 book=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 exec cabal --project-file="$book/cabal.project" exec -v0 -- clash \
   -package clash-circuit-context -package clash-shockwaves -package containers -package text \
+  -package directory -package filepath \
   -i"$book/examples" -fplugin=Clash.CircuitContext.Plugin "$@"

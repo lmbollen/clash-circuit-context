@@ -36,19 +36,20 @@ pair inp = both
 ```
 
 Each named local binding is a signal in the scope of its function. Two calls
-of the same function are two scopes, numbered in the order of the calls in
-the source:
+of the same function are two scopes, `lag_0` and `lag_1`. They are numbered
+in the order in which the simulation first reaches them (see [About the
+design hierarchy](../explanation/hierarchy.md#how-instances-are-named)):
 
 ```haskell,clash group=component
 >>> printWaveform 4 (pair (pure 1))
 pair
   both
   lag_0
-    late
     early
+    late
   lag_1
-    late
     early
+    late
 ```
 
 ## Put a helper in the scope of its caller
@@ -62,8 +63,9 @@ helpers, see [How to control the warnings of the plugin](warnings.md).
 ## Name instances that come from one call site
 
 Instances made by `fmap` or `map` over a vector all come from one call site,
-so the plugin cannot order them. Use `imapComponents`. It makes element `i`
-of the vector a component with the name `<name>_<i>`:
+so they are numbered in the order in which the simulation reaches them. To
+name them by their position, use `imapComponents`. It makes element `i` of
+the vector a component with the name `<name>_<i>`:
 
 ```haskell,clash group=lanes hidden
 {-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
@@ -91,8 +93,8 @@ lanes inp = bundle outs
 
 >>> printWaveform 3 (lanes (pure (1 :> 2 :> Nil)))
 lanes
-  outs_1
   outs_0
+  outs_1
   lane_0
     held
   lane_1

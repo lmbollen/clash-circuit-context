@@ -26,34 +26,51 @@ simulation records it.
 
 ## In a simulation that records: time and memory
 
-A recording holds the history of each signal until the dump, and the dump
-renders a file. In a test suite that runs tests in parallel, the peak memory
-is the sum over the tests that run at the same time.
+A recording packs the value of each signal in each cycle, and writes the
+changes to a spill file. At the end, the VCD is written from that file. In a
+test suite that runs tests in parallel, the peak memory is the sum over the
+tests that run at the same time, so the time and memory of recording add up
+quickly.
 
-The helpers of `Clash.CircuitContext.Waveform` therefore decide before a run
-if it records. A run that will not be kept runs without recording. A
-waveform of a passing test is rarely read, so the default to use is
-`withWaveformOnFailure`: no recording while the test passes, and a second run
-with recording when it fails. On the test suite of one real project (24
-cores), this took the peak memory from 25.2 GB to 8.2 GB, and the time from
-6 min 22 s to 1 min 6 s.
+The functions of `Clash.CircuitContext.Waveform` therefore decide before a
+run if it records. A run whose waveform will not be kept runs without
+recording. The waveform of a passing test is rarely read, so `withWaveform`
+does not record while the test passes. When the test fails, it runs the
+simulation a second time, with recording. On the test suite of one real
+project (24 cores), recording only on failure took the peak memory from
+25.2 GB to 8.2 GB, and the time from 6 min 22 s to 1 min 6 s.
 
 The second run is the price. It assumes that the failure repeats. For a
-design where it does not, `withWaveformOnFailure'` records the first run and
-writes nothing unless the test fails: no second run, but the cost of
-recording in each run.
+design where it does not, `writeWaveform` records the only run, at the cost
+of recording in each run. A Hedgehog property has the same choice:
+`simulateWaveform` records only the case that Hedgehog reports, after
+shrinking.
+
+There is no switch that turns recording on for all tests. A switch of that
+kind recorded each test of a suite at the same time, and the memory of the
+whole suite became the problem. To record nothing, build without the
+plugin.
 
 ## Why a recording does not grow without limit
 
 A recorder packs the value of each cycle into bits as the simulation makes
-it, and keeps only the bits, in runs of equal values (as a VCD does). It
-does not keep the values of the design. So the memory of a recording grows
-with the number of changes, and a long simulation does not keep its history
-alive.
+it, and writes only the changes, as a VCD does. It does not keep the values
+of the design, and it does not keep the bits in memory: the changes of each
+signal go to the spill file in small blocks. So a recording needs about the
+same memory for a long simulation as for a short one. The VCD is written by
+a merge of the changes of all signals by time, straight to the file, so the
+text of the VCD is never in memory either.
+
+Signals with the same history share one identifier in the VCD. The same
+wire often has a name at each level of the hierarchy that it passes, and
+each name is a recorded signal. The recorder finds them by a hash of their
+changes, and then compares the changes, so two signals that only have the
+same hash do not share an identifier.
 
 The recorder packs the value of cycle *i* when the simulation evaluates
 cycle *i + 1*, not while it makes cycle *i*. To pack a value can need the
 value itself, through a combinational loop in the design, and then the
 simulation would never finish. The value of a cycle can never need a later
-cycle, so one cycle of delay is safe. A cycle that the simulation did not
-evaluate is `z` in the VCD.
+cycle, so one cycle of delay is safe. When the simulation stops, the
+recorder evaluates the last cycle of each signal. A cycle that the
+simulation did not evaluate is `z` in the VCD.

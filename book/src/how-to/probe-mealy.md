@@ -45,8 +45,8 @@ component:
 ```haskell,clash group=probe
 >>> printWaveform 4 (control (fromList [True, False, False, False]))
 control
-  phase'
   done
+  phase'
 ```
 
 ## Variants

@@ -1,32 +1,45 @@
 # How to keep waveforms from a test suite
 
-This guide shows how to write a waveform from a test, and how to write one
-only when you need it. The functions are in `Clash.CircuitContext.Waveform`.
+This guide shows how to write the waveform of a simulation, and how to write
+it only when a test fails. The functions are in
+`Clash.CircuitContext.Waveform`.
 
-## Give each test a slot
+Each function takes what `Clash.Signal.Trace.dumpVCD` takes: the `Signal` to
+observe, and a window `(start, stop)` of cycles. The simulation runs `stop`
+cycles. The waveform shows the cycles from `start` to `stop - 1`. Use
+`(0, n)` to see all `n` cycles.
 
-A slot is the pending waveform of one test. `withWaveformSlot "<name>"`
-makes a slot, runs the test, and writes `waveforms/<name>.vcd` and
-`waveforms/<name>.json`. It writes the files also when the test throws an
-exception, so a failed test keeps the waveform that shows why it failed.
+The signal must be one `Signal`:
 
-In a [tasty](https://hackage.haskell.org/package/tasty) suite with HUnit, a
-test that always keeps its waveform looks like this:
+- If the design has more outputs in one domain, combine them with `bundle`.
+- If the design is a `clash-protocols` circuit, make a signal of it with
+  `toSignals`.
+- If the outputs are in more than one domain, see [Record a design with more
+  than one domain](#record-a-design-with-more-than-one-domain).
+
+## Always write the waveform
+
+Use `writeWaveform "<name>"`. It simulates the design, writes
+`waveforms/<name>.vcd` and `waveforms/<name>.json`, and returns the samples.
+In a [tasty](https://hackage.haskell.org/package/tasty) suite with HUnit:
 
 ```haskell
 case_accumulate :: Assertion
-case_accumulate = withWaveformSlot "accumulate" $ \slot -> do
-  out <- withWaveform slot 4 (sampleN 4 (accumulate (pure 1)))
+case_accumulate = do
+  out <- writeWaveform "accumulate" (0, 4) (accumulate (pure 1))
   out @?= [0, 0, 1, 2]
 ```
 
-## Keep only the waveform of a failed test
+If the simulation throws an exception, the waveform up to that cycle is
+written, and the exception comes out as usual.
+
+## Write the waveform only when the test fails
 
 Recording has a cost in time and memory (see [About the cost of
-recording](../explanation/cost.md)). In most runs, a waveform of a passing
-test is not useful. Use `withWaveformOnFailure` instead of `withWaveform`. It
-runs the simulation without recording. If the check fails, it runs the
-simulation again with recording, and keeps that waveform.
+recording](../explanation/cost.md)). In most runs, the waveform of a passing
+test is not useful. Use `withWaveform`, and give it the check of the test.
+It runs the simulation without recording. If the check throws an exception,
+it runs the simulation again with recording, and writes that waveform.
 
 ```haskell,clash group=suite hidden
 {-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
@@ -53,8 +66,8 @@ check :: [Unsigned 8] -> [Unsigned 8] -> IO ()
 check expected out = unless (out == expected) (P.error ("got " <> show out))
 
 testWith :: [Unsigned 8] -> IO (Either ErrorCall ())
-testWith expected = try $ withWaveformSlot "accumulate" $ \slot ->
-  withWaveformOnFailure slot 4 (sampleN 4 (accumulate (pure 1))) (check expected)
+testWith expected = try $
+  withWaveform "accumulate" (0, 4) (accumulate (pure 1)) (check expected)
 ```
 
 When the check passes, no waveform is written:
@@ -81,39 +94,84 @@ CallStack (from HasCallStack):
 True
 ```
 
-The check runs twice when it fails: once without recording, and once with.
-Give `withWaveformOnFailure` a check that only tests values. Do not give it
-work that must happen once, for example a write to a file.
+When the test passes again, `withWaveform` deletes the waveform of the
+failed run. It does not delete a waveform that `writeWaveform` wrote:
 
-If the second run passes, the failure did not repeat. Then no waveform is
-written, because it would show a run that passed, and a message on stderr
-says so. If the design does not give the same output in each run (for
-example, it resolves undefined values at random), use
-`withWaveformOnFailure'`. It records the first run, and writes the waveform
-only if the check fails.
-
-## Keep waveforms on request
-
-Use `withWaveformWhen keep` to record only when `keep` is `True`. The
-function `waveformsRequested` is `True` when the environment variable
-`CCC_WAVEFORMS` is set to a value other than empty, `0` or `no`:
-
-```haskell
-case_accumulate :: Assertion
-case_accumulate = withWaveformSlot "accumulate" $ \slot -> do
-  keep <- waveformsRequested
-  out <- withWaveformWhen keep slot 4 (sampleN 4 (accumulate (pure 1)))
-  out @?= [0, 0, 1, 2]
+```haskell,clash group=suite
+>>> testWith [0, 0, 1, 2]
+Right ()
+>>> doesFileExist "waveforms/accumulate.vcd"
+False
 ```
 
-Then `CCC_WAVEFORMS=1 cabal test` writes all the waveforms, and a plain
-`cabal test` writes none.
+Keep these rules in mind:
 
-## Record as many cycles as the test uses
+- The check runs twice when it fails: once without recording, and once with.
+  Give `withWaveform` a check that only tests values. Do not give it work
+  that must happen once, for example a write to a file.
+- The second run must fail in the same way. If it passes, no waveform is
+  written, and a message on stderr says so. A design that resolves undefined
+  values at random can do this. For such a design, use `writeWaveform`, and
+  check the samples that it returns.
+- The check gets the samples lazily. The waveform has the cycles that the
+  check evaluated. A check that stops at the first wrong value gives a
+  waveform that ends at that value.
 
-`withWaveform` records a fixed number of cycles. If the test decides how long
-to simulate, for example a test that reads output until a value appears, use
-`withWaveformLazy`. It records the cycles that the test evaluated.
+## Show only some cycles
+
+Give a window that starts later than cycle 0. The cycles before `start` are
+simulated, but they are not recorded:
+
+```haskell
+case_late :: Assertion
+case_late = do
+  out <- writeWaveform "late" (100_000, 100_100) (accumulate (pure 1))
+  P.length out @?= 100_100
+```
+
+The function returns all `stop` samples. Only the waveform starts at
+`start`.
+
+The window cannot start before cycle 0, because a VCD has no negative time.
+
+## Let the test decide how long to simulate
+
+Some tests read output until a value appears, for example the text that a
+CPU writes to a UART. Give `maxBound` as `stop`. The check then decides how
+many cycles to evaluate, and the waveform ends at the last cycle that it
+evaluated:
+
+```haskell
+case_firmware :: Assertion
+case_firmware =
+  withWaveform "firmware" (0, maxBound) (uartBytes design) $ \bytes ->
+    takeWhile (/= '\n') (decode bytes) @?= "RESULT: OK"
+```
+
+## Record a design with more than one domain
+
+A `Signal` has one domain. For outputs in more than one domain, record the
+simulation with `Clash.CircuitContext.Recording`:
+
+```haskell
+main :: IO ()
+main = do
+  (result, rec) <- withRecording "waveforms/top.spill" $ do
+    let (a, b) = top clkA clkB
+    evaluate (deepseqX (sampleN 100 a, sampleN 50 b) ())
+  _ <- writeVCD (0, recordingEnd rec) rec "waveforms/top.vcd"
+  discardRecording rec
+  either throwIO pure result
+```
+
+The window of `writeVCD` is in units of the VCD timescale, not in cycles of
+one domain. For the timescale, see [Waveform files](../reference/waveform-files.md).
+
+## Write no waveforms at all
+
+Build without the plugin. Then only the recorders that you wrote yourself
+record. For the plugin flags, see [How to add clash-circuit-context to a
+project](add-to-project.md).
 
 For property tests, see [How to keep the waveform of a failing
 property](hedgehog.md). For the names and the place of the files, see

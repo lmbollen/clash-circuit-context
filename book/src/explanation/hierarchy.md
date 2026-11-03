@@ -24,7 +24,8 @@ caller gives it.
 
 The constraint has a cost: it spreads to each caller. A function that calls
 an instrumented function must also have `HasCircuitContext`, or call it
-under `withCircuitContext` or `withoutCircuitContext`. The type checker
+under a function that supplies the context, such as `writeWaveform` or
+`withoutCircuitContext`. The type checker
 makes you decide where the hierarchy starts, and where recording stops.
 
 ## Why `OPAQUE`
@@ -47,17 +48,24 @@ Two calls of the same component under one parent need two names. The
 package identifies an instance by the identity of its data on the heap, not
 by its name, and then gives the siblings numbers: `name_0`, `name_1`, … .
 
-The numbers come from the order of the call sites in the source, not from
-the order in which the simulation evaluates them. A lazy simulation can
-evaluate the second instance first. If the numbers followed evaluation, a
-small change to a test could swap the names of two instances. With the
-order of the source, the same design gives the same names in each
-simulation.
+The numbers come from the call site of each `component`, in the order of the
+source, where the call sites differ. A lazy simulation can evaluate the
+second instance first. If the numbers followed evaluation, a small change to
+a test could swap the names of two instances. With the order of the source,
+the same design gives the same names in each simulation.
 
-Instances made at one call site, for example by `map` over a vector, have
-the same call site, so the source cannot order them. For these, the
-position in the vector is the information that is missing. `imapComponents`
-gives it, and names element `i` as `name_i`.
+Some instances have one call site:
+
+- Instances made at one call site, for example by `map` over a vector.
+- All instances of a component that the plugin makes. The plugin writes
+  `component "f"` inside `f`, so each call of `f` reaches that one call
+  site.
+
+The source cannot order these instances, so they are numbered in the order
+in which the simulation first reaches them. For a vector, the position is
+the information that is missing. `imapComponents` gives it, and names
+element `i` as `name_i`. For the calls of a plugin-made component, the
+plugin does not yet use the call site of each call.
 
 ## Scopes are components, and nothing else
 
