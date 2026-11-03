@@ -98,3 +98,25 @@ jobs:
 
       - name: Build and run checks
         run: ./check.sh --project-file=${{ matrix.project }}
+
+  changelog:
+    name: Check changelog entries
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: cachix/install-nix-action@v25
+      # The entries a pull request adds or changes; `-t` also checks that the
+      # issues and PRs they link to exist. The qlog revision is the one
+      # changelog/README.md names.
+      - name: Check added and changed entries
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git diff --name-only --diff-filter=d "origin/${{ github.base_ref }}...HEAD" -- changelog/entries \
+            | grep '\.md$' > changed-entries.txt || true
+          while read -r entry; do
+            nix run github:QBayLogic/qlog/3bea2429e555e969984fbf897216cee74df2f73d -- check -t "$entry"
+          done < changed-entries.txt
