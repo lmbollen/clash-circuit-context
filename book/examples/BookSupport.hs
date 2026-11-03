@@ -5,26 +5,38 @@ Helpers for the examples of the book. Not part of clash-circuit-context: the
 book shows a waveform as the tree of its scopes and signals, and this module
 prints that tree from a simulation.
 -}
-module BookSupport (printWaveform, printWaveformWith) where
+module BookSupport (printWaveform) where
 
 import Prelude
 
-import qualified Data.Text as Text
+import Control.Exception (evaluate, finally, throwIO)
+import System.Directory (getTemporaryDirectory, removePathForcibly)
+import System.FilePath ((-<.>))
+import System.IO (hClose, openTempFile)
 
-import Clash.CircuitContext (HasCircuitContext, dumpVCDC, withCircuitContext)
+import qualified Data.Text as Text
+import qualified Data.Text.IO as TextIO
+
+import Clash.CircuitContext (HasCircuitContext, withRecording)
+import Clash.CircuitContext.Recording (discardRecording, writeVCD)
 import Clash.Prelude (KnownDomain, NFDataX, Signal, deepseqX, sampleN)
 
-{- | Simulate a design for some cycles under 'withCircuitContext', and print
-the scopes and signals of its VCD: one line for each, indented by depth.
+{- | Simulate a design for some cycles with recording, and print the scopes
+and signals of its VCD: one line for each, indented by depth. The files are
+written to the temporary directory, and deleted after.
 -}
 printWaveform :: (KnownDomain dom, NFDataX a) => Int -> ((HasCircuitContext) => Signal dom a) -> IO ()
-printWaveform n design = printWaveformWith n (sampleN n design)
-
--- | The same, for a simulation you write yourself.
-printWaveformWith :: (NFDataX a) => Int -> ((HasCircuitContext) => [a]) -> IO ()
-printWaveformWith n run = do
-  (_, traces, probes) <- withCircuitContext (let xs = run in deepseqX xs (pure xs))
-  dumpVCDC (0, n) traces probes >>= either fail (mapM_ putStrLn . outline)
+printWaveform n design = do
+  tmp <- getTemporaryDirectory
+  (path, h) <- openTempFile tmp "book.vcd"
+  hClose h
+  let files = [path, path -<.> "json", path -<.> "spill"]
+  flip finally (mapM_ removePathForcibly files) $ do
+    (result, rec) <- withRecording (path -<.> "spill") (let xs = sampleN n design in evaluate (deepseqX xs xs))
+    _ <- either throwIO pure result
+    written <- writeVCD (0, n) rec path
+    discardRecording rec
+    either fail (const (TextIO.readFile path >>= mapM_ putStrLn . outline)) written
 
 -- | The declarations of a VCD as an indented tree.
 outline :: Text.Text -> [String]

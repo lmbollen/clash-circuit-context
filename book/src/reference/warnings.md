@@ -35,8 +35,8 @@ tests/Test/PluginDiagnostics.hs:305:3: warning: [-Wx-circuit-context-undecided]
 - A binding that no recorder could ever take, for example a list or a
   function. See [Types that can be recorded](recordable-types.md).
 - A binding with a higher-rank type. It is always a function.
-- A closed local binding without a signature. It is skipped before the
-  oracle is asked (see [What the plugin
+- A closed local binding without a signature, unless it refers to itself. It
+  is skipped before the oracle is asked (see [What the plugin
   instruments](instrumentation.md#local-bindings)).
 - A function with `HasCircuitContext`, without `OPAQUE`, and with the
   annotation `{-# ANN f NoCircuitScope #-}`.

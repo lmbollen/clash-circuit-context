@@ -6,11 +6,11 @@ functions. This page lists the modules, and the functions you use most.
 | Module | Contains |
 |---|---|
 | `Clash.CircuitContext` | Everything for a design: re-exports `Clash.CircuitContext.Core`, `Traceable` and `NonTranslatable` |
-| `Clash.CircuitContext.Core` | The runtime: the context, components, traces, probes, the dump to VCD |
+| `Clash.CircuitContext.Core` | The runtime: the context, components, traces, probes |
 | `Clash.CircuitContext.Auto` | The classes `Traceable` and `Probeable`, and what the plugin inserts (`autoTrace`, `autoProbe`) |
-| `Clash.CircuitContext.Waveform` | Waveforms from a test suite: slots, and when to record |
+| `Clash.CircuitContext.Waveform` | Waveforms from IO code and from a test suite |
 | `Clash.CircuitContext.Waveform.Hedgehog` | Waveforms from Hedgehog properties |
-| `Clash.CircuitContext.Shockwaves` | The sidecar for typed waveforms (`dumpVCDSW`) |
+| `Clash.CircuitContext.Recording` | Recording by hand, for a design with more than one domain |
 | `Clash.CircuitContext.Plugin` | The GHC plugin. Use it as `-fplugin=Clash.CircuitContext.Plugin` |
 
 ## In a design
@@ -31,10 +31,7 @@ functions. This page lists the modules, and the functions you use most.
 
 | Name | Use |
 |---|---|
-| `withCircuitContext` | run a simulation with recording, and return its trace and probe maps |
-| `dumpVCDC` | the VCD of the maps |
-| `dumpVCDSW` | the VCD and its sidecar |
-| `withWaveformSlot`, `withWaveform`, `withWaveformLazy` | record a test and write its files |
-| `withWaveformWhen`, `waveformsRequested` | record only when you ask |
-| `withWaveformOnFailure`, `withWaveformOnFailure'` | keep only the waveform of a failed check |
-| `withWaveformOnCounterexample`, `withWaveformCase` | the same for a Hedgehog property |
+| `writeWaveform` | simulate a design and always write its waveform |
+| `withWaveform` | run the check of a test, and write the waveform only when the check fails |
+| `simulateWaveform`, `Capture` | the same for a Hedgehog property: the counterexample, or one case of a size |
+| `withRecording`, `writeVCD`, `discardRecording` | record a simulation by hand, and write its files |

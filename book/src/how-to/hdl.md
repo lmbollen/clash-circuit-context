@@ -70,6 +70,5 @@ Yosys.
 ## If you also simulate the top entity
 
 `withoutCircuitContext` also turns recording off in simulation. To record a
-simulation of the whole design, simulate the instrumented function under
-`withCircuitContext` (or a helper of `Clash.CircuitContext.Waveform`), not
-the top entity.
+simulation of the whole design, simulate the instrumented function with a
+function of `Clash.CircuitContext.Waveform`, not the top entity.
