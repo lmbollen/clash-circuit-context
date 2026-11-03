@@ -170,9 +170,11 @@ renderVCD spill comment (start, stop0) rec out
 
   -- A scope declares its signals in the order they are written in the
   -- design: by the call site of their recorder (for a plugin-made trace or
-  -- probe, where the binding is written). Signals with one call site (the
-  -- elements of a @Vec@, the fields of a record) or with none follow in
-  -- 'naturalKey' order of their names. 'insertVar' appends, so sorting all
+  -- probe, where the binding is written). The fields of a record share the
+  -- call site of the record, and follow in declaration order (their 'P'
+  -- positions, see 'parseLoc'). Signals with one call site and no position
+  -- (the elements of a @Vec@) or with none follow in 'naturalKey' order of
+  -- their names. 'insertVar' appends, so sorting all
   -- vars first sorts every scope.
   sites = Map.fromList [(n, siteOf (signalKey s)) | (n, s) <- named]
   siteOf raw = let (_, _, loc) = parseSeg (last (splitPath raw)) in parseLoc loc
@@ -314,15 +316,23 @@ parseSeg s = case splitOn '@' s of
  where
   isOrd ds = not (null ds) && all isDigit ds
 
-{- | Parse an encoded call site @L\<line\>C\<col\>F\<hash\>@ into a sort key
-(file hash, line, col).
+{- | Parse an encoded call site @L\<line\>C\<col\>F\<hash\>@, optionally
+followed by record field positions @P\<i\>@ (see
+'Clash.CircuitContext.Core.fieldLoc'), into a sort key (file hash, line,
+col, field positions).
 -}
-parseLoc :: String -> Maybe (Word, Int, Int)
+parseLoc :: String -> Maybe (Word, Int, Int, [Int])
 parseLoc ('L' : s0)
   | (l@(_ : _), 'C' : s1) <- span isDigit s0
-  , (c@(_ : _), 'F' : f@(_ : _)) <- span isDigit s1
-  , all isDigit f =
-      Just (read f, read l, read c)
+  , (c@(_ : _), 'F' : s2) <- span isDigit s1
+  , (f@(_ : _), s3) <- span isDigit s2
+  , Just ps <- fields s3 =
+      Just (read f, read l, read c, ps)
+ where
+  fields "" = Just []
+  fields ('P' : s)
+    | (p@(_ : _), rest) <- span isDigit s = (read p :) <$> fields rest
+  fields _ = Nothing
 parseLoc _ = Nothing
 
 {- | Strip instance tags from all keys. Groups siblings by (parent, name): a

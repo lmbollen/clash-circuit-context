@@ -151,6 +151,34 @@ data Pair dom = Pair
 
 instance (KnownDomain dom) => Traceable (Pair dom)
 
+{- | Records whose fields are NOT in alphabetical order, one inside the other.
+Every leaf of a record trace shares the call site of the binding, so the VCD
+needs their positions to list them as declared: @red, amber, green@, then
+@walk@.
+-}
+data Lamps dom = Lamps
+  { red :: Signal dom Bool
+  , amber :: Signal dom Bool
+  , green :: Signal dom Bool
+  }
+  deriving (Generic)
+
+instance (KnownDomain dom) => Traceable (Lamps dom)
+
+data Panel dom = Panel
+  { lamps :: Lamps dom
+  , walk :: Signal dom Bool
+  }
+  deriving (Generic)
+
+instance (KnownDomain dom) => Traceable (Panel dom)
+
+lampDemo :: (HasCircuitContext) => Signal System Bool -> Signal System Bool
+lampDemo b = red (lamps panel) .&&. amber (lamps panel) .||. green (lamps panel) .&&. walk panel
+ where
+  panel = Panel{lamps = Lamps{red = b, amber = not <$> b, green = b}, walk = b}
+{-# OPAQUE lampDemo #-}
+
 {- | 'probeFmap' coverage: a COMBINATIONAL function lifted over a signal, whose
 internal @where@ bindings the plugin auto-probes (it carries 'HasProbe'). This
 is the @route \<$\> …@ idiom — no mealy, no 'Signal'-typed locals — so neither
@@ -278,6 +306,19 @@ main = do
     "polyHelper open locals traced at both use types"
     (hasT ".asBool@" P.&& hasT ".asInt@" P.&& hasT ".out4@")
   check "closed polymorphic local skipped (F9)" (P.not (hasT "quiet"))
+  -- Record fields in declaration order (separate run; not in the golden VCD).
+  (_, foRec) <- recorded "auto-instrumentation-fo.spill" $ do
+    let xs = sampleN 2 (lampDemo (pure True))
+    evaluate (deepseqX xs xs)
+  written <- writeVCD (0, recordingEnd foRec) foRec "auto-instrumentation-fo.vcd"
+  discardRecording foRec
+  either (\e -> check ("field-order VCD written: " <> e) False) pure written
+  foVcd <- P.readFile "auto-instrumentation-fo.vcd"
+  let foVars = [P.words l P.!! 4 | l <- P.lines foVcd, "$var" `P.elem` P.words l]
+  putStrLn ("field order: " <> show foVars)
+  check
+    "record fields in declaration order, nested ones too"
+    (foVars P.== ["panel_lamps_red", "panel_lamps_amber", "panel_lamps_green", "panel_walk"])
   -- probeFmap / mealyBProbed coverage (separate runs; not in the golden VCD).
   (_, pfRec) <- recorded "auto-instrumentation-pf.spill" $ do
     let xs = sampleN 4 (probeFmapDemo (fromList [3, 3 ..]))
