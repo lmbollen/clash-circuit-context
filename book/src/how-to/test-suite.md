@@ -4,9 +4,9 @@ This guide shows how to write the waveform of a simulation, and how to write
 it only when a test fails. The functions are in
 `Clash.CircuitContext.Waveform`.
 
-Each function takes the options of the waveform, and then what
-`Clash.Signal.Trace.dumpVCD` takes: the `Signal` to observe, and a window
-`(start, stop)` of cycles. The simulation runs `stop` cycles. The waveform
+Each function takes the options of the waveform, the name of the waveform,
+and then what `Clash.Signal.Trace.dumpVCD` takes: a window `(start, stop)` of
+cycles, and the `Signal` to observe. The simulation runs `stop` cycles. The waveform
 shows the cycles from `start` to `stop - 1`. Use `(0, n)` to see all `n`
 cycles. For the options, see [Choose the file and where the values
 wait](#choose-the-file-and-where-the-values-wait); `defaultOptions` writes
@@ -186,7 +186,7 @@ vcdOnDisk = defaultOptions{format = VCD, spill = OnDisk}
 | `format` | `FST` (default) | writes `waveforms/<name>.fst`: compressed, often tens of times smaller than a VCD file |
 | | `VCD` | writes `waveforms/<name>.vcd`: text |
 | `spill` | `InMemory` (default) | keeps the recorded values in memory until the waveform is written. Nothing is written to the disk but the waveform. A run that is stopped leaves nothing |
-| | `OnDisk` | writes the recorded values to `waveforms/<name>.spill` while the simulation runs. The memory does not grow with the recorded history. A run that is stopped leaves the spill file, and you can write its waveform (see [How to keep the waveform of a stopped run](recover.md)) |
+| | `OnDisk` | writes the recorded values to `waveforms/<name>.spill` while the simulation runs. The memory does not grow with the recorded history. A recording that is stopped leaves the spill file, and you can write its waveform (see [How to keep the waveform of a stopped run](recover.md)). `withWaveform` records only when it runs a failed check again |
 
 Surfer and GTKWave open both formats. Use one value for the whole suite: for
 example, define it once and give it to each function.

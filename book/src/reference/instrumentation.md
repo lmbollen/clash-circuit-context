@@ -97,5 +97,6 @@ wrapped.
   constraint.
 - The pass is idempotent. If the plugin is turned on twice, the second run
   makes no change.
-- A binding that already applies `traceSignalC`, `traceSignalSW`, `probe` or
-  `probeSW` with its own name does not get a second recorder.
+- A binding that already applies `traceSignalC`, `traceSignalSW`,
+  `traceNamed`, `probe` or `probeSW` with its own name does not get a second
+  recorder.

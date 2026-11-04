@@ -88,5 +88,7 @@ cycle *i + 1*, not while it makes cycle *i*. To pack a value can need the
 value itself, through a combinational loop in the design, and then the
 simulation would never finish. The value of a cycle can never need a later
 cycle, so one cycle of delay is safe. When the simulation stops, the
-recorder evaluates the last cycle of each signal. A cycle that the
-simulation did not evaluate is `z` in the waveform.
+recorder evaluates each trace up to the last cycle that any signal reached,
+for example the input of a register, which the simulation evaluated one
+cycle less far. It does not do this when the run is cancelled. A cycle that
+the simulation did not evaluate is `z` in the waveform.

@@ -99,8 +99,8 @@ cabal exec -- clash -isrc src/Design.hs --verilog -fplugin=Clash.CircuitContext.
 ```
 
 If you do not give the plugin, a design with an empty `Traceable` instance
-does not compile. The error names `AutoTrace`, `CanTrace` and
-`$dmtraceNamed` (see [If the plugin is not
+does not compile. The error names `TurnOnThePlugin`, with the flag to add
+(see [If the plugin is not
 on](add-to-project.md#if-the-plugin-is-not-on)). `clashi` loads the plugin
 from the pragma.
 
