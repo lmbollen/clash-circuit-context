@@ -26,8 +26,9 @@ simulation records it.
 
 ## In a simulation that records: time and memory
 
-A recording packs the value of each signal in each cycle, and writes the
-changes to a spill file. At the end, the VCD is written from that file. In a
+A recording packs the value of each signal in each cycle, and keeps the
+changes, in memory or in a spill file. At the end, the waveform is written
+from them. In a
 test suite that runs tests in parallel, the peak memory is the sum over the
 tests that run at the same time, so the time and memory of recording add up
 quickly.
@@ -54,24 +55,33 @@ under `withoutCircuitContext`.
 ## Where a recording keeps its history
 
 A recorder packs the value of each cycle into bits as the simulation makes
-it, and writes only the changes, as a VCD does. It does not keep the bits in
-memory: the changes of each signal go to the spill file in small blocks. So
-the recorded history is on the disk, not in memory. The VCD is written by a
-merge of the changes of all signals by time, straight to the file, so the
-text of the VCD is never in memory either.
+it, and keeps only the changes, as a VCD does. The changes of each signal
+are compact records in blocks of 16 KiB. The option `spill` decides where
+the blocks go:
 
-This does not yet make the memory of a recording constant. While the
-simulation runs, the recorders of traced signals keep values of the design
-alive, so the memory of a recorded simulation still grows with its length
-(issue [#38](https://github.com/lmbollen/clash-circuit-context/issues/38)).
-On the firmware test of one CPU design, 237,000 recorded cycles took the
-maximum residency from 3.4 GB, with the history in memory, to 1.05 GB.
+- `InMemory` (the default) keeps them in memory. The memory of a recording
+  grows with its history, but the records are small: a few times smaller
+  than a VCD file of the same run. Nothing is written to the disk but the
+  waveform.
+- `OnDisk` writes them to the spill file. The memory of a recording then
+  does not grow with its length, and a run that is stopped leaves the
+  file. The values are written to the disk twice: to the spill file, and
+  to the waveform.
 
-Signals with the same history share one identifier in the VCD. The same
-wire often has a name at each level of the hierarchy that it passes, and
-each name is a recorded signal. The recorder finds them by a hash of their
-changes, and then compares the changes, so two signals that only have the
-same hash do not share an identifier.
+The waveform is written by a merge of the changes of all signals by time,
+straight to the file, so the text of a VCD is never in memory.
+
+On the firmware test of one CPU design (237,000 cycles, 162 signals), the
+maximum residency was 167 MB in memory and 58 MB with the spill file. The
+waveform was 14 MB as FST and 377 MB as VCD, and took the same time to
+write.
+
+Signals with the same history share one set of values in the waveform: one
+identifier in a VCD file, aliases in an FST file. The same wire often has a
+name at each level of the hierarchy that it passes, and each name is a
+recorded signal. The recorder finds them by a hash of their changes, and
+then compares the changes, so two signals that only have the same hash do
+not share their values.
 
 The recorder packs the value of cycle *i* when the simulation evaluates
 cycle *i + 1*, not while it makes cycle *i*. To pack a value can need the
@@ -79,4 +89,4 @@ value itself, through a combinational loop in the design, and then the
 simulation would never finish. The value of a cycle can never need a later
 cycle, so one cycle of delay is safe. When the simulation stops, the
 recorder evaluates the last cycle of each signal. A cycle that the
-simulation did not evaluate is `z` in the VCD.
+simulation did not evaluate is `z` in the waveform.

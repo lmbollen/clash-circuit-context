@@ -11,15 +11,18 @@ exception, so `withWaveform` cannot see the failure.
 
 ## Keep the waveform of the counterexample
 
-Simulate the design with `simulateWaveform Counterexample`, and check the
-samples that it returns. The first argument has the type `Capture`, with the
-constructors `Counterexample` and `AtSize Size`. The other arguments are the
-same as for `writeWaveform`:
+Simulate the design with `simulateWaveform defaultOptions Counterexample`,
+and check the samples that it returns. The first argument has the options of
+the waveform, as for `writeWaveform` (see [How to keep waveforms from a test
+suite](test-suite.md#choose-the-file-and-where-the-values-wait)). The second
+argument has the type `Capture`, with the constructors `Counterexample` and
+`AtSize Size`. The other arguments are the same as for `writeWaveform`:
 
 ```haskell
 simulateWaveform ::
   (KnownDomain dom, NFDataX a) =>
-  Capture -> String -> (Int, Int) -> ((HasCircuitContext) => Signal dom a) -> PropertyT IO [a]
+  WaveformOptions -> Capture -> String -> (Int, Int) ->
+  ((HasCircuitContext) => Signal dom a) -> PropertyT IO [a]
 ```
 
 ```haskell,clash group=hedgehog hidden
@@ -51,7 +54,7 @@ prop_accumulate :: Property
 prop_accumulate = property $ do
   xs <- forAll (Gen.list (Range.linear 1 20) (Gen.integral Range.linearBounded))
   let n = P.length xs
-  out <- simulateWaveform Counterexample "prop" (0, n) (accumulate (fromList xs))
+  out <- simulateWaveform defaultOptions Counterexample "prop" (0, n) (accumulate (fromList xs))
   out === P.take n (model xs)
 
 >>> :t prop_accumulate
@@ -68,7 +71,7 @@ with the path of the file:
        ┃     │ ━━━ Failed (- lhs) (+ rhs) ━━━
        ┃     │ - [ 0 , 0 , 1 ]
        ┃     │ + [ 0 , 0 , 0 ]
-    waveform: /home/you/project/waveforms/prop.vcd
+    waveform: /home/you/project/waveforms/prop.fst
 ```
 
 Keep these rules in mind:
@@ -80,7 +83,7 @@ Keep these rules in mind:
   does not print the report of a failure writes no waveform.
 - The waveform of a counterexample stays when the property passes again
   later. `simulateWaveform` does not delete files, as `withWaveform` does.
-  Delete `waveforms/<name>.vcd` yourself when you do not need it.
+  Delete `waveforms/<name>.fst` yourself when you do not need it.
 
 ## Keep the waveform of a passing case too
 
@@ -90,7 +93,7 @@ This happens once for each waveform name in a process. A small size gives a
 short waveform that is easy to read:
 
 ```haskell
-out <- simulateWaveform (AtSize 10) "prop" (0, n) (accumulate (fromList xs))
+out <- simulateWaveform defaultOptions (AtSize 10) "prop" (0, n) (accumulate (fromList xs))
 ```
 
 Hedgehog gives the tests of a property the sizes `0`, `1`, `2`, … up to

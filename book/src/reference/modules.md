@@ -11,7 +11,7 @@ that you use most.
 | `Clash.CircuitContext.Auto` | The classes `Traceable` and `Probeable`, and what the plugin inserts (`autoTrace`, `autoProbe`) |
 | `Clash.CircuitContext.Waveform` | Waveforms from IO code and from a test suite |
 | `Clash.CircuitContext.Waveform.Hedgehog` | Waveforms from Hedgehog properties |
-| `Clash.CircuitContext.Recording` | Recording by hand, for a design with more than one domain |
+| `Clash.CircuitContext.Recording` | Recording by hand, for a design with more than one domain, and spill files |
 | `Clash.CircuitContext.Plugin` | The GHC plugin. Use it as `-fplugin=Clash.CircuitContext.Plugin` |
 
 `Waveform` (for described signals) is not in these modules. It is the class
@@ -97,17 +97,29 @@ mooreProbed ::
 ### `Clash.CircuitContext.Waveform`
 
 ```haskell
--- Simulate stop cycles, write waveforms/<name>.vcd and .json, and return the
--- stop samples.
+data WaveformOptions = WaveformOptions {format :: Format, spill :: Spill}
+data Format = VCD | FST
+data Spill = InMemory | OnDisk
+
+-- FST, recorded in memory.
+defaultOptions :: WaveformOptions
+
+-- Simulate stop cycles, write waveforms/<name>.fst (or .vcd) and .json, and
+-- return the stop samples.
 writeWaveform ::
   (KnownDomain dom, NFDataX a) =>
-  String -> (Int, Int) -> ((HasCircuitContext) => Signal dom a) -> IO [a]
+  WaveformOptions -> String -> (Int, Int) -> ((HasCircuitContext) => Signal dom a) -> IO [a]
 
 -- Run the check without recording. If it throws, run it again with
 -- recording, write the waveform, and throw the same exception.
 withWaveform ::
   (KnownDomain dom, NFDataX a) =>
-  String -> (Int, Int) -> ((HasCircuitContext) => Signal dom a) -> ([a] -> IO b) -> IO b
+  WaveformOptions -> String -> (Int, Int) -> ((HasCircuitContext) => Signal dom a) ->
+  ([a] -> IO b) -> IO b
+
+-- Write the waveform of a run that was stopped, from waveforms/<name>.spill.
+-- Returns the path of the waveform, or why there is none.
+recoverWaveform :: WaveformOptions -> String -> IO (Either String FilePath)
 ```
 
 The design argument has the type `(HasCircuitContext) => Signal dom a`: the
@@ -117,7 +129,12 @@ do not need `HasCircuitContext` yourself.
 The window `(start, stop)` is in cycles. The simulation runs `stop` cycles,
 and the waveform has the cycles `start` to `stop - 1`.
 
+For the options, see [How to keep waveforms from a test
+suite](../how-to/test-suite.md#choose-the-file-and-where-the-values-wait).
+
 ### `Clash.CircuitContext.Waveform.Hedgehog`
+
+This module also exports the options of `Clash.CircuitContext.Waveform`.
 
 ```haskell
 data Capture = Counterexample | AtSize Size
@@ -125,27 +142,43 @@ data Capture = Counterexample | AtSize Size
 -- The same as writeWaveform, in a property. Records only as Capture says.
 simulateWaveform ::
   (KnownDomain dom, NFDataX a) =>
-  Capture -> String -> (Int, Int) -> ((HasCircuitContext) => Signal dom a) -> PropertyT IO [a]
+  WaveformOptions -> Capture -> String -> (Int, Int) ->
+  ((HasCircuitContext) => Signal dom a) -> PropertyT IO [a]
 ```
 
 ### `Clash.CircuitContext.Recording`
 
 ```haskell
--- Run the action with recording into the spill file. Returns what the
--- action returned or threw, and the recording.
-withRecording :: FilePath -> ((HasCircuitContext) => IO r) -> IO (Either SomeException r, Recording)
+-- Run the action with recording: into the spill file at the path, or, with
+-- Nothing, in memory. Returns what the action returned or threw, and the
+-- recording.
+withRecording ::
+  Maybe FilePath -> ((HasCircuitContext) => IO r) -> IO (Either SomeException r, Recording)
 
--- Write the VCD at the path, and the sidecar beside it. Left: nothing was
--- written, and why.
+-- Write the waveform at the path, and the sidecar beside it. Left: nothing
+-- was written, and why.
+writeFST :: (Int, Int) -> Recording -> FilePath -> IO (Either String ())
 writeVCD :: (Int, Int) -> Recording -> FilePath -> IO (Either String ())
 
--- The time at which the simulation stopped, in units of the timescale.
+-- The time from which the recording has cycles, and the time at which the
+-- simulation stopped, in units of the timescale.
+recordingStart :: Recording -> Int
 recordingEnd :: Recording -> Int
 
--- Delete the spill file.
+-- Delete the spill file, if the recording has one.
 discardRecording :: Recording -> IO ()
+
+-- Read a spill file, also of a run that was stopped.
+recoverRecording :: FilePath -> IO (Either String Recording)
+
+-- Write the waveform of a spill file, in this format, at the second path,
+-- over the window, or everything with Nothing. The spill file is kept.
+writeSpill :: Format -> Maybe (Int, Int) -> FilePath -> FilePath -> IO (Either String ())
 ```
 
 `withRecording` is also exported by `Clash.CircuitContext`. The window of
-`writeVCD` is `[start, stop)` in units of the VCD timescale, not in cycles:
-see [Waveform files](waveform-files.md#the-window).
+`writeFST`, `writeVCD` and `writeSpill` is `[start, stop)` in units of the
+timescale, not in cycles: see [Waveform files](waveform-files.md#the-window).
+
+The package also has two executables, `spill2fst` and `spill2vcd`: see
+[Executables](executables.md).

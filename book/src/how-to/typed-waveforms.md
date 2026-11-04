@@ -1,6 +1,6 @@
 # How to show payload types in a waveform viewer
 
-A VCD only has bits. This guide shows how to make a viewer show the value of
+A waveform file only has bits. This guide shows how to make a viewer show the value of
 a signal as its type: `Busy 2`, not `0b0110`.
 
 1. Give each payload type a `Waveform` instance from
@@ -43,16 +43,16 @@ a signal as its type: `Busy 2`, not `0b0110`.
 
 2. Write the waveform with a function of `Clash.CircuitContext.Waveform`, as
    in [How to keep waveforms from a test suite](test-suite.md). Beside each
-   `.vcd` file, it writes a `.json` file: the sidecar. The sidecar describes
-   each signal that the plugin records and whose payload type has a
-   `Waveform` instance. A value that you record by hand with `traceSignalC`
+   waveform file (`.fst` or `.vcd`), it writes a `.json` file: the sidecar.
+   The sidecar describes each signal that the plugin records and whose
+   payload type has a `Waveform` instance. A value that you record by hand with `traceSignalC`
    or `probe` is recorded as bits. Use `traceSignalSW` or `probeSW` to have
    it described.
 
    ```haskell,clash group=typed
    record :: IO ()
    record = do
-     _ <- writeWaveform "sequencer" (0, 8) (sequencer (pure True))
+     _ <- writeWaveform defaultOptions "sequencer" (0, 8) (sequencer (pure True))
      pure ()
 
    -- | The signals that a sidecar describes.
@@ -68,11 +68,12 @@ a signal as its type: `Busy 2`, not `0b0110`.
    ["sequencer.done","sequencer.next","sequencer.phase"]
    ```
 
-   The keys are the full paths of the signals in the VCD.
+   The keys are the full paths of the signals in the waveform.
 
-3. Open the `.vcd` file in [Surfer](https://surfer-project.org/) with the
+3. Open the waveform file in [Surfer](https://surfer-project.org/) with the
    Surfer plugin of clash-shockwaves. The plugin reads the sidecar beside the
-   VCD. See the clash-shockwaves README for how to install the plugin.
+   waveform file. See the clash-shockwaves README for how to install the
+   plugin.
 
 ## If a type has no `Waveform` instance
 
@@ -84,4 +85,4 @@ plugin](warnings.md).
 
 If you write a `Waveform` instance by hand and its width does not agree with
 `BitSize`, the sidecar does not describe that signal, and a message on
-stderr names it. The VCD still has the signal, as bits.
+stderr names it. The waveform still has the signal, as bits.

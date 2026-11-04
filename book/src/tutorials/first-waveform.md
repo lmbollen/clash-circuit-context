@@ -105,7 +105,12 @@ Add these two functions to the same file:
 ```haskell,clash group=tutorial
 -- | Simulate 'top' for eight cycles, and write waveforms/counters.vcd.
 runCounters :: IO [Unsigned 8]
-runCounters = writeWaveform "counters" (0, 8) (top (fromList (P.cycle [True, False, True])))
+runCounters =
+  writeWaveform
+    defaultOptions{format = VCD}
+    "counters"
+    (0, 8)
+    (top (fromList (P.cycle [True, False, True])))
 
 -- | Print the part of a VCD file that declares its scopes and signals.
 declarations :: FilePath -> IO ()
@@ -115,8 +120,13 @@ declarations path = do
   mapM_ putStrLn (P.takeWhile (not . ("$enddefinitions" `isPrefixOf`)) fromScopes)
 ```
 
-`writeWaveform "counters" (0, 8)` simulates 8 cycles of the design, writes
-the waveform of the cycles 0 to 7, and returns the 8 output values.
+`writeWaveform defaultOptions{format = VCD} "counters" (0, 8)` simulates 8
+cycles of the design, writes the waveform of the cycles 0 to 7, and returns
+the 8 output values.
+
+The first argument has the options of the waveform. `defaultOptions` writes
+an FST file, which is compressed and smaller. This tutorial writes a VCD
+file, because a VCD file is text, and we read it below.
 
 `top` needs `HasCircuitContext`, but `runCounters` does not have that
 constraint. `writeWaveform` supplies the context: its design argument has
@@ -169,7 +179,8 @@ Notice three things:
 ## Look at the waveform
 
 Open `waveforms/counters.vcd` in a waveform viewer, for example
-[Surfer](https://surfer-project.org/) or GTKWave. Expand `top`, then
+[Surfer](https://surfer-project.org/) or GTKWave. Both viewers also open FST
+files. Expand `top`, then
 `counter_0` and `counter_1`. The `count` of one counter goes up in the high
 cycles of the input. The `count` of the other goes up in the low cycles.
 
