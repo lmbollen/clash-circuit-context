@@ -3,6 +3,11 @@
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE RankNTypes #-}
 {-# LANGUAGE TypeApplications #-}
+-- 'slow' waits with 'threadDelay', whose 'onException' rethrows a timeout
+-- synchronously, which stores it in the thunk that waited. Floated to the
+-- top level, that thunk would be shared, and the next test would get the
+-- previous test's timeout.
+{-# OPTIONS_GHC -fno-full-laziness #-}
 
 {- | The waveform options: the format a waveform is written as, and where a
 recording keeps its values until then. Each choice must give the same
@@ -14,11 +19,13 @@ module Test.Formats (tests) where
 
 import qualified Prelude as P
 
+import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (forM_, when)
 import Data.List (isPrefixOf)
 import System.Directory (doesFileExist, getFileSize, removeFile)
 import System.FilePath ((<.>), (</>))
+import System.IO.Unsafe (unsafePerformIO)
 import System.Timeout (timeout)
 
 import qualified Data.ByteString as ByteString
@@ -41,6 +48,21 @@ import Clash.CircuitContext.Waveform
 counter :: (HasCircuitContext) => Signal System (Unsigned 8)
 counter = traceSignalSW "count" (fromList (P.cycle [0 .. 255]))
 {-# OPAQUE counter #-}
+
+{- | A traced signal whose value at cycle 2000 takes two seconds to compute,
+seen only through its spine, so that only the recorder computes its values: a
+run that is cancelled during the wait is cancelled while the recorder packs
+that value. A run that is not cancelled ends after 4000 cycles.
+-}
+slow :: (HasCircuitContext) => Signal System (Unsigned 8)
+slow = P.const 0 <$> traceSignalSW "count" (fromList [valueAt i | i <- [0 :: Int ..]])
+{-# OPAQUE slow #-}
+
+valueAt :: Int -> Unsigned 8
+valueAt i
+  | i P.== 2000 = unsafePerformIO (threadDelay 2000000 >> pure 0)
+  | P.otherwise = P.fromIntegral i
+{-# NOINLINE valueAt #-}
 
 -- | A file of a waveform name.
 file :: String -> String -> FilePath
@@ -117,8 +139,7 @@ tests =
     , testCase "a cancelled run keeps its spill file, and recoverWaveform writes its waveform" $ do
         let name = "formats-cancelled"
         scrub [name]
-        -- A window that never ends: only the timeout stops the run.
-        stopped <- timeout 300000 (writeWaveform vcdOnDisk name (0, P.maxBound) counter)
+        stopped <- timeout 500000 (writeWaveform vcdOnDisk name (0, 4000) slow)
         assertBool "the run was cancelled" (P.null stopped)
         existing name ["spill", "vcd"] >>= (@?= [True, False])
         recovered <- recoverWaveform vcd name
@@ -129,7 +150,7 @@ tests =
     , testCase "a cancelled run in memory leaves nothing" $ do
         let name = "formats-cancelled-in-memory"
         scrub [name]
-        stopped <- timeout 300000 (writeWaveform defaultOptions name (0, P.maxBound) counter)
+        stopped <- timeout 500000 (writeWaveform defaultOptions name (0, 4000) slow)
         assertBool "the run was cancelled" (P.null stopped)
         existing name ["spill", "fst", "json"] >>= (@?= [False, False, False])
     , testCase "a spill file cut off in a block is read up to its last whole block" $ do
