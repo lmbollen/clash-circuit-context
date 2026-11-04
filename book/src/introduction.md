@@ -13,10 +13,11 @@ a function:
 
 A GHC plugin then makes the function a component, and records each named
 local binding under its own name. A simulation that you run as usual gives a
-VCD file and a JSON file. The JSON file tells a waveform viewer the type of
-each signal: its constructors and fields, not only its bits.
+waveform file (FST or VCD) and a JSON file. The JSON file tells a waveform
+viewer the type of each signal: its constructors and fields, not only its
+bits.
 
-{{#drawio path="diagrams/pipeline.drawio" steps="layers" alt="The plugin rewrites the design. A simulation records it. The dump writes a VCD file and a JSON file for a viewer."}}
+{{#drawio path="diagrams/pipeline.drawio" steps="layers" alt="The plugin rewrites the design. A simulation records it. The dump writes a waveform file and a JSON file for a viewer."}}
 
 ## What the plugin does to your code
 
@@ -87,5 +88,5 @@ Many examples show a waveform with `printWaveform n design`. **This function
 is a helper of the book, not part of the package.** It simulates `n` cycles
 of the design, writes the waveform to a temporary file, and prints its
 scopes and signals as an indented tree. To see the same in your project,
-write the waveform with `writeWaveform`, and open the VCD file in a viewer
+write the waveform with `writeWaveform`, and open the waveform file in a viewer
 (or print its declarations, as the tutorial does).

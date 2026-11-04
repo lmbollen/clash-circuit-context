@@ -18,24 +18,24 @@ import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 
 import Clash.CircuitContext (HasCircuitContext, withRecording)
-import Clash.CircuitContext.Recording (discardRecording, writeVCD)
+import Clash.CircuitContext.Recording (writeVCD)
 import Clash.Prelude (KnownDomain, NFDataX, Signal, deepseqX, sampleN)
 
 {- | Simulate a design for some cycles with recording, and print the scopes
-and signals of its VCD: one line for each, indented by depth. The files are
-written to the temporary directory, and deleted after.
+and signals of its waveform: one line for each, indented by depth. The
+recording is kept in memory; the VCD is written to the temporary directory,
+and deleted after.
 -}
 printWaveform :: (KnownDomain dom, NFDataX a) => Int -> ((HasCircuitContext) => Signal dom a) -> IO ()
 printWaveform n design = do
   tmp <- getTemporaryDirectory
   (path, h) <- openTempFile tmp "book.vcd"
   hClose h
-  let files = [path, path -<.> "json", path -<.> "spill"]
+  let files = [path, path -<.> "json"]
   flip finally (mapM_ removePathForcibly files) $ do
-    (result, rec) <- withRecording (path -<.> "spill") (let xs = sampleN n design in evaluate (deepseqX xs xs))
+    (result, rec) <- withRecording Nothing (let xs = sampleN n design in evaluate (deepseqX xs xs))
     _ <- either throwIO pure result
     written <- writeVCD (0, n) rec path
-    discardRecording rec
     either fail (const (TextIO.readFile path >>= mapM_ putStrLn . outline)) written
 
 -- | The declarations of a VCD as an indented tree.

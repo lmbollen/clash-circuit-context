@@ -4,10 +4,13 @@ This guide shows how to write the waveform of a simulation, and how to write
 it only when a test fails. The functions are in
 `Clash.CircuitContext.Waveform`.
 
-Each function takes what `Clash.Signal.Trace.dumpVCD` takes: the `Signal` to
-observe, and a window `(start, stop)` of cycles. The simulation runs `stop`
-cycles. The waveform shows the cycles from `start` to `stop - 1`. Use
-`(0, n)` to see all `n` cycles.
+Each function takes the options of the waveform, and then what
+`Clash.Signal.Trace.dumpVCD` takes: the `Signal` to observe, and a window
+`(start, stop)` of cycles. The simulation runs `stop` cycles. The waveform
+shows the cycles from `start` to `stop - 1`. Use `(0, n)` to see all `n`
+cycles. For the options, see [Choose the file and where the values
+wait](#choose-the-file-and-where-the-values-wait); `defaultOptions` writes
+an FST file.
 
 The signal must be one `Signal`:
 
@@ -19,8 +22,8 @@ The signal must be one `Signal`:
 
 ## Always write the waveform
 
-Use `writeWaveform "<name>"`. It simulates the design, writes
-`waveforms/<name>.vcd` and `waveforms/<name>.json`, and returns the samples.
+Use `writeWaveform defaultOptions "<name>"`. It simulates the design, writes
+`waveforms/<name>.fst` and `waveforms/<name>.json`, and returns the samples.
 It makes the directory `waveforms` in the working directory if necessary.
 For the types of the functions, see [Modules](../reference/modules.md#in-a-simulation).
 In a [tasty](https://hackage.haskell.org/package/tasty) suite with HUnit:
@@ -28,7 +31,7 @@ In a [tasty](https://hackage.haskell.org/package/tasty) suite with HUnit:
 ```haskell
 case_accumulate :: Assertion
 case_accumulate = do
-  out <- writeWaveform "accumulate" (0, 4) (accumulate (pure 1))
+  out <- writeWaveform defaultOptions "accumulate" (0, 4) (accumulate (pure 1))
   out @?= [0, 0, 1, 2]
 ```
 
@@ -49,7 +52,7 @@ an ordinary assertion:
 ```haskell
 case_accumulate :: Assertion
 case_accumulate =
-  withWaveform "accumulate" (0, 4) (accumulate (pure 1)) $ \out ->
+  withWaveform defaultOptions "accumulate" (0, 4) (accumulate (pure 1)) $ \out ->
     out @?= [0, 0, 1, 2]
 ```
 
@@ -82,16 +85,16 @@ check expected out = unless (out == expected) (P.error ("got " <> show out))
 
 testWith :: [Unsigned 8] -> IO (Either ErrorCall ())
 testWith expected = try $
-  withWaveform "accumulate" (0, 4) (accumulate (pure 1)) (check expected)
+  withWaveform defaultOptions "accumulate" (0, 4) (accumulate (pure 1)) (check expected)
 ```
 
 When the check passes, no waveform is written:
 
 ```haskell,clash group=suite
->>> removePathForcibly "waveforms/accumulate.vcd"
+>>> removePathForcibly "waveforms/accumulate.fst"
 >>> testWith [0, 0, 1, 2]
 Right ()
->>> doesFileExist "waveforms/accumulate.vcd"
+>>> doesFileExist "waveforms/accumulate.fst"
 False
 ```
 
@@ -101,11 +104,11 @@ absolute path:
 
 ```haskell,clash group=suite
 >>> testWith [0, 1, 2, 3]
-clash-circuit-context: wrote .../waveforms/accumulate.vcd
+clash-circuit-context: wrote .../waveforms/accumulate.fst
 Left got [0,0,1,2]
 CallStack (from HasCallStack):
 ...
->>> doesFileExist "waveforms/accumulate.vcd"
+>>> doesFileExist "waveforms/accumulate.fst"
 True
 ```
 
@@ -115,7 +118,7 @@ failed run. It does not delete a waveform that `writeWaveform` wrote:
 ```haskell,clash group=suite
 >>> testWith [0, 0, 1, 2]
 Right ()
->>> doesFileExist "waveforms/accumulate.vcd"
+>>> doesFileExist "waveforms/accumulate.fst"
 False
 ```
 
@@ -134,7 +137,7 @@ Keep these rules in mind:
 - The path of the waveform is on stderr, not in the message of the failed
   test. A test runner that redraws its progress line, such as tasty in a
   terminal, can print that line in the middle of its own output. Look for
-  `clash-circuit-context: wrote`, or open `waveforms/<name>.vcd`.
+  `clash-circuit-context: wrote`, or open `waveforms/<name>.fst`.
 
 ## Show only some cycles
 
@@ -144,14 +147,15 @@ simulated, but they are not recorded:
 ```haskell
 case_late :: Assertion
 case_late = do
-  out <- writeWaveform "late" (100_000, 100_100) (accumulate (pure 1))
+  out <- writeWaveform defaultOptions "late" (100_000, 100_100) (accumulate (pure 1))
   P.length out @?= 100_100
 ```
 
 The function returns all `stop` samples. Only the waveform starts at
 `start`.
 
-The window cannot start before cycle 0, because a VCD has no negative time.
+The window cannot start before cycle 0, because a waveform has no negative
+time.
 
 ## Let the test decide how long to simulate
 
@@ -163,9 +167,29 @@ evaluated:
 ```haskell
 case_firmware :: Assertion
 case_firmware =
-  withWaveform "firmware" (0, maxBound) (uartBytes design) $ \bytes ->
+  withWaveform defaultOptions "firmware" (0, maxBound) (uartBytes design) $ \bytes ->
     takeWhile (/= '\n') (decode bytes) @?= "RESULT: OK"
 ```
+
+## Choose the file and where the values wait
+
+The first argument of each function is a `WaveformOptions` record with two
+fields. Change the fields of `defaultOptions`:
+
+```haskell
+vcdOnDisk :: WaveformOptions
+vcdOnDisk = defaultOptions{format = VCD, spill = OnDisk}
+```
+
+| Field | Value | Effect |
+|---|---|---|
+| `format` | `FST` (default) | writes `waveforms/<name>.fst`: compressed, often tens of times smaller than a VCD file |
+| | `VCD` | writes `waveforms/<name>.vcd`: text |
+| `spill` | `InMemory` (default) | keeps the recorded values in memory until the waveform is written. Nothing is written to the disk but the waveform. A run that is stopped leaves nothing |
+| | `OnDisk` | writes the recorded values to `waveforms/<name>.spill` while the simulation runs. The memory does not grow with the recorded history. A run that is stopped leaves the spill file, and you can write its waveform (see [How to keep the waveform of a stopped run](recover.md)) |
+
+Surfer and GTKWave open both formats. Use one value for the whole suite: for
+example, define it once and give it to each function.
 
 ## Write no waveforms at all
 

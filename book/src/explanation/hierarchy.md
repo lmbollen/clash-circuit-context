@@ -6,7 +6,7 @@ source: one scope for each component instance, nested as the components
 call each other. This page explains how the package knows that hierarchy,
 and why it names instances as it does.
 
-{{#drawio path="diagrams/hierarchy.drawio" alt="The design top calls counter twice. In the VCD, top has the signal out and two scopes, counter_0 and counter_1, each with count and next"}}
+{{#drawio path="diagrams/hierarchy.drawio" alt="The design top calls counter twice. In the waveform, top has the signal out and two scopes, counter_0 and counter_1, each with count and next"}}
 
 ## The context is an implicit parameter
 

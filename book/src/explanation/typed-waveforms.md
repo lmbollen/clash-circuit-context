@@ -1,7 +1,8 @@
 # About typed waveforms
 
-A VCD knows where a signal is and how wide it is: `top.bus`, 72 bits. It does
-not know that those bits are a record with an address field and a strobe.
+A waveform file knows where a signal is and how wide it is: `top.bus`, 72
+bits. It does not know that those bits are a record with an address field
+and a strobe.
 This page explains how clash-circuit-context and
 [clash-shockwaves](https://github.com/clash-lang/clash-shockwaves) work
 together, and why describing is separate from recording.
@@ -11,13 +12,13 @@ together, and why describing is separate from recording.
 | | clash-circuit-context | clash-shockwaves |
 |---|---|---|
 | Knows | where a signal is | what a signal is |
-| Output | one VCD scope for each component instance | the structure of a type, as a JSON sidecar |
+| Output | one waveform scope for each component instance | the structure of a type, as a JSON sidecar |
 | Source of the information | the hierarchy of the source | the `Waveform` instance of the payload type |
 
 The plugin records a signal, and also takes the description of its type from
 the `Waveform` instance at that moment, when the type is still known. The
 dump writes both files from one set of maps, and keys the sidecar by the
-paths that the VCD declares. Nothing is matched by name later.
+paths that the waveform declares. Nothing is matched by name later.
 
 ## Why recording and describing are separate
 
