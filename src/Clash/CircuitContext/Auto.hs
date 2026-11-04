@@ -68,6 +68,9 @@ module Clash.CircuitContext.Auto (
 
   -- * Never recorded
   NonTranslatable,
+
+  -- * The plugin is on
+  TurnOnThePlugin,
 ) where
 
 import Clash.Magic (SimOnly)
@@ -127,7 +130,7 @@ import GHC.Generics (
   (:+:) (..),
  )
 import GHC.Stack (HasCallStack, withFrozenCallStack)
-import GHC.TypeLits (type (+))
+import GHC.TypeLits (Symbol, type (+))
 import Numeric.Natural (Natural)
 import System.IO (Handle)
 import System.Mem.StableName (StableName)
@@ -190,17 +193,45 @@ WRITTEN context, so keep that context to ordinary class constraints, as
 above — no @Generic@\/@GTraceable@ noise (they are default-method
 constraints, not instance constraints, so this comes naturally).
 -}
+{- | Proof that "Clash.CircuitContext.Plugin" is on in this module. The
+class has no instances: only the plugin solves it, and its argument is the
+message of the error when the plugin is off.
+
+The generic path of 'Traceable' needs the oracle of the plugin to decide each
+field. Without the plugin, an empty @instance Traceable T@ does not compile,
+and GHC's error names only the internals of that path (@AutoTrace@,
+@CanTrace@, @$dmtraceNamed@). With this constraint on the default method,
+the error also gives the fix:
+
+> No instance for ‘TurnOnThePlugin
+>                    "add -fplugin=Clash.CircuitContext.Plugin to the ghc-options of this package, or to the command line of clash"’
+-}
+class TurnOnThePlugin (fix :: Symbol)
+
 class Traceable t where
   traceNamed :: (HasCallStack, HasCircuitContext) => String -> t -> t
   default traceNamed ::
-    (HasCallStack, HasCircuitContext, Generic t, GTraceable (Rep t)) =>
+    ( HasCallStack
+    , HasCircuitContext
+    , TurnOnThePlugin
+        "add -fplugin=Clash.CircuitContext.Plugin to the ghc-options of this package, or to the command line of clash"
+    , Generic t
+    , GTraceable (Rep t)
+    ) =>
     String ->
     t ->
     t
-  -- Freeze the stack so every leaf registers under the call site of the
-  -- record trace itself (the auto-traced binding), keeping sibling
-  -- disambiguation design-ordered.
-  traceNamed nm t = withFrozenCallStack (to (snd (gtraceNamed nm 0 (from t))))
+  traceNamed = genericTraceNamed
+
+{- | The generic path of 'traceNamed', without 'TurnOnThePlugin': for the
+tuple instances below, whose contexts give each field's 'AutoTrace' already.
+-}
+genericTraceNamed ::
+  (HasCallStack, HasCircuitContext, Generic t, GTraceable (Rep t)) => String -> t -> t
+-- Freeze the stack so every leaf registers under the call site of the
+-- record trace itself (the auto-traced binding), keeping sibling
+-- disambiguation design-ordered.
+genericTraceNamed nm t = withFrozenCallStack (to (snd (gtraceNamed nm 0 (from t))))
 
 {- | The @AutoDescribe@ member upgrades the trace to a DESCRIBED one
 ('traceSignalSW') where the payload has a 'Waveform' instance, and constrains
@@ -209,7 +240,13 @@ a)@ means what it always meant — 'KnownDomain', 'BitPack' and 'NFDataX' — an
 a payload without 'Waveform' is still traced, as raw bits.
 -}
 instance
-  (KnownDomain dom, BitPack a, NFDataX a, AutoDescribe (CanDescribe a) a) =>
+  ( TurnOnThePlugin
+      "add -fplugin=Clash.CircuitContext.Plugin to the ghc-options of this package, or to the command line of clash"
+  , KnownDomain dom
+  , BitPack a
+  , NFDataX a
+  , AutoDescribe (CanDescribe a) a
+  ) =>
   Traceable (Signal dom a)
   where
   traceNamed = traceDescribedAt @(CanDescribe a) @a
@@ -282,17 +319,22 @@ Demand-equivalent to identity: forcing the traced tuple to WHNF forces
 exactly the one constructor match a @let@-pattern selector would force
 anyway, and the components stay unforced 'traceNamed' thunks.
 -}
-instance (AutoTrace (CanTrace a) a, AutoTrace (CanTrace b) b) => Traceable (a, b)
-instance (AutoTrace (CanTrace a) a, AutoTrace (CanTrace b) b, AutoTrace (CanTrace c) c) => Traceable (a, b, c)
+instance (AutoTrace (CanTrace a) a, AutoTrace (CanTrace b) b) => Traceable (a, b) where
+  traceNamed = genericTraceNamed
+instance (AutoTrace (CanTrace a) a, AutoTrace (CanTrace b) b, AutoTrace (CanTrace c) c) => Traceable (a, b, c) where
+  traceNamed = genericTraceNamed
 instance
   (AutoTrace (CanTrace a) a, AutoTrace (CanTrace b) b, AutoTrace (CanTrace c) c, AutoTrace (CanTrace d) d) =>
-  Traceable (a, b, c, d)
+  Traceable (a, b, c, d) where
+  traceNamed = genericTraceNamed
 instance
   (AutoTrace (CanTrace a) a, AutoTrace (CanTrace b) b, AutoTrace (CanTrace c) c, AutoTrace (CanTrace d) d, AutoTrace (CanTrace e) e) =>
-  Traceable (a, b, c, d, e)
+  Traceable (a, b, c, d, e) where
+  traceNamed = genericTraceNamed
 instance
   (AutoTrace (CanTrace a) a, AutoTrace (CanTrace b) b, AutoTrace (CanTrace c) c, AutoTrace (CanTrace d) d, AutoTrace (CanTrace e) e, AutoTrace (CanTrace f) f) =>
-  Traceable (a, b, c, d, e, f)
+  Traceable (a, b, c, d, e, f) where
+  traceNamed = genericTraceNamed
 instance
   ( AutoTrace (CanTrace a) a
   , AutoTrace (CanTrace b) b
@@ -302,7 +344,8 @@ instance
   , AutoTrace (CanTrace f) f
   , AutoTrace (CanTrace g) g
   ) =>
-  Traceable (a, b, c, d, e, f, g)
+  Traceable (a, b, c, d, e, f, g) where
+  traceNamed = genericTraceNamed
 instance
   ( AutoTrace (CanTrace a) a
   , AutoTrace (CanTrace b) b
@@ -313,7 +356,8 @@ instance
   , AutoTrace (CanTrace g) g
   , AutoTrace (CanTrace h) h
   ) =>
-  Traceable (a, b, c, d, e, f, g, h)
+  Traceable (a, b, c, d, e, f, g, h) where
+  traceNamed = genericTraceNamed
 instance
   ( AutoTrace (CanTrace a) a
   , AutoTrace (CanTrace b) b
@@ -325,7 +369,8 @@ instance
   , AutoTrace (CanTrace h) h
   , AutoTrace (CanTrace i) i
   ) =>
-  Traceable (a, b, c, d, e, f, g, h, i)
+  Traceable (a, b, c, d, e, f, g, h, i) where
+  traceNamed = genericTraceNamed
 instance
   ( AutoTrace (CanTrace a) a
   , AutoTrace (CanTrace b) b
@@ -338,7 +383,8 @@ instance
   , AutoTrace (CanTrace i) i
   , AutoTrace (CanTrace j) j
   ) =>
-  Traceable (a, b, c, d, e, f, g, h, i, j)
+  Traceable (a, b, c, d, e, f, g, h, i, j) where
+  traceNamed = genericTraceNamed
 instance
   ( AutoTrace (CanTrace a) a
   , AutoTrace (CanTrace b) b
@@ -352,7 +398,8 @@ instance
   , AutoTrace (CanTrace j) j
   , AutoTrace (CanTrace k) k
   ) =>
-  Traceable (a, b, c, d, e, f, g, h, i, j, k)
+  Traceable (a, b, c, d, e, f, g, h, i, j, k) where
+  traceNamed = genericTraceNamed
 instance
   ( AutoTrace (CanTrace a) a
   , AutoTrace (CanTrace b) b
@@ -367,7 +414,8 @@ instance
   , AutoTrace (CanTrace k) k
   , AutoTrace (CanTrace l) l
   ) =>
-  Traceable (a, b, c, d, e, f, g, h, i, j, k, l)
+  Traceable (a, b, c, d, e, f, g, h, i, j, k, l) where
+  traceNamed = genericTraceNamed
 
 {- | Generic worker for the default 'traceNamed': walks the
 'GHC.Generics.Rep' structure and traces every field under
@@ -482,7 +530,12 @@ still means what it always meant — 'BitPack' and 'NFDataX' — and a probe of 
 type 'Waveform' cannot describe still records, as raw bits.
 -}
 instance
-  (BitPack t, NFDataX t, AutoDescribe (CanDescribe t) t) =>
+  ( TurnOnThePlugin
+      "add -fplugin=Clash.CircuitContext.Plugin to the ghc-options of this package, or to the command line of clash"
+  , BitPack t
+  , NFDataX t
+  , AutoDescribe (CanDescribe t) t
+  ) =>
   Probeable t
   where
   probeNamed = probeDescribedAt @(CanDescribe t) @t
