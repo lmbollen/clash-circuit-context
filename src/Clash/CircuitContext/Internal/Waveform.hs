@@ -107,12 +107,15 @@ data Format
 -- | Where a recording keeps its values until the waveform is written.
 data Spill
   = {- | In memory, as compact records: nothing is written to disk but the
-    waveform. A run that is stopped (cancelled, or killed) leaves nothing.
+    waveform. A recording that is stopped (cancelled, or killed) leaves
+    nothing.
     -}
     InMemory
   | {- | In @waveforms\/\<name\>.spill@, deleted when the waveform is
-    written: memory does not grow with the length of the run, and a run that
-    is stopped leaves the file, holding what it recorded. Write its waveform
+    written: memory does not grow with the length of the run, and a recording
+    that is stopped leaves the file, holding what it recorded (a run of
+    @writeWaveform@; @withWaveform@ and @simulateWaveform@ record only when
+    they run a failed case again). Write its waveform
     with @recoverWaveform@, or from the command line with the package's
     executables @spill2fst@ and @spill2vcd@. The values are written twice: to
     the spill file, and to the waveform.
