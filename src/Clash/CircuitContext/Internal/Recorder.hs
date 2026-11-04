@@ -91,6 +91,7 @@ module Clash.CircuitContext.Internal.Recorder (
   ticks,
 ) where
 
+import Control.Concurrent (myThreadId, throwTo)
 import Control.Concurrent.MVar (
   MVar,
   modifyMVar,
@@ -108,7 +109,6 @@ import Control.Exception (
   evaluate,
   fromException,
   onException,
-  throwIO,
   try,
   uninterruptibleMask_,
  )
@@ -373,13 +373,20 @@ describe (Just (tyName, tr)) = do
     Right (types, lut) -> (Described tyName types, if lut then Just tr else Nothing)
     Left err -> (Broken err, Nothing)
 
--- | Run a rendering, catching what it throws (but not a cancellation).
+{- | Run a rendering, catching what it throws, but not a cancellation. A
+rendering runs inside the simulation's thunks, so a cancellation goes on as
+one, thrown to this thread (see 'Clash.CircuitContext.Core.packMaskValue');
+resumed, the rendering starts over.
+-}
 tryRender :: IO a -> IO (Either String a)
 tryRender act = do
   r <- try act
   case r of
     Right a -> pure (Right a)
-    Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
+    Left err | Just (_ :: SomeAsyncException) <- fromException err -> do
+      me <- myThreadId
+      throwTo me err
+      tryRender act
     Left (err :: SomeException) -> pure (Left (takeWhile (/= '\n') (displayException err)))
 
 -- | The most bytes one record of this width takes.
