@@ -91,7 +91,15 @@ module Clash.CircuitContext.Internal.Recorder (
   ticks,
 ) where
 
-import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
+import Control.Concurrent.MVar (
+  MVar,
+  modifyMVar,
+  modifyMVar_,
+  newMVar,
+  putMVar,
+  readMVar,
+  takeMVar,
+ )
 import Control.Exception (
   SomeAsyncException,
   SomeException,
@@ -99,15 +107,17 @@ import Control.Exception (
   displayException,
   evaluate,
   fromException,
+  onException,
   throwIO,
   try,
+  uninterruptibleMask_,
  )
 import Control.Monad (forM, unless)
 import Data.Bits (shiftL, shiftR, xor, (.&.), (.|.))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Maybe (isJust)
+import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Set as Set
 import Data.Word (Word64, Word8)
 import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrBytes, withForeignPtr)
@@ -122,6 +132,7 @@ import System.IO (
   IOMode (ReadMode, WriteMode),
   SeekMode (AbsoluteSeek),
   hClose,
+  hFileSize,
   hPutBuf,
   hSeek,
   hSetBuffering,
@@ -129,6 +140,7 @@ import System.IO (
  )
 import System.IO.Unsafe (unsafeInterleaveIO)
 
+import qualified Control.Exception as Exception
 import qualified Data.Aeson as Json
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
@@ -269,11 +281,15 @@ recorderSpill = rSpill
 {- | Append a block to the spill file: this tag, this payload, and then these
 raw bytes (part of the payload). Returns where the raw bytes start in the
 file; 'Nothing' when there is no spill file, or the recording ended.
+
+A block is written whole, also when the run is cancelled while it is written:
+a block cut off in the middle, with more blocks after it, would make the rest
+of the file unreadable.
 -}
 writeBlock ::
   Recorder -> Word8 -> Builder.Builder -> (Int, Raw -> IO ()) -> IO (Maybe Int)
 writeBlock rec tag payload (rawLen, putRaw) =
-  modifyMVar (rStore rec) $ \store -> case store of
+  uninterruptibleMask_ $ modifyMVar (rStore rec) $ \store -> case store of
     ToFile h o -> do
       let
         body = ByteStringLazy.toStrict (Builder.toLazyByteString payload)
@@ -384,9 +400,16 @@ cycle that is already recorded is ignored (a lazy re-evaluation), and a cycle
 after a skipped one starts with a gap. An unchanged value costs a comparison.
 -}
 recordCycle :: Recorder -> Sig -> Int -> Value -> IO ()
-recordCycle rec sig cyc v = modifyMVar_ (sigState sig) step
+recordCycle rec sig cyc v = Exception.mask $ \restore -> do
+  -- A cycle is recorded whole or not at all: a cancellation that came between
+  -- writing a chunk and keeping the state that says so would write it twice.
+  -- Only the lookup-table entries, which run the payload type's own code,
+  -- can be interrupted; the state is then as it was.
+  s <- takeMVar (sigState sig)
+  s' <- step restore s `onException` putMVar (sigState sig) s
+  putMVar (sigState sig) s'
  where
-  step s
+  step restore s
     | cyc < ssNext s = pure s
     -- Before the window only the value is kept, for the first record.
     | cyc < sigStart sig = pure s{ssNext = cyc + 1, ssLast = Just v}
@@ -399,7 +422,7 @@ recordCycle rec sig cyc v = modifyMVar_ (sigState sig) step
         s2 <-
           if not (ssFresh s1) && ssLast s1 == Just v
             then pure s1
-            else emit sig cyc (Just v) s1 >>= lutEntries rec sig v
+            else emit sig cyc (Just v) s1 >>= restore . lutEntries rec sig v
         let s3 = s2{ssNext = cyc + 1}
         if ssLen s3 >= chunkBytes then flush rec sig s3 else pure s3
 
@@ -615,88 +638,134 @@ unvarint = go 0 0
 
 {- | Read a spill file, also one whose run was stopped: every signal with
 the records of its whole chunks, and the lookup-table entries. A stopped run
-ends where its furthest signal's chunks end. 'Left' when the file is not a
-spill file.
+ends where its furthest signal's chunks end. Reading stops at the first block
+that is cut off or does not make sense. 'Left' when the file is not a spill
+file.
 -}
 readSpill :: FilePath -> IO (Either String Recording)
 readSpill path = bracket (openBinaryFile path ReadMode) hClose $ \h -> do
+  size <- fromIntegral <$> hFileSize h
   header <- ByteString.hGet h (ByteString.length magic + 9)
-  let (m, rest) = ByteString.splitAt (ByteString.length magic) header
-  if ByteString.length header < ByteString.length magic + 9 || m /= magic
-    then pure (Left (path <> " is not a spill file"))
-    else
-      if ByteString.head rest /= spillVersion
-        then pure (Left (path <> " is a spill file of another version"))
-        else do
-          let start = fromIntegral (word64LE (ByteString.drop 1 rest))
-          blocks h start (ByteString.length header) Map.empty [] Nothing
+  case runParser ((,,) <$> takeBytes 8 <*> byte <*> takeBytes 8) header of
+    Just ((m, version, start), _)
+      | m /= magic -> pure (Left (path <> " is not a spill file"))
+      | version /= spillVersion -> pure (Left (path <> " is a spill file of another version"))
+      | otherwise ->
+          blocks
+            h
+            size
+            (fromIntegral (littleEndian start))
+            (ByteString.length header)
+            Map.empty
+            []
+            Nothing
+    Nothing -> pure (Left (path <> " is not a spill file"))
  where
-  blocks h start off sigs luts end = do
+  blocks h size start off sigs luts end = do
     hdr <- ByteString.hGet h 5
-    if ByteString.length hdr < 5
-      then done start sigs luts end
-      else do
-        let tag = ByteString.head hdr
-            len = fromIntegral (word32LE (ByteString.drop 1 hdr))
-        payload <- ByteString.hGet h len
-        let off' = off + 5 + len
-        if ByteString.length payload < len
-          then done start sigs luts end
-          else case tag of
-            1 ->
-              let (i, p1) = unvarint payload
-                  kind = if ByteString.head p1 == 0 then TraceKind else ProbeKind
-                  (period, p2) = unvarint (ByteString.tail p1)
-                  (width, p3) = unvarint p2
-                  (key, p4) = unstring p3
-                  desc = case ByteString.head p4 of
-                    1 ->
-                      let (tyName, p5) = unstring (ByteString.tail p4)
-                          (types, _) = unbytes p5
-                       in Described tyName types
-                    2 -> Broken (fst (unstring (ByteString.tail p4)))
-                    _ -> Undescribed
-                  sig = RecordedSignal key kind period width desc 0 [] 14695981039346656037
-               in blocks h start off' (Map.insert i sig sigs) luts end
-            2 ->
-              let (i, p1) = unvarint payload
-                  (next, p2) = unvarint p1
-                  at = off + 5 + (len - ByteString.length p2)
-                  add s =
-                    s
-                      { signalEnd = next
-                      , signalChunks = OnFile at (ByteString.length p2) : signalChunks s
-                      , signalHash = ByteString.foldl' fnv (signalHash s) p2
-                      }
-               in blocks h start off' (Map.adjust add i sigs) luts end
-            3 -> blocks h start off' sigs (payload : luts) end
-            4 -> blocks h start off' sigs luts (Just (fst (unvarint payload)))
-            5 ->
-              let (i, p1) = unvarint payload
-                  broken s = s{signalDescription = Broken (fst (unstring p1))}
-               in blocks h start off' (Map.adjust broken i sigs) luts end
-            _ -> blocks h start off' sigs luts end
+    case runParser ((,) <$> byte <*> takeBytes 4) hdr of
+      Just ((tag, lenBytes), _)
+        | len <- fromIntegral (littleEndian lenBytes)
+        , len <= size - off - 5 -> do
+            payload <- ByteString.hGet h len
+            let off' = off + 5 + len
+                continue = blocks h size start off'
+            case (tag, runParser (block tag) payload) of
+              (_, Nothing) -> done start sigs luts end
+              (_, Just (Declared i sig, _)) -> continue (Map.insert i sig sigs) luts end
+              (_, Just (Chunked i next, records)) ->
+                let at = off + 5 + (len - ByteString.length records)
+                    add s =
+                      s
+                        { signalEnd = next
+                        , signalChunks = OnFile at (ByteString.length records) : signalChunks s
+                        , signalHash = ByteString.foldl' fnv (signalHash s) records
+                        }
+                 in continue (Map.adjust add i sigs) luts end
+              (_, Just (Lut, _)) -> continue sigs (payload : luts) end
+              (_, Just (Ended e, _)) -> continue sigs luts (Just e)
+              (_, Just (BrokeDown i err, _)) ->
+                continue (Map.adjust (\s -> s{signalDescription = Broken err}) i sigs) luts end
+              (_, Just (Unknown, _)) -> continue sigs luts end
+      _ -> done start sigs luts end
   done start sigs luts end = do
     let signals = [s{signalChunks = reverse (signalChunks s)} | s <- Map.elems sigs]
         reached = maximum (0 : [signalEnd s * signalPeriod s | s <- signals])
-    pure
-      ( Right
-          ( Recording
-              (Just path)
-              signals
-              start
-              (maybe reached id end)
-              (reverse luts)
-          )
-      )
-  unstring b = let (s, r) = unbytes b in (Text.unpack (Text.decodeUtf8 s), r)
-  unbytes b = let (l, r) = unvarint b in ByteString.splitAt l r
-  word64LE b =
-    ByteString.foldr' (\w acc -> acc `shiftL` 8 .|. fromIntegral w) 0 (ByteString.take 8 b) ::
-      Word64
-  word32LE b =
-    ByteString.foldr' (\w acc -> acc `shiftL` 8 .|. fromIntegral w) 0 (ByteString.take 4 b) ::
-      Word64
+    pure (Right (Recording (Just path) signals start (fromMaybe reached end) (reverse luts)))
+  littleEndian :: ByteString.ByteString -> Word64
+  littleEndian = ByteString.foldr' (\w acc -> acc `shiftL` 8 .|. fromIntegral w) 0
+
+-- | What a block of a spill file says.
+data Block
+  = Declared Int RecordedSignal
+  | {- | A chunk's signal and the cycle up to which it had recorded; its
+    records are what is left of the payload.
+    -}
+    Chunked Int Int
+  | Lut
+  | Ended Int
+  | BrokeDown Int String
+  | Unknown
+
+-- | A block's payload, by its tag.
+block :: Word8 -> Parser Block
+block 1 = do
+  i <- varintP
+  kind <- (\k -> if k == 0 then TraceKind else ProbeKind) <$> byte
+  period <- varintP
+  width <- varintP
+  key <- stringP
+  desc <-
+    byte >>= \d -> case d of
+      1 -> Described <$> stringP <*> bytesP
+      2 -> Broken <$> stringP
+      _ -> pure Undescribed
+  pure (Declared i (RecordedSignal key kind period width desc 0 [] 14695981039346656037))
+block 2 = Chunked <$> varintP <*> varintP
+block 3 = pure Lut
+block 4 = Ended <$> varintP
+block 5 = BrokeDown <$> varintP <*> stringP
+block _ = pure Unknown
+
+-- | A parser of bytes that fails on what it cannot read, rather than crash.
+newtype Parser a = Parser {runParser :: ByteString.ByteString -> Maybe (a, ByteString.ByteString)}
+
+instance Functor Parser where
+  fmap f (Parser p) = Parser (fmap (\(a, r) -> (f a, r)) . p)
+
+instance Applicative Parser where
+  pure a = Parser (\b -> Just (a, b))
+  Parser pf <*> Parser pa = Parser $ \b -> do
+    (f, r) <- pf b
+    (a, r') <- pa r
+    pure (f a, r')
+
+instance Monad Parser where
+  Parser pa >>= k = Parser $ \b -> pa b >>= \(a, r) -> runParser (k a) r
+
+byte :: Parser Word8
+byte = Parser ByteString.uncons
+
+takeBytes :: Int -> Parser ByteString.ByteString
+takeBytes n = Parser $ \b ->
+  if n >= 0 && ByteString.length b >= n then Just (ByteString.splitAt n b) else Nothing
+
+varintP :: Parser Int
+varintP = go 0 0
+ where
+  go acc sh
+    | sh > 63 = Parser (const Nothing)
+    | otherwise =
+        byte >>= \w ->
+          let acc' = acc .|. (fromIntegral (w .&. 0x7f) `shiftL` sh)
+           in if w < 0x80 then pure acc' else go acc' (sh + 7)
+
+bytesP :: Parser ByteString.ByteString
+bytesP = varintP >>= takeBytes
+
+stringP :: Parser String
+stringP =
+  bytesP >>= \b -> either (const (Parser (const Nothing))) (pure . Text.unpack) (Text.decodeUtf8' b)
 
 {- | The VCD time unit of a recording, in ps: the greatest common divisor of
 its signals' periods (1 when it has none).

@@ -167,8 +167,16 @@ tests =
             assertBool "but some" (recordingEnd rec' P.> 0)
             written <- writeVCD (0, recordingEnd rec') rec' (file "formats-cut-short" "vcd")
             written @?= Right ()
+        -- Followed by a block that claims more bytes than the file has, as
+        -- one that was cut off would: read up to it, without trying to.
+        let garbledFile = file "formats-cut-garbled" "spill"
+        ByteString.readFile spillFile
+          >>= ByteString.writeFile garbledFile
+          . (<> ByteString.pack [2, 255, 255, 255, 127, 1, 2, 3])
+        garbled <- recoverRecording garbledFile
+        P.fmap recordingEnd garbled @?= Right (recordingEnd rec)
         discardRecording rec
-        removeFile cutFile
+        P.mapM_ removeFile [cutFile, garbledFile]
     ]
  where
   unquote c = if c P.== '"' then ' ' else c
