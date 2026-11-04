@@ -140,6 +140,27 @@ library
     -fexpose-all-unfoldings
     -fno-worker-wrapper
 
+-- The command line of the spill files: write the waveform of a spill file,
+-- also of a run that was stopped. Both are Clash.CircuitContext.Recording's
+-- writeSpill behind app/SpillMain.hs.
+common spill-executable
+  import: common-options
+  hs-source-dirs: app
+  other-modules: SpillMain
+  build-depends:
+    base,
+    clash-circuit-context,
+    directory,
+    filepath,
+
+executable spill2vcd
+  import: spill-executable
+  main-is: spill2vcd.hs
+
+executable spill2fst
+  import: spill-executable
+  main-is: spill2fst.hs
+
 -- The waveform suite's two levels, in one tasty process because they depend
 -- on each other in one direction. Example.* is USAGE, kept honest by being
 -- run: capturing a single run's waveform, and instrumenting hedgehog
@@ -151,10 +172,15 @@ test-suite waveform-tests
   import: common-options
   type: exitcode-stdio-1.0
   main-is: Main.hs
-  hs-source-dirs: tests
+  -- app: Test.Formats runs the command line of the spill executables.
+  hs-source-dirs:
+    tests
+    app
+
   other-modules:
     Example.Hedgehog
     Example.SingleRun
+    SpillMain
     Test.Cancel
     Test.Capture
     Test.ExampleOutput

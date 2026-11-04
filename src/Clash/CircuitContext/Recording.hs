@@ -18,19 +18,26 @@ A recording keeps its values as compact records: in a spill file at the path
 given to 'withRecording', so a long simulation does not need more memory than
 a short one; or, given 'Nothing', in memory. A spill file describes itself:
 when a run is stopped (cancelled, or the process killed), the file holds what
-the run recorded, and 'recoverRecording' reads it.
+the run recorded, and 'recoverRecording' reads it. 'writeSpill' writes a spill
+file's waveform in one step; the package's executables @spill2vcd@ and
+@spill2fst@ do the same from the command line.
 -}
 module Clash.CircuitContext.Recording (
   -- * Recording a simulation
   withRecording,
   Recording,
+  recordingStart,
   recordingEnd,
   discardRecording,
-  recoverRecording,
 
   -- * Writing the waveform
   writeVCD,
   writeFST,
+
+  -- * A spill file
+  recoverRecording,
+  writeSpill,
+  Format (..),
 
   -- * What was recorded
   RecordedSignal,
@@ -45,6 +52,7 @@ module Clash.CircuitContext.Recording (
 ) where
 
 import Control.Exception (evaluate)
+import Data.Maybe (fromMaybe)
 import GHC.Natural (Natural)
 import System.Directory (removePathForcibly)
 
@@ -59,9 +67,17 @@ import Clash.CircuitContext.Internal.Recorder (
   readChanges,
   readSpill,
   ticks,
+  timescale,
   withReader,
  )
 import Clash.CircuitContext.Internal.Vcd (writeFiles)
+import Clash.CircuitContext.Internal.Waveform (Format (..))
+
+{- | The time from which the recording has cycles, in units of the timescale
+(see 'recordingEnd'): the start of the window it was recorded with.
+-}
+recordingStart :: Recording -> Int
+recordingStart rec = recordingStartPs rec `div` timescale rec
 
 {- | The time at which the simulation stopped, in units of the VCD timescale
 (the greatest common divisor of the recorded signals' periods). For a design
@@ -126,3 +142,23 @@ recordedChanges rec s = withReader rec $ \h -> do
   changes <- readChanges h s
   _ <- evaluate (length changes)
   pure [(c, v) | Change c v <- changes]
+
+{- | Write the waveform of the spill file at the first path, as this format,
+at the second path: over this window, in units of the timescale (see
+'writeVCD'), or, given 'Nothing', everything the run recorded. Also for the
+spill file of a run that was stopped. The spill file is kept.
+
+'Left', and no file written, when the file is not a spill file or holds no
+recorded cycle.
+-}
+writeSpill :: Format -> Maybe (Int, Int) -> FilePath -> FilePath -> IO (Either String ())
+writeSpill fmt window spill out = do
+  read' <- readSpill spill
+  case read' of
+    Left err -> pure (Left err)
+    Right rec ->
+      writer (fromMaybe (recordingStart rec, recordingEnd rec) window) rec out
+ where
+  writer = case fmt of
+    VCD -> writeVCD
+    FST -> writeFST

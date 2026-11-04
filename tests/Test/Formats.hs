@@ -24,9 +24,12 @@ import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (forM_, when)
 import Data.List (isPrefixOf)
 import System.Directory (doesFileExist, getFileSize, removeFile)
+import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((<.>), (</>))
 import System.IO.Unsafe (unsafePerformIO)
 import System.Timeout (timeout)
+
+import SpillMain (spillWith)
 
 import qualified Data.ByteString as ByteString
 
@@ -39,6 +42,7 @@ import Clash.CircuitContext
 import Clash.CircuitContext.Recording (
   discardRecording,
   recordingEnd,
+  recordingStart,
   recoverRecording,
   writeVCD,
  )
@@ -153,6 +157,27 @@ tests =
         stopped <- timeout 500000 (writeWaveform defaultOptions name (0, 4000) slow)
         assertBool "the run was cancelled" (P.null stopped)
         existing name ["spill", "fst", "json"] >>= (@?= [False, False, False])
+    , testCase "spill2vcd and spill2fst write the waveform the library writes" $ do
+        let spillFile = file "formats-cli" "spill"
+        scrub ["formats-cli", "formats-cli-library", "formats-cli-exe"]
+        (_, rec) <-
+          withRecording
+            (Just spillFile)
+            (evaluate (P.sum (P.map P.toInteger (sampleN 300 counter))))
+        _ <-
+          writeVCD (recordingStart rec, recordingEnd rec) rec (file "formats-cli-library" "vcd")
+        code <- spillWith VCD "spill2vcd" ["-o", file "formats-cli-exe" "vcd", spillFile]
+        code @?= ExitSuccess
+        a <- vcdBody (file "formats-cli-library" "vcd")
+        b <- vcdBody (file "formats-cli-exe" "vcd")
+        a @?= b
+        -- By default next to the spill file, which --delete deletes.
+        code' <- spillWith FST "spill2fst" ["--delete", spillFile]
+        code' @?= ExitSuccess
+        existing "formats-cli" ["fst", "json", "spill"] >>= (@?= [True, True, False])
+        -- A file that is not a spill file is refused.
+        code'' <- spillWith VCD "spill2vcd" [file "formats-cli" "json"]
+        assertBool "refused" (code'' P./= ExitSuccess)
     , testCase "a spill file cut off in a block is read up to its last whole block" $ do
         let
           spillFile = file "formats-cut" "spill"

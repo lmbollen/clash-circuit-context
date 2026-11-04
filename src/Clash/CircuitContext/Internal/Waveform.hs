@@ -113,8 +113,9 @@ data Spill
   | {- | In @waveforms\/\<name\>.spill@, deleted when the waveform is
     written: memory does not grow with the length of the run, and a run that
     is stopped leaves the file, holding what it recorded. Write its waveform
-    with @recoverWaveform@. The values are written twice: to the spill file,
-    and to the waveform.
+    with @recoverWaveform@, or from the command line with the package's
+    executables @spill2fst@ and @spill2vcd@. The values are written twice: to
+    the spill file, and to the waveform.
     -}
     OnDisk
   deriving (Eq, Show)
@@ -207,7 +208,8 @@ record opts name start k = do
               <> name
               <> ": the run was stopped; what it recorded is in "
               <> path
-              <> ", and recoverWaveform writes its waveform"
+              <> ". Write its waveform with recoverWaveform, or with spill2fst or"
+              <> " spill2vcd (executables of clash-circuit-context)"
           )
 
 {- | Why a waveform is written. A 'Failure' waveform is marked in its
