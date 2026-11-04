@@ -21,6 +21,7 @@ import Test.Tasty (
 
 import qualified Example.Hedgehog
 import qualified Example.SingleRun
+import qualified Test.Cancel
 import qualified Test.Capture
 import qualified Test.ExampleOutput
 import qualified Test.Memory
@@ -38,6 +39,7 @@ main = do
           "the tests"
           [ Test.Recorder.tests
           , Test.Capture.tests
+          , Test.Cancel.tests
           , dependentTestGroup
               "the examples, then what they wrote"
               AllSucceed
