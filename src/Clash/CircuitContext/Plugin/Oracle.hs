@@ -107,6 +107,7 @@ data OracleEnv = OracleEnv
   , autoDescribeClass :: API.Class
   , describableClass :: API.Class
   , nonTranslatableTyCon :: API.TyCon
+  , turnOnThePluginClass :: API.Class
   }
 
 {- FOURMOLU_DISABLE -}
@@ -152,6 +153,7 @@ initEnv = do
           <*> cl "AutoDescribe"
           <*> cl "Describable"
           <*> tc "NonTranslatable"
+          <*> cl "TurnOnThePlugin"
       -- Same hazard one package over: CanDescribe asks for clash-shockwaves'
       -- Waveform per payload, and a module that never mentions
       -- clash-shockwaves never loads its instances, so every stock payload
@@ -266,8 +268,22 @@ solveStuck env givens wanteds = do
   let givenPreds = map API.ctPred givens
   stucks <- traverse (stuck givenPreds) wanteds
   results <- traverse solve1 [x | Just x <- stucks]
-  pure (API.TcPluginOk (map fst results) (map snd results))
+  pure
+    ( API.TcPluginOk
+        (map fst results <> [(pluginOn ct, ct) | ct <- wanteds, isPluginRequired ct])
+        (map snd results)
+    )
  where
+  -- 'TurnOnThePlugin' has no instances: the plugin is on, so this is the
+  -- proof. A class without methods or superclasses has a dictionary without
+  -- fields.
+  isPluginRequired ct = case GHC.classifyPredType (API.ctPred ct) of
+    GHC.ClassPred cls _ -> cls == turnOnThePluginClass env
+    _ -> False
+  pluginOn ct = case GHC.classifyPredType (API.ctPred ct) of
+    GHC.ClassPred cls tys -> API.EvExpr (API.evDataConApp (GHC.classDataCon cls) tys [])
+    _ -> error "Clash.CircuitContext.Plugin: pluginOn: not a class constraint"
+
   solve1 (ct, cls, t, b) = do
     let
       predOld = API.ctPred ct
@@ -651,7 +667,7 @@ reduceFamily tc args =
 -}
 totalClassesOf :: OracleEnv -> [API.Class]
 totalClassesOf env =
-  [autoTraceClass env, autoProbeClass env, autoDescribeClass env]
+  [autoTraceClass env, autoProbeClass env, autoDescribeClass env, turnOnThePluginClass env]
 
 fuel0 :: Int
 fuel0 = 20

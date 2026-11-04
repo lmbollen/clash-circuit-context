@@ -271,6 +271,51 @@ HS
     ;;
 esac
 
+# Without the plugin, an empty Traceable instance does not compile. The
+# error must say how to fix that (turn the plugin on), not only name the
+# internals of the generic path (AutoTrace, CanTrace, $dmtraceNamed). With
+# the plugin, the same module must compile: the plugin solves the marker.
+# Free of clash-prelude imports, for the reason given at StrictProbe above.
+scratch=$(mktemp -d)
+cat > "$scratch/NoPlugin.hs" <<'HS'
+{-# LANGUAGE DeriveGeneric #-}
+
+module NoPlugin where
+
+import GHC.Generics (Generic)
+
+import Clash.CircuitContext (Traceable)
+
+data Pair a = Pair a a
+  deriving (Generic)
+
+instance Traceable (Pair a)
+HS
+cabalargs=("$@")
+noplugin() {
+  cabal exec ${cabalargs[@]+"${cabalargs[@]}"} -- ghc -v0 -fno-code \
+    -fforce-recomp -package clash-circuit-context \
+    "$@" "$scratch/NoPlugin.hs" 2>&1
+}
+off_out=$(noplugin); off_rc=$?
+on_out=$(noplugin -fplugin=Clash.CircuitContext.Plugin); on_rc=$?
+case "$off_rc:$off_out" in
+  0:*)
+    echo "FAIL: an empty Traceable instance compiled without the plugin"; fail=1 ;;
+  *TurnOnThePlugin*"add -fplugin=Clash.CircuitContext.Plugin"*)
+    echo "ok: without the plugin, the error says to turn it on" ;;
+  *)
+    echo "FAIL: without the plugin, the error does not say to turn it on:"
+    echo "$off_out" | head -5; fail=1 ;;
+esac
+if [ "$on_rc" -eq 0 ]; then
+  echo "ok: with the plugin, the same instance compiles"
+else
+  echo "FAIL: with the plugin, the empty instance did not compile:"
+  echo "$on_out" | head -5; fail=1
+fi
+rm -rf "$scratch"
+
 rm -f "$log"
 [ "$fail" -eq 0 ] && echo "ALL CHECKS PASSED" || echo "CHECKS FAILED"
 exit "$fail"
