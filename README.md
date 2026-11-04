@@ -437,8 +437,32 @@ opts = defaultOptions {format = VCD, spill = OnDisk}
     runs, deleted when the waveform is written. A long run needs about the same
     memory as a short one (on a CPU design, 237,000 recorded cycles took a
     maximum residency of 58 MB), and the values are written to disk twice. A run
-    that is stopped leaves the spill file, holding what it recorded;
-    `recoverWaveform opts name` writes its waveform.
+    that is stopped leaves the spill file, holding what it recorded (see
+    below).
+
+### A run that was stopped
+
+A run with `spill = OnDisk` that is cancelled (a test timeout, Ctrl-C) or
+killed leaves `waveforms/<name>.spill`, and a cancelled one says where on
+stderr. The file describes itself: its signals, their descriptions, and the
+values recorded up to there. Write its waveform from Haskell:
+
+```haskell
+recoverWaveform defaultOptions "counter"   -- waveforms/counter.fst, deletes the spill
+```
+
+or from the command line, with the executables this package installs:
+
+```sh
+spill2fst waveforms/counter.spill              # waveforms/counter.fst (+ .json)
+spill2vcd -w 100,200 -o slice.vcd waveforms/counter.spill
+spill2fst --delete waveforms/*.spill
+```
+
+Both keep the spill file unless given `--delete`, and need nothing of the
+design: a spill file carries the typed-waveform descriptions too.
+`Clash.CircuitContext.Recording.writeSpill` is the same conversion as a
+function, for a tool of your own.
 
 ### Hedgehog properties
 
