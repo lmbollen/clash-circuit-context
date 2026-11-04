@@ -12,30 +12,42 @@
 -}
 module Main where
 
-import Test.Tasty (DependencyType (AllSucceed), defaultMain, dependentTestGroup, testGroup)
+import Test.Tasty (
+  DependencyType (AllFinish, AllSucceed),
+  defaultMain,
+  dependentTestGroup,
+  testGroup,
+ )
 
 import qualified Example.Hedgehog
 import qualified Example.SingleRun
 import qualified Test.Capture
 import qualified Test.ExampleOutput
+import qualified Test.Memory
 import qualified Test.Recorder
 
 main :: IO ()
 main = do
   Example.Hedgehog.scrubExamples
   defaultMain $
-    testGroup
+    -- The memory test measures the whole process, so it runs alone, last.
+    dependentTestGroup
       "waveform-tests"
-      [ Test.Recorder.tests
-      , Test.Capture.tests
-      , dependentTestGroup
-          "the examples, then what they wrote"
-          AllSucceed
-          [ testGroup
-              "Example"
-              [ Example.SingleRun.tests
-              , Example.Hedgehog.tests
+      AllFinish
+      [ testGroup
+          "the tests"
+          [ Test.Recorder.tests
+          , Test.Capture.tests
+          , dependentTestGroup
+              "the examples, then what they wrote"
+              AllSucceed
+              [ testGroup
+                  "Example"
+                  [ Example.SingleRun.tests
+                  , Example.Hedgehog.tests
+                  ]
+              , Test.ExampleOutput.tests
               ]
-          , Test.ExampleOutput.tests
           ]
+      , Test.Memory.memoryTest
       ]

@@ -29,8 +29,7 @@ Everything hangs off one implicit parameter @?circuitContext@:
   own recorder instead of the global 'traceMap#'. The recorder writes value
   changes to a spill file as the simulation runs
   ("Clash.CircuitContext.Internal.Recorder"), so the recorded history is
-  not kept in memory. (The taps still keep raw design values alive while a
-  run records, so its memory still grows with its length: issue #38.)
+  not kept in memory, and memory does not grow with the length of a run.
 * 'mealyProbed' + 'probe' record values of expressions INSIDE a mealy step
   function. The step function has no cycle identity of its own, so the
   wrapper derives one from a companion counter register and binds a
