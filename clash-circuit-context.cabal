@@ -136,6 +136,7 @@ test-suite waveform-tests
   other-modules:
     Example.Hedgehog
     Example.SingleRun
+    Test.Cancel
     Test.Capture
     Test.ExampleOutput
     Test.Memory

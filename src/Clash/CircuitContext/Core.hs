@@ -137,6 +137,7 @@ import Clash.CircuitContext.Internal.Recorder (
   sigPeriod,
  )
 
+import Control.Concurrent (myThreadId, throwTo)
 import Control.Exception (
   SomeAsyncException,
   SomeException,
@@ -419,8 +420,11 @@ finishRecording rec tapsRef = do
   forM_ taps $ \(sig, ref) -> do
     TraceTap _ next rest <- readIORef ref
     let upto = (end + sigPeriod sig - 1) `div` sigPeriod sig
-    try (forM_ (zip [next .. upto - 1] rest) (\(c, v) -> evaluate v >>= recordCycle rec sig c))
-      >>= \(_ :: Either SomeException ()) -> pure ()
+    finished <- try (forM_ (zip [next .. upto - 1] rest) (\(c, v) -> evaluate v >>= recordCycle rec sig c))
+    case finished of
+      -- A cancellation is not a cycle that throws: it goes on.
+      Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
+      _ -> pure ()
   closeRecorder rec end
 
 {- | Declarations of intent the plugin reads from an @ANN@ pragma.
@@ -703,7 +707,8 @@ empty until a link comes up. Normal simulation never forces such a binding
 outside that condition, but auto-tracing samples it every cycle. A tracer must
 never decide whether the simulation crashes, so a sample that throws is
 recorded as @x@ — exactly how a stock Clash trace renders undefined bits — and
-the offending cycles simply show undefined in the waveform.
+the offending cycles simply show undefined in the waveform. An asynchronous
+exception (a cancellation) is not a sample that throws, and goes on.
 -}
 packMaskValue :: forall a. (BitPack a) => a -> (Natural, Natural)
 packMaskValue a =
@@ -717,18 +722,29 @@ packMaskValue a =
     -- @(mask=1, val=1)@ encoding exclusively for the NOT-evaluated (gap) case
     -- (see 'expandRunsX'/'renderVC'). Without this a masked value bit set to 1
     -- would render as @z@ (not-evaluated) when it is really @x@ (undefined).
-    r <-
-      try
-        ( evaluate
-            ( case pack a of
-                BV mask val ->
-                  let v' = val .&. (fullMask `xor` mask)
-                   in mask `seq` v' `seq` (mask, v')
-            )
-        )
-    pure $ case r of
-      Right t -> t
-      Left (_ :: SomeException) -> (fullMask, 0)
+    let packed = do
+          r <-
+            try
+              ( evaluate
+                  ( case pack a of
+                      BV mask val ->
+                        let v' = val .&. (fullMask `xor` mask)
+                         in mask `seq` v' `seq` (mask, v')
+                  )
+              )
+          case r of
+            Right t -> pure t
+            -- A cancellation (a test's timeout) is not an undefined value.
+            -- It goes on as a cancellation, thrown to this thread: thrown
+            -- with 'throwIO' it would be stored in every thunk this one is
+            -- evaluated under, and a design value another test shares would
+            -- throw it from then on. Resumed, the packing starts over.
+            Left err | Just (_ :: SomeAsyncException) <- fromException err -> do
+              me <- myThreadId
+              throwTo me err
+              packed
+            Left (_ :: SomeException) -> pure (fullMask, 0)
+    packed
  where
   fullMask = 2 ^ (snatToNum (SNat @(BitSize a)) :: Int) - 1 :: Natural
 {-# NOINLINE packMaskValue #-}
