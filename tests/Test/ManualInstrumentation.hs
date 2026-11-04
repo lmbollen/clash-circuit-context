@@ -79,7 +79,7 @@ top inp =
 
 main :: IO ()
 main = do
-  (result, rec) <- withRecording "manual-instrumentation.spill" $ do
+  (result, rec) <- withRecording (Just "manual-instrumentation.spill") $ do
     let out = top (fromList [1, 1 ..])
         xs = sampleN 8 out
     evaluate (deepseqX xs xs)
@@ -97,6 +97,8 @@ main = do
       ]
   putStrLn ("probe changes: " <> show (sort probes))
   vcd <- writeVCD (0, 8) rec "manual-instrumentation.vcd"
+  -- The same recording as an FST, which check.sh compares with the VCD.
+  _ <- writeFST (0, 8) rec "manual-instrumentation.fst"
   discardRecording rec
   case vcd of
     Left err -> putStrLn ("VCD error: " <> err)

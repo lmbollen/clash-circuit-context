@@ -85,6 +85,12 @@ design = top clockGen resetGen stimulus
 -- 2. The tests
 --------------------------------------------------------------------------------
 
+{- | The options of these examples. 'defaultOptions' writes an FST, recorded in
+memory; these write a VCD, because "Test.ExampleOutput" reads it back as text.
+-}
+options :: WaveformOptions
+options = defaultOptions{format = VCD}
+
 -- | Where the always-capture example writes; "Test.ExampleOutput" reads it.
 singleRunVcd :: FilePath
 singleRunVcd = "waveforms/example-single-run.vcd"
@@ -96,14 +102,14 @@ tests =
     [ -- 'writeWaveform' simulates, writes the waveform, and returns the
       -- samples: dumpVCD's arguments, plus a name for the file.
       testCase "writeWaveform always leaves its waveform" $ do
-        out <- writeWaveform "example-single-run" (0, 32) design
+        out <- writeWaveform options "example-single-run" (0, 32) design
         P.length out @?= 32
         wrote <- doesFileExist singleRunVcd
         assertBool "the waveform was written" wrote
     , -- A test records only when it fails. A passing test never enters a
       -- recording context: nothing is recorded, rendered or written.
       testCase "withWaveform costs a passing test nothing" $ do
-        withWaveform "example-on-failure-passing" (0, 32) design $ \out ->
+        withWaveform options "example-on-failure-passing" (0, 32) design $ \out ->
           P.length out @?= 32
         wrote <- doesFileExist "waveforms/example-on-failure-passing.vcd"
         assertBool "a passing test writes no waveform at all" (P.not wrote)
@@ -113,7 +119,7 @@ tests =
       testCase "a failing test leaves the waveform that shows why" $ do
         outcome <-
           try @SomeException $
-            withWaveform "example-on-failure-failing" (0, 32) design $ \out ->
+            withWaveform options "example-on-failure-failing" (0, 32) design $ \out ->
               P.length out @?= 99 -- fails on purpose
         assertBool
           "the original failure still propagates"

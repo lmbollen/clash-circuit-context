@@ -23,7 +23,10 @@ The two libraries know different things, and neither subsumes the other:
 
 Combining them needs no coordination when the files are written, because the
 descriptor is captured where the payload type is still known — at
-registration, into 'signalAdt' — and travels with the recording. The caller
+registration, rendered to JSON ('signalDescription') — and travels with the
+recording, as do the lookup-table entries of the values that occurred
+('recordingLuts'). Both are in a spill file too, so a stopped run's sidecar
+is complete. The caller
 passes each signal with the full scope path the VCD declares it under, so a
 descriptor lands on exactly that var: sibling suffixes (@name_0@, @name_1@)
 included, and the @logic@ scope of a dot-free name.
@@ -36,130 +39,74 @@ module Clash.CircuitContext.Internal.Sidecar (
   sidecar,
 ) where
 
-import Control.Exception (
-  SomeAsyncException,
-  SomeException,
-  displayException,
-  evaluate,
-  fromException,
-  throwIO,
-  try,
- )
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import Data.Maybe (catMaybes)
-import System.IO (Handle, hPutStrLn, stderr)
+import System.IO (hPutStrLn, stderr)
 
-import qualified Data.ByteString.Lazy as ByteStringLazy
+import qualified Data.ByteString as ByteString
 
 import Data.Aeson ((.=))
 import qualified Data.Aeson as Json
-
-import Clash.Shockwaves.Internal.BitList (BitList (BL))
-import Clash.Shockwaves.Internal.Translator (
-  addTypesT,
-  addValueT,
-  hasGeneratedLutT,
- )
-import Clash.Shockwaves.Internal.Types (LUTMap, SignalMap, Translator, TypeMap)
+import qualified Data.Aeson.KeyMap as KeyMap
 
 import Clash.CircuitContext.Internal.Recorder (
-  Change (..),
+  Description (..),
   RecordedSignal (..),
-  Value,
-  readChanges,
  )
 
 {- | The sidecar of these signals, each given with its full VCD scope path,
-in @clash-shockwaves@' schema: @{ signals, types, luts }@ — the same three
-keys its own @dumpVCD@ emits, so its Surfer plugin reads this unmodified.
-@signals@ maps a path to its type name, @types@ carries each type's
-translator (the ADT structure), and @luts@ the lookup-table entries for the
-values that occurred. The values are read through the spill file's handle.
+and of these lookup-table entries, in @clash-shockwaves@' schema:
+@{ signals, types, luts }@ — the same three keys its own @dumpVCD@ emits, so
+its Surfer plugin reads this unmodified. @signals@ maps a path to its type
+name, @types@ carries each type's translator (the ADT structure), and @luts@
+the lookup-table entries for the values that occurred.
 
 Signals without a description are left out: their payload type has no
-'Clash.Shockwaves.Waveform' instance, or one that cannot describe it. The VCD
-still has their bits.
+'Clash.Shockwaves.Waveform' instance, or one that cannot describe it. The
+waveform still has their bits.
 
-The sidecar cannot take the VCD down with it. A descriptor is rendered by the
-payload type's 'Clash.Shockwaves.Waveform' instance, and @clash-shockwaves@
-reports a broken one by calling 'error' — a hand-written instance whose
-translator width differs from the type's 'BitSize', most plainly. Each
-signal's share of the sidecar is therefore forced here, on its own, and one
-that throws is left out and reported on stderr, naming the signal: the VCD
-still records its bits, every other signal keeps its description, and the
-result is safe to force.
+The sidecar cannot take the waveform down with it. A descriptor is rendered
+by the payload type's 'Clash.Shockwaves.Waveform' instance, and
+@clash-shockwaves@ reports a broken one by calling 'error' — a hand-written
+instance whose translator width differs from the type's 'BitSize', most
+plainly. The recorder renders each signal's description on its own and keeps
+the error of one that throws ('Broken'); such a signal is left out here and
+reported on stderr, naming it: the waveform still records its bits, and
+every other signal keeps its description.
 -}
-sidecar :: Handle -> [(String, RecordedSignal)] -> IO Json.Value
-sidecar spill named = do
-  parts <- mapM part [(path, s, adt) | (path, s) <- named, Just adt <- [signalAdt s]]
-  pure (assemble (catMaybes parts))
- where
-  part (path, s, (tyName, tr)) = do
-    changes <- readChanges spill s
-    renderable
-      path
-      ( Part
-          (Map.singleton path tyName)
-          (addTypesT tr Map.empty)
-          (lut tr (signalWidth s) [v | Change _ (Just v) <- changes])
-      )
-
-  -- Encoding a part forces everything the final encoding of the sidecar will
-  -- read from it, and since the kept part IS the forced one (shared, not
-  -- rebuilt), the sidecar assembled from it cannot throw later.
-  renderable path p = do
-    rendered <- try (evaluate (ByteStringLazy.length (Json.encode (assemble [p]))))
-    case rendered of
-      Right _ -> pure (Just p)
-      -- Cancellation is not a broken descriptor; let it through.
-      Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
-      Left (err :: SomeException) -> do
+sidecar :: [(String, RecordedSignal)] -> [ByteString.ByteString] -> IO Json.Value
+sidecar named luts = do
+  mapM_
+    ( \(path, err) ->
         hPutStrLn
           stderr
           ( "clash-circuit-context: "
               <> path
               <> ": left out of the typed-waveform sidecar, because its"
-              <> " clash-shockwaves description failed to render (the VCD"
+              <> " clash-shockwaves description failed to render (the waveform"
               <> " still has its bits): "
-              <> takeWhile (/= '\n') (displayException err)
+              <> err
           )
-        pure Nothing
-
-{- | One described signal's share of the sidecar: its @signals@ entry, the
-types its translator references, and the LUT entries for the values it took.
-Kept apart per signal so that a broken descriptor loses only its own share.
--}
-data Part = Part SignalMap TypeMap LUTMap
-
--- | The sidecar the parts make up together.
-assemble :: [Part] -> Json.Value
-assemble parts =
-  Json.object
-    [ "signals" .= Map.unions [s | Part s _ _ <- parts]
-    , "types" .= Map.unions [t | Part _ t _ <- parts]
-    , -- Left-biased at both levels, as 'addValueT' itself is within a
-      -- signal: the first translation of a pattern stands.
-      "luts" .= Map.unionsWith Map.union [l | Part _ _ l <- parts]
+    )
+    [(path, err) | (path, s) <- named, Broken err <- [signalDescription s]]
+  pure
+    ( Json.object
+        [ "signals" .= Map.fromList [(path, tyName) | (path, tyName, _) <- described]
+        , "types"
+            .= List.foldl' KeyMap.union KeyMap.empty [object types | (_, _, types) <- described]
+        , -- Left-biased at both levels, as clash-shockwaves' own addValueT is
+          -- within a signal: the first translation of a pattern stands.
+          "luts" .= List.foldl' (KeyMap.unionWith inner) KeyMap.empty (map object luts)
+        ]
+    )
+ where
+  described =
+    [ (path, tyName, types)
+    | (path, s) <- named
+    , Described tyName types <- [signalDescription s]
     ]
-
-{- | LUT entries are value-driven: a translator using the lookup-table
-approach needs one per bit pattern the VCD shows. Translators that are not
-LUT-shaped contribute nothing ('addValueT' returns no updates for them), so
-they are skipped before their history is read at all.
--}
-lut :: Translator -> Int -> [Value] -> LUTMap
-lut tr width values
-  | hasGeneratedLutT tr =
-      List.foldl'
-        (\acc f -> f acc)
-        Map.empty
-        [update | value <- values, update <- addValueT tr (toBitList width value)]
-  | otherwise = Map.empty
-
-{- | The recorder's packed @(mask, value)@ plus a width is exactly shockwaves'
-dynamically sized bit list, and both use the same convention — a set mask bit
-means that position is undefined — so this is a re-wrapping, not a conversion.
--}
-toBitList :: Int -> Value -> BitList
-toBitList width (mask, value) = BL mask value width
+  object bs = case Json.decodeStrict bs of
+    Just (Json.Object o) -> o
+    _ -> KeyMap.empty
+  inner (Json.Object a) (Json.Object b) = Json.Object (KeyMap.union a b)
+  inner a _ = a

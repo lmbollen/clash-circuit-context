@@ -66,7 +66,7 @@ import Clash.Explicit.Prelude
 
 import Clash.CircuitContext
 import Clash.CircuitContext.Recording (discardRecording, writeVCD)
-import Clash.CircuitContext.Waveform (withWaveform)
+import Clash.CircuitContext.Waveform (Format (VCD), WaveformOptions (..), defaultOptions, withWaveform)
 import Clash.Shockwaves.LUT (WaveformForLut (..), WaveformLUT)
 import Clash.Shockwaves.Waveform (Waveform (translator))
 
@@ -234,7 +234,7 @@ its sidecar beside it). Returns the action's result, the VCD and the sidecar.
 dump :: FilePath -> Int -> ((HasCircuitContext) => IO a) -> IO (a, P.Either String (Text.Text, Json.Value))
 dump path n k = do
   createDirectoryIfMissing True (takeDirectory path)
-  (r, rec) <- withRecording (path -<.> "spill") k
+  (r, rec) <- withRecording (Just (path -<.> "spill")) k
   a <- P.either throwIO pure r
   written <- writeVCD (0, n) rec path
   discardRecording rec
@@ -340,6 +340,7 @@ main = do
   outcome <-
     try
       $ withWaveform
+        defaultOptions{format = VCD}
         "adt-sidecar-broken"
         (0, 4)
         ( bundle

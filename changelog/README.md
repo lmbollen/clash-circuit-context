@@ -30,7 +30,7 @@ automatically. Entries are Markdown, so Haskell code goes in a fenced block:
 
 ````md
 ```hs
-writeWaveform "counter" (0, 100) (top clockGen resetGen enableGen)
+writeWaveform defaultOptions "counter" (0, 100) (top clockGen resetGen enableGen)
 ```
 ````
 

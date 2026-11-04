@@ -47,6 +47,11 @@
               clash-circuit-context = prev.developPackage {
                 root = ./.;
                 overrides = _: _: final;
+                # libfst links the C zlib (extra-libraries: z). cabal2nix names
+                # that argument zlib, which this package set resolves to the
+                # Haskell binding, so give the C library explicitly.
+                modifier = drv:
+                  generic-pkgs.haskell.lib.compose.addExtraLibrary generic-pkgs.zlib drv;
               };
             };
           in

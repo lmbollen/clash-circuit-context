@@ -76,7 +76,7 @@ main = do
   createDirectoryIfMissing True "waveforms"
   (r, rec) <-
     withRecording
-      "waveforms/typelits-plugins.spill"
+      (Just "waveforms/typelits-plugins.spill")
       (evaluate (P.sum (P.map P.toInteger (sampleN 6 (ptr @2 (pure True))))))
   check "the run finished" (P.either (P.const False) (P.const True) r)
   let
@@ -98,7 +98,7 @@ main = do
   -- call, with the type there.
   (r2, rec2) <-
     withRecording
-      "waveforms/typelits-plugins-stepped.spill"
+      (Just "waveforms/typelits-plugins-stepped.spill")
       (evaluate (P.sum (P.map P.toInteger (sampleN 6 (stepped (pure True))))))
   check "the stepped run finished" (P.either (P.const False) (P.const True) r2)
   check
@@ -110,7 +110,7 @@ main = do
   -- signature gives the side condition, and only there.
   (r3, rec3) <-
     withRecording
-      "waveforms/typelits-plugins-side-conditions.spill"
+      (Just "waveforms/typelits-plugins-side-conditions.spill")
       ( evaluate
           ( P.length (sampleN 2 (SideConditions.unchecked (SNat @4)))
               P.+ P.length (sampleN 2 (SideConditions.checked (SNat @4)))
@@ -130,7 +130,7 @@ main = do
   -- payloads that the oracle declines in its solver stage.
   (r4, rec4) <-
     withRecording
-      "waveforms/typelits-plugins-extra-first.spill"
+      (Just "waveforms/typelits-plugins-extra-first.spill")
       ( evaluate
           ( P.sum (P.map P.toInteger (sampleN 6 (ptrExtra @2 (pure True))))
               P.+ P.toInteger (P.length (sampleN 2 (DeclinedWidths.foos @3 (pure 0))))
@@ -152,7 +152,7 @@ main = do
   -- not.
   (r5, rec5) <-
     withRecording
-      "waveforms/typelits-plugins-lower-bounds.spill"
+      (Just "waveforms/typelits-plugins-lower-bounds.spill")
       (evaluate LowerBounds.sampled)
   check "the lower-bound run finished" (P.either (P.const False) (P.const True) r5)
   let

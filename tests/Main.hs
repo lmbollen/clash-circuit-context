@@ -5,7 +5,8 @@
   downstream suite writes them and kept honest by running here.
 
 * The Test level pins features: "Test.Recorder" (recorder behaviour under
-  generated stimuli), "Test.Capture" (the capture-cost contract), and
+  generated stimuli), "Test.Capture" (the capture-cost contract),
+  "Test.Formats" (the waveform options: format, spill, recovery), and
   "Test.ExampleOutput", which decodes the files the Example level wrote —
   which is why the Example group and it are SEQUENCED while everything else
   is free to run in parallel.
@@ -24,6 +25,7 @@ import qualified Example.SingleRun
 import qualified Test.Cancel
 import qualified Test.Capture
 import qualified Test.ExampleOutput
+import qualified Test.Formats
 import qualified Test.Memory
 import qualified Test.Recorder
 
@@ -40,6 +42,7 @@ main = do
           [ Test.Recorder.tests
           , Test.Capture.tests
           , Test.Cancel.tests
+          , Test.Formats.tests
           , dependentTestGroup
               "the examples, then what they wrote"
               AllSucceed

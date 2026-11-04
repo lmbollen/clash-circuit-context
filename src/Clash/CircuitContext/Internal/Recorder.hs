@@ -1,20 +1,21 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 
 {- |
 Copyright  :  (C) 2026, QBayLogic B.V.
 License    :  BSD2 (see the file LICENSE)
 Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
 
-The recorder's storage: every recorded signal appends its value CHANGES to a
-spill file while the simulation runs, so the history of a run is not kept in
-memory.
+The recorder's storage: every recorded signal keeps its value CHANGES as
+compact records while the simulation runs, either in memory or in a spill
+file, so memory does not grow with the length of a run (with a spill file)
+or grows by the compact records only (in memory).
 
 Each signal encodes its changes into a small buffer of its own. The buffer
 starts small and doubles as needed, so a signal that rarely changes costs a
-few bytes; when it reaches 'chunkBytes', it is appended to the spill file as
-one chunk, and the signal keeps only the chunk's offset and length. A change
-record is the cycle (as the distance from the previous record, a varint), a
-tag, and the value's bytes:
+few bytes; when it reaches 'chunkBytes', it becomes one chunk: appended to
+the spill file, or kept in memory. A change record is the cycle (as the
+distance from the previous record, a varint), a tag, and the value's bytes:
 
 * tag 0: a defined value, @ceil (width / 8)@ bytes, little endian;
 * tag 1: a value with undefined bits: the value's bytes, then the mask's;
@@ -22,8 +23,43 @@ tag, and the value's bytes:
 
 Before its first record, a signal was not evaluated either.
 
+== The spill file
+
+A spill file describes itself, so that the file of a run that was stopped
+can still be read ('readSpill'). It is a header, then blocks:
+
+* header: the 8 bytes @CCCSPILL@, a version byte (1), and the time (ps,
+  64 bits, little endian) from which cycles are recorded;
+* block: a tag byte, the payload's length (32 bits, little endian), the
+  payload. Numbers in a payload are varints, strings are a varint length and
+  UTF-8 bytes.
+
+  * 1, a signal: its id, kind (0 trace, 1 probe), clock period (ps), width,
+    key, and description: 0 none; 1 described, with the type name and the
+    types as JSON; 2 broken, with the error;
+  * 2, a chunk: the signal's id, the cycle up to which the signal had
+    recorded (exclusive), and change records;
+  * 3, lookup-table entries, as JSON (a @clash-shockwaves@ @LUTMap@);
+  * 4, the end: the time (ps) at which the simulation stopped;
+  * 5, a signal's description broke after it registered: its id, and the
+    error.
+
+A signal's block comes before its chunks, and a block is written whole, so
+any prefix of the file that ends at a block's end can be read: what the
+signals had recorded up to their last chunks. A block cut off by a crash is
+ignored.
+
 A finished 'Recording' reads its changes back lazily, one chunk at a time
 ('readChanges'), so rendering does not hold a history in memory either.
+
+== Descriptions
+
+A signal's @clash-shockwaves@ description is rendered when the signal
+registers, and the lookup-table entries a value needs when the value first
+occurs, so that a spill file carries everything the typed-waveform sidecar
+needs (see "Clash.CircuitContext.Internal.Sidecar"). A description that
+throws is kept as 'Broken', with its error: the signal is still recorded, as
+bits.
 -}
 module Clash.CircuitContext.Internal.Recorder (
   -- * Values
@@ -31,8 +67,10 @@ module Clash.CircuitContext.Internal.Recorder (
 
   -- * Recording
   Kind (..),
+  Description (..),
   Recorder,
   newRecorder,
+  recorderSpill,
   Sig,
   sigPeriod,
   newSig,
@@ -43,19 +81,34 @@ module Clash.CircuitContext.Internal.Recorder (
   -- * A finished recording
   Recording (..),
   RecordedSignal (..),
+  Chunk,
   Change (..),
+  Reader,
   withReader,
   readChanges,
+  readSpill,
   timescale,
   ticks,
 ) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
-import Control.Exception (bracket, evaluate)
-import Control.Monad (forM)
+import Control.Exception (
+  SomeAsyncException,
+  SomeException,
+  bracket,
+  displayException,
+  evaluate,
+  fromException,
+  throwIO,
+  try,
+ )
+import Control.Monad (forM, unless)
 import Data.Bits (shiftL, shiftR, xor, (.&.), (.|.))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import qualified Data.List as List
+import qualified Data.Map.Strict as Map
 import Data.Maybe (isJust)
+import qualified Data.Set as Set
 import Data.Word (Word64, Word8)
 import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrBytes, withForeignPtr)
 import Foreign.Marshal.Utils (copyBytes)
@@ -64,19 +117,30 @@ import GHC.Natural (Natural)
 import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeDirectory)
 import System.IO (
+  BufferMode (NoBuffering),
   Handle,
   IOMode (ReadMode, WriteMode),
   SeekMode (AbsoluteSeek),
   hClose,
   hPutBuf,
   hSeek,
+  hSetBuffering,
   openBinaryFile,
  )
 import System.IO.Unsafe (unsafeInterleaveIO)
 
+import qualified Data.Aeson as Json
 import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Builder as Builder
+import qualified Data.ByteString.Char8 as ByteStringChar8
+import qualified Data.ByteString.Internal as ByteString (create)
+import qualified Data.ByteString.Lazy as ByteStringLazy
 import qualified Data.ByteString.Unsafe as ByteString
+import qualified Data.Text as Text
+import qualified Data.Text.Encoding as Text
 
+import Clash.Shockwaves.Internal.BitList (BitList (BL))
+import Clash.Shockwaves.Internal.Translator (addTypesT, addValueT, hasGeneratedLutT)
 import Clash.Shockwaves.Internal.Types (Translator, TypeName)
 
 {- | A sample as the VCD writer needs it: @(mask, value)@, where a set mask
@@ -88,26 +152,47 @@ type Value = (Natural, Natural)
 data Kind = TraceKind | ProbeKind
   deriving (Eq, Show)
 
--- | Where a running simulation records: one spill file, shared by its signals.
+-- | A signal's @clash-shockwaves@ description, rendered when it registered.
+data Description
+  = -- | Its payload type has none.
+    Undescribed
+  | -- | The payload's type name, and the types it uses as JSON (a @TypeMap@).
+    Described TypeName ByteString.ByteString
+  | -- | Rendering it threw this error.
+    Broken String
+  deriving (Eq, Show)
+
+-- | Where a recorder's chunks go.
+data Store
+  = -- | The spill file, and the offset of its end.
+    ToFile !Handle !Int
+  | ToMemory
+  | -- | The recording ended: a chunk after this is dropped.
+    Closed
+
+-- | Where a running simulation records. Its signals share one store.
 data Recorder = Recorder
-  { rPath :: FilePath
+  { rSpill :: Maybe FilePath
   , rStart :: !Int
   -- ^ The time, in ps, from which on cycles are recorded.
-  , rFile :: MVar (Maybe Handle, Int)
-  {- ^ The spill file ('Nothing' once the recorder is closed), and the offset
-  the next chunk is written at.
-  -}
+  , rStore :: MVar Store
   , rSignals :: IORef [Sig]
   -- ^ Every signal registered, newest first.
+  , rLuts :: IORef [ByteString.ByteString]
+  -- ^ The lookup-table entries, as JSON, newest first.
+  , rNextId :: IORef Int
   }
 
 -- | One recorded signal, while the simulation runs.
 data Sig = Sig
-  { sigKey :: !String
+  { sigId :: !Int
+  , sigKey :: !String
   , sigKind :: Kind
   , sigPeriod :: !Int
   , sigWidth :: !Int
-  , sigAdt :: Maybe (TypeName, Translator)
+  , sigDescription :: Description
+  , sigLut :: Maybe Translator
+  -- ^ When its description has lookup tables: the translator that fills them.
   , sigStart :: !Int
   -- ^ The first cycle that is recorded: the one in progress at 'rStart'.
   , sigState :: MVar SigState
@@ -125,27 +210,102 @@ data SigState = SigState
   , ssBuf :: !(ForeignPtr Word8)
   , ssCap :: !Int
   , ssLen :: !Int
-  , ssChunks :: ![(Int, Int)]
-  -- ^ The written chunks as @(offset, length)@, newest first.
+  , ssChunks :: ![Chunk]
+  -- ^ The finished chunks, newest first.
   , ssHash :: !Word64
   -- ^ A hash of every record, to find signals with the same history.
+  , ssSeen :: !(Set.Set Value)
+  -- ^ The values whose lookup-table entries are made ('sigLut' only).
+  , ssBroken :: !(Maybe String)
+  -- ^ Making a lookup-table entry threw this error.
   }
 
--- | The size at which a signal's buffer is appended to the spill file.
+-- | A chunk of a signal's records.
+data Chunk
+  = -- | At this offset of the spill file, this many bytes.
+    OnFile !Int !Int
+  | InMemory !ByteString.ByteString
+
+-- | The size at which a signal's buffer becomes a chunk.
 chunkBytes :: Int
 chunkBytes = 16 * 1024
 
-{- | A recorder that writes its spill file at this path, and records the
-cycles in progress at or after this time (in ps). Truncates an existing file,
-and creates the directory.
--}
-newRecorder :: FilePath -> Int -> IO Recorder
-newRecorder path start = do
-  createDirectoryIfMissing True (takeDirectory path)
-  h <- openBinaryFile path WriteMode
-  Recorder path start <$> newMVar (Just h, 0) <*> newIORef []
+-- | The first bytes of a spill file.
+magic :: ByteString.ByteString
+magic = ByteStringChar8.pack "CCCSPILL"
 
--- | Register a signal: its key, kind, clock period (ps), width and description.
+spillVersion :: Word8
+spillVersion = 1
+
+{- | A recorder that records the cycles in progress at or after this time (in
+ps): into a spill file at this path (made, with its directory; an existing
+file is truncated), or, given 'Nothing', in memory.
+-}
+newRecorder :: Maybe FilePath -> Int -> IO Recorder
+newRecorder spill start = do
+  store <- case spill of
+    Nothing -> pure ToMemory
+    Just path -> do
+      createDirectoryIfMissing True (takeDirectory path)
+      h <- openBinaryFile path WriteMode
+      -- Each block is written whole, so that a stopped run leaves whole blocks.
+      hSetBuffering h NoBuffering
+      let header =
+            Builder.byteString magic
+              <> Builder.word8 spillVersion
+              <> Builder.word64LE (fromIntegral start)
+      ByteStringLazy.hPut h (Builder.toLazyByteString header)
+      pure (ToFile h (ByteString.length magic + 9))
+  Recorder spill start
+    <$> newMVar store
+    <*> newIORef []
+    <*> newIORef []
+    <*> newIORef 0
+
+-- | The recorder's spill file, if it has one.
+recorderSpill :: Recorder -> Maybe FilePath
+recorderSpill = rSpill
+
+{- | Append a block to the spill file: this tag, this payload, and then these
+raw bytes (part of the payload). Returns where the raw bytes start in the
+file; 'Nothing' when there is no spill file, or the recording ended.
+-}
+writeBlock ::
+  Recorder -> Word8 -> Builder.Builder -> (Int, Raw -> IO ()) -> IO (Maybe Int)
+writeBlock rec tag payload (rawLen, putRaw) =
+  modifyMVar (rStore rec) $ \store -> case store of
+    ToFile h o -> do
+      let
+        body = ByteStringLazy.toStrict (Builder.toLazyByteString payload)
+        len = ByteString.length body + rawLen
+        hdr = Builder.word8 tag <> Builder.word32LE (fromIntegral len)
+      ByteStringLazy.hPut h (Builder.toLazyByteString (hdr <> Builder.byteString body))
+      putRaw (Raw h)
+      let raw = o + 5 + ByteString.length body
+      pure (ToFile h (raw + rawLen), Just raw)
+    _ -> pure (store, Nothing)
+
+-- | The spill file's handle, for the raw bytes of a 'writeBlock'.
+newtype Raw = Raw Handle
+
+-- | A block that is only its payload.
+noRaw :: (Int, Raw -> IO ())
+noRaw = (0, \_ -> pure ())
+
+varint :: Int -> Builder.Builder
+varint x
+  | x < 0x80 = Builder.word8 (fromIntegral x)
+  | otherwise = Builder.word8 (fromIntegral (x .&. 0x7f) .|. 0x80) <> varint (x `shiftR` 7)
+
+string :: String -> Builder.Builder
+string = bytes . Text.encodeUtf8 . Text.pack
+
+bytes :: ByteString.ByteString -> Builder.Builder
+bytes b = varint (ByteString.length b) <> Builder.byteString b
+
+{- | Register a signal: its key, kind, clock period (ps), width and
+@clash-shockwaves@ description (rendered here; see 'Description').
+-}
 newSig ::
   Recorder -> String -> Kind -> Int -> Int -> Maybe (TypeName, Translator) -> IO Sig
 newSig rec key kind period width adt = do
@@ -153,14 +313,58 @@ newSig rec key kind period width adt = do
   -- field's value), so an unevaluated one keeps the signal it names alive,
   -- with every cycle the simulation gives it.
   _ <- evaluate (foldr seq () key)
+  (desc, lut) <- describe adt
+  i <- atomicModifyIORef' (rNextId rec) (\n -> (n + 1, n))
   buf <- mallocForeignPtrBytes cap
-  st <- newMVar (SigState 0 Nothing True 0 buf cap 0 [] 14695981039346656037)
-  let sig = Sig key kind period width adt (rStart rec `div` period) st
+  st <-
+    newMVar
+      (SigState 0 Nothing True 0 buf cap 0 [] 14695981039346656037 Set.empty Nothing)
+  let sig = Sig i key kind period width desc lut (rStart rec `div` period) st
+  _ <-
+    writeBlock
+      rec
+      1
+      ( varint i
+          <> Builder.word8 (if kind == TraceKind then 0 else 1)
+          <> varint period
+          <> varint width
+          <> string key
+          <> case desc of
+            Undescribed -> Builder.word8 0
+            Described tyName types -> Builder.word8 1 <> string tyName <> bytes types
+            Broken err -> Builder.word8 2 <> string err
+      )
+      noRaw
   atomicModifyIORef' (rSignals rec) (\ss -> (sig : ss, ()))
   pure sig
  where
   -- Room for the two records one cycle can write (a gap, then a value).
   cap = 64 + 2 * recordBytes width
+
+{- | Render a description, and whether it has lookup tables (then also its
+translator). One that throws is 'Broken'; a cancellation goes on.
+-}
+describe :: Maybe (TypeName, Translator) -> IO (Description, Maybe Translator)
+describe Nothing = pure (Undescribed, Nothing)
+describe (Just (tyName, tr)) = do
+  rendered <- tryRender $ do
+    let types = ByteStringLazy.toStrict (Json.encode (addTypesT tr Map.empty))
+        lut = hasGeneratedLutT tr
+    _ <- evaluate (length tyName)
+    _ <- evaluate (ByteString.length types)
+    (,) types <$> evaluate lut
+  pure $ case rendered of
+    Right (types, lut) -> (Described tyName types, if lut then Just tr else Nothing)
+    Left err -> (Broken err, Nothing)
+
+-- | Run a rendering, catching what it throws (but not a cancellation).
+tryRender :: IO a -> IO (Either String a)
+tryRender act = do
+  r <- try act
+  case r of
+    Right a -> pure (Right a)
+    Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
+    Left (err :: SomeException) -> pure (Left (takeWhile (/= '\n') (displayException err)))
 
 -- | The most bytes one record of this width takes.
 recordBytes :: Int -> Int
@@ -195,9 +399,9 @@ recordCycle rec sig cyc v = modifyMVar_ (sigState sig) step
         s2 <-
           if not (ssFresh s1) && ssLast s1 == Just v
             then pure s1
-            else emit sig cyc (Just v) s1
+            else emit sig cyc (Just v) s1 >>= lutEntries rec sig v
         let s3 = s2{ssNext = cyc + 1}
-        if ssLen s3 >= chunkBytes then flush rec s3 else pure s3
+        if ssLen s3 >= chunkBytes then flush rec sig s3 else pure s3
 
 -- | Append one record to the signal's buffer, growing it when needed.
 emit :: Sig -> Int -> Maybe Value -> SigState -> IO SigState
@@ -229,22 +433,56 @@ emit sig c mv s0 = do
           withForeignPtr buf' $ \p' -> copyBytes p' p (ssLen s)
         pure s{ssBuf = buf', ssCap = cap'}
 
--- | Append the signal's buffer to the spill file as one chunk.
-flush :: Recorder -> SigState -> IO SigState
-flush rec s
+{- | Make the lookup-table entries of a value the signal takes for the first
+time, when its description has lookup tables. One that throws breaks the
+description ('ssBroken'); the value is recorded all the same.
+-}
+lutEntries :: Recorder -> Sig -> Value -> SigState -> IO SigState
+lutEntries rec sig v@(mask, val) s = case sigLut sig of
+  Just tr
+    | Set.notMember v (ssSeen s)
+    , not (isJust (ssBroken s)) -> do
+        made <- tryRender $ do
+          let entries =
+                List.foldl' (\acc f -> f acc) Map.empty (addValueT tr (BL mask val (sigWidth sig)))
+          if Map.null entries
+            then pure ByteString.empty
+            else do
+              let json = ByteStringLazy.toStrict (Json.encode entries)
+              _ <- evaluate (ByteString.length json)
+              pure json
+        case made of
+          Right json -> do
+            unless (ByteString.null json) $ do
+              atomicModifyIORef' (rLuts rec) (\ls -> (json : ls, ()))
+              () <$ writeBlock rec 3 (Builder.byteString json) noRaw
+            pure s{ssSeen = Set.insert v (ssSeen s)}
+          Left err -> do
+            _ <- writeBlock rec 5 (varint (sigId sig) <> string err) noRaw
+            pure s{ssBroken = Just err}
+  _ -> pure s
+
+-- | Make the signal's buffer a chunk: on the spill file, or in memory.
+flush :: Recorder -> Sig -> SigState -> IO SigState
+flush rec sig s
   | ssLen s == 0 = pure s
   | otherwise = do
-      off <- modifyMVar (rFile rec) $ \(mh, o) -> case mh of
-        Just h -> do
-          withForeignPtr (ssBuf s) $ \p -> hPutBuf h p (ssLen s)
-          pure ((mh, o + ssLen s), Just o)
-        -- Closed: this cycle came after the recording ended.
-        Nothing -> pure ((mh, o), Nothing)
-      pure
-        s
-          { ssLen = 0
-          , ssChunks = maybe (ssChunks s) (\o -> (o, ssLen s) : ssChunks s) off
-          }
+      store <- readMVar (rStore rec)
+      chunk <- case store of
+        ToMemory ->
+          Just . InMemory
+            <$> withForeignPtr
+              (ssBuf s)
+              (\p -> ByteString.create (ssLen s) (\q -> copyBytes q p (ssLen s)))
+        _ -> do
+          at <-
+            writeBlock
+              rec
+              2
+              (varint (sigId sig) <> varint (ssNext s))
+              (ssLen s, \(Raw h) -> withForeignPtr (ssBuf s) (\p -> hPutBuf h p (ssLen s)))
+          pure ((`OnFile` ssLen s) <$> at)
+      pure s{ssLen = 0, ssChunks = maybe (ssChunks s) (: ssChunks s) chunk}
 
 fnv :: Word64 -> Word8 -> Word64
 fnv h b = (h `xor` fromIntegral b) * 1099511628211
@@ -263,34 +501,37 @@ data RecordedSignal = RecordedSignal
   , signalPeriod :: Int
   -- ^ Clock period of the signal's domain, in ps.
   , signalWidth :: Int
-  , signalAdt :: Maybe (TypeName, Translator)
-  -- ^ The @clash-shockwaves@ description of the payload type, if it has one.
+  , signalDescription :: Description
   , signalEnd :: Int
   -- ^ Cycles from this one on were not evaluated.
-  , signalChunks :: [(Int, Int)]
-  -- ^ Where its records are in the spill file, oldest first.
+  , signalChunks :: [Chunk]
+  -- ^ Its records, oldest first.
   , signalHash :: Word64
   }
 
--- | A finished recording: its spill file, and the signals recorded into it.
+-- | A finished recording: the signals recorded, and where their records are.
 data Recording = Recording
-  { recordingSpill :: FilePath
+  { recordingSpill :: Maybe FilePath
+  -- ^ The spill file; 'Nothing' when the records are in memory.
   , recordingSignals :: [RecordedSignal]
   -- ^ In registration order.
   , recordingStartPs :: Int
   -- ^ Cycles before the one in progress at this time (ps) were not recorded.
   , recordingEndPs :: Int
   -- ^ The time (ps) at which the simulation stopped: nothing was evaluated after it.
+  , recordingLuts :: [ByteString.ByteString]
+  -- ^ The lookup-table entries, as JSON, oldest first.
   }
 
-{- | Finish a recording that ends at this time (ps): write every buffer and
-close the spill file. A cycle recorded after this is dropped.
+{- | Finish a recording that ends at this time (ps): make every buffer a
+chunk, mark the end in the spill file, and close it. A cycle recorded after
+this is dropped.
 -}
 closeRecorder :: Recorder -> Int -> IO Recording
 closeRecorder rec end = do
   sigs <- reverse <$> readIORef (rSignals rec)
   frozen <- forM sigs $ \sig -> modifyMVar (sigState sig) $ \s0 -> do
-    s <- flush rec s0
+    s <- flush rec sig s0
     pure
       ( s
       , RecordedSignal
@@ -298,42 +539,55 @@ closeRecorder rec end = do
           , signalKind = sigKind sig
           , signalPeriod = sigPeriod sig
           , signalWidth = sigWidth sig
-          , signalAdt = sigAdt sig
+          , signalDescription = maybe (sigDescription sig) Broken (ssBroken s)
           , signalEnd = ssNext s
           , signalChunks = reverse (ssChunks s)
           , signalHash = ssHash s
           }
       )
-  modifyMVar_ (rFile rec) $ \(mh, o) -> mapM_ hClose mh >> pure (Nothing, o)
-  pure (Recording (rPath rec) frozen (rStart rec) end)
+  _ <- writeBlock rec 4 (varint end) noRaw
+  modifyMVar_ (rStore rec) $ \store -> case store of
+    ToFile h _ -> hClose h >> pure Closed
+    _ -> pure Closed
+  luts <- reverse <$> readIORef (rLuts rec)
+  pure (Recording (rSpill rec) frozen (rStart rec) end luts)
 
 -- | A record: from this cycle on, the signal has this value ('Nothing': not evaluated).
 data Change = Change !Int !(Maybe Value)
   deriving (Eq, Show)
 
--- | Run an action with the recording's spill file open for 'readChanges'.
-withReader :: Recording -> (Handle -> IO a) -> IO a
-withReader rec = bracket (openBinaryFile (recordingSpill rec) ReadMode) hClose
+-- | What 'readChanges' reads a recording's chunks through.
+newtype Reader = Reader (Maybe Handle)
+
+-- | Run an action with the recording's records open for 'readChanges'.
+withReader :: Recording -> (Reader -> IO a) -> IO a
+withReader rec k = case recordingSpill rec of
+  Nothing -> k (Reader Nothing)
+  Just path -> bracket (openBinaryFile path ReadMode) hClose (k . Reader . Just)
 
 {- | A signal's records, oldest first, read lazily: a chunk is read when the
-list reaches it. The handle must stay open while the list is consumed, and
+list reaches it. The reader must stay open while the list is consumed, and
 nothing else may move it in between (one thread).
 -}
-readChanges :: Handle -> RecordedSignal -> IO [Change]
-readChanges h sig = go 0 (signalChunks sig)
+readChanges :: Reader -> RecordedSignal -> IO [Change]
+readChanges (Reader mh) sig = go 0 (signalChunks sig)
  where
   n = (signalWidth sig + 7) `div` 8
   go _ [] = pure []
-  go base ((off, len) : rest) = unsafeInterleaveIO $ do
-    hSeek h AbsoluteSeek (fromIntegral off)
-    bytes <- ByteString.hGet h len
-    let (changes, base') = decode base bytes
+  go base (chunk : rest) = unsafeInterleaveIO $ do
+    bs <- case (chunk, mh) of
+      (InMemory b, _) -> pure b
+      (OnFile off len, Just h) -> do
+        hSeek h AbsoluteSeek (fromIntegral off)
+        ByteString.hGet h len
+      (OnFile _ _, Nothing) -> ioError (userError "clash-circuit-context: a spill file's chunk without its file")
+    let (changes, base') = decode base bs
     (changes <>) <$> go base' rest
-  decode !base bytes
-    | ByteString.null bytes = ([], base)
+  decode !base bs
+    | ByteString.null bs = ([], base)
     | otherwise =
         let
-          (delta, b1) = unvarint 0 0 bytes
+          (delta, b1) = unvarint bs
           cyc = base + delta
           b2 = ByteString.unsafeTail b1
           (mv, b3) = case ByteString.unsafeHead b1 of
@@ -346,14 +600,103 @@ readChanges h sig = go 0 (signalChunks sig)
           (rest, base') = decode cyc b3
          in
           (Change cyc mv : rest, base')
-  unvarint :: Int -> Int -> ByteString.ByteString -> (Int, ByteString.ByteString)
-  unvarint !acc !sh b =
+  fromBytes = ByteString.foldr' (\w acc -> acc `shiftL` 8 .|. fromIntegral w) 0
+
+-- | A varint, and the bytes after it.
+unvarint :: ByteString.ByteString -> (Int, ByteString.ByteString)
+unvarint = go 0 0
+ where
+  go !acc !sh b =
     let w = ByteString.unsafeHead b
         acc' = acc .|. (fromIntegral (w .&. 0x7f) `shiftL` sh)
      in if w < 0x80
           then (acc', ByteString.unsafeTail b)
-          else unvarint acc' (sh + 7) (ByteString.unsafeTail b)
-  fromBytes = ByteString.foldr' (\w acc -> acc `shiftL` 8 .|. fromIntegral w) 0
+          else go acc' (sh + 7) (ByteString.unsafeTail b)
+
+{- | Read a spill file, also one whose run was stopped: every signal with
+the records of its whole chunks, and the lookup-table entries. A stopped run
+ends where its furthest signal's chunks end. 'Left' when the file is not a
+spill file.
+-}
+readSpill :: FilePath -> IO (Either String Recording)
+readSpill path = bracket (openBinaryFile path ReadMode) hClose $ \h -> do
+  header <- ByteString.hGet h (ByteString.length magic + 9)
+  let (m, rest) = ByteString.splitAt (ByteString.length magic) header
+  if ByteString.length header < ByteString.length magic + 9 || m /= magic
+    then pure (Left (path <> " is not a spill file"))
+    else
+      if ByteString.head rest /= spillVersion
+        then pure (Left (path <> " is a spill file of another version"))
+        else do
+          let start = fromIntegral (word64LE (ByteString.drop 1 rest))
+          blocks h start (ByteString.length header) Map.empty [] Nothing
+ where
+  blocks h start off sigs luts end = do
+    hdr <- ByteString.hGet h 5
+    if ByteString.length hdr < 5
+      then done start sigs luts end
+      else do
+        let tag = ByteString.head hdr
+            len = fromIntegral (word32LE (ByteString.drop 1 hdr))
+        payload <- ByteString.hGet h len
+        let off' = off + 5 + len
+        if ByteString.length payload < len
+          then done start sigs luts end
+          else case tag of
+            1 ->
+              let (i, p1) = unvarint payload
+                  kind = if ByteString.head p1 == 0 then TraceKind else ProbeKind
+                  (period, p2) = unvarint (ByteString.tail p1)
+                  (width, p3) = unvarint p2
+                  (key, p4) = unstring p3
+                  desc = case ByteString.head p4 of
+                    1 ->
+                      let (tyName, p5) = unstring (ByteString.tail p4)
+                          (types, _) = unbytes p5
+                       in Described tyName types
+                    2 -> Broken (fst (unstring (ByteString.tail p4)))
+                    _ -> Undescribed
+                  sig = RecordedSignal key kind period width desc 0 [] 14695981039346656037
+               in blocks h start off' (Map.insert i sig sigs) luts end
+            2 ->
+              let (i, p1) = unvarint payload
+                  (next, p2) = unvarint p1
+                  at = off + 5 + (len - ByteString.length p2)
+                  add s =
+                    s
+                      { signalEnd = next
+                      , signalChunks = OnFile at (ByteString.length p2) : signalChunks s
+                      , signalHash = ByteString.foldl' fnv (signalHash s) p2
+                      }
+               in blocks h start off' (Map.adjust add i sigs) luts end
+            3 -> blocks h start off' sigs (payload : luts) end
+            4 -> blocks h start off' sigs luts (Just (fst (unvarint payload)))
+            5 ->
+              let (i, p1) = unvarint payload
+                  broken s = s{signalDescription = Broken (fst (unstring p1))}
+               in blocks h start off' (Map.adjust broken i sigs) luts end
+            _ -> blocks h start off' sigs luts end
+  done start sigs luts end = do
+    let signals = [s{signalChunks = reverse (signalChunks s)} | s <- Map.elems sigs]
+        reached = maximum (0 : [signalEnd s * signalPeriod s | s <- signals])
+    pure
+      ( Right
+          ( Recording
+              (Just path)
+              signals
+              start
+              (maybe reached id end)
+              (reverse luts)
+          )
+      )
+  unstring b = let (s, r) = unbytes b in (Text.unpack (Text.decodeUtf8 s), r)
+  unbytes b = let (l, r) = unvarint b in ByteString.splitAt l r
+  word64LE b =
+    ByteString.foldr' (\w acc -> acc `shiftL` 8 .|. fromIntegral w) 0 (ByteString.take 8 b) ::
+      Word64
+  word32LE b =
+    ByteString.foldr' (\w acc -> acc `shiftL` 8 .|. fromIntegral w) 0 (ByteString.take 4 b) ::
+      Word64
 
 {- | The VCD time unit of a recording, in ps: the greatest common divisor of
 its signals' periods (1 when it has none).
