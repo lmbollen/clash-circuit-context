@@ -16,13 +16,14 @@ and, if you ask for it, of one passing case.
 > prop_counter :: Property
 > prop_counter = property $ do
 >   xs  <- forAll genInputs
->   out <- simulateWaveform Counterexample "counter" (0, length xs) (top (fromList xs))
+>   out <- simulateWaveform defaultOptions Counterexample "counter" (0, length xs) (top (fromList xs))
 >   out === model xs
 
 Every case simulates without recording, so a property that passes costs
 nothing extra. When it fails, Hedgehog's report ends with
-@waveform: \/abs\/path\/waveforms\/counter.vcd@: the waveform of the case it
-reports, the smallest counterexample.
+@waveform: \/abs\/path\/waveforms\/counter.fst@: the waveform of the case it
+reports, the smallest counterexample. The options are those of
+"Clash.CircuitContext.Waveform", re-exported here.
 
 == How the counterexample is recorded
 
@@ -44,6 +45,13 @@ The second simulation must give the same result as the first. That holds for
 a design whose inputs all come from the property.
 -}
 module Clash.CircuitContext.Waveform.Hedgehog (
+  -- * Options
+  WaveformOptions (..),
+  Format (..),
+  Spill (..),
+  defaultOptions,
+
+  -- * A property's waveform
   Capture (..),
   simulateWaveform,
 ) where
@@ -86,21 +94,22 @@ data Capture
 except as 'Capture' asks; see the module header. A waveform shows the cycles
 @[start, stop)@ of the window, as in "Clash.CircuitContext.Waveform".
 
-The waveform is @waveforms\/\<name\>.vcd@ (and its @.json@ sidecar); give each
+The waveform is @waveforms\/\<name\>.fst@ or @.vcd@ (and its @.json@ sidecar); give each
 property its own name.
 -}
 simulateWaveform ::
   forall dom a.
   (KnownDomain dom, NFDataX a) =>
+  WaveformOptions ->
   Capture ->
-  -- | The name of the waveform: @waveforms\/\<name\>.vcd@
+  -- | The name of the waveform: @waveforms\/\<name\>.fst@ or @.vcd@
   String ->
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
   (Int, Int) ->
   -- | The signal to observe
   (HasCircuitContext => Signal dom a) ->
   PropertyT IO [a]
-simulateWaveform capture name window@(_, stop) sig = do
+simulateWaveform opts capture name window@(_, stop) sig = do
   liftIO (checkWindow name window)
   keepThis <- case capture of
     Counterexample -> pure False
@@ -109,23 +118,24 @@ simulateWaveform capture name window@(_, stop) sig = do
     liftIO $
       if keepThis
         then do
-          (xs, rec) <- recordRun @dom name window sig
-          _ <- save Requested name (psWindow @dom window) rec
+          (xs, rec) <- recordRun @dom opts name window sig
+          _ <- save Requested opts name (psWindow @dom window) rec
           either throwIO pure xs
         else simulate stop sig
-  footnote (onPrint (recordCounterexample @dom name window sig))
+  footnote (onPrint (recordCounterexample @dom opts name window sig))
   pure out
 
 -- | Record @stop@ samples of the signal, forced.
 recordRun ::
   forall dom a.
   (KnownDomain dom, NFDataX a) =>
+  WaveformOptions ->
   String ->
   (Int, Int) ->
   (HasCircuitContext => Signal dom a) ->
   IO (Either SomeException [a], Recording)
-recordRun name window@(_, stop) sig =
-  record name (fst (psWindow @dom window)) $ do
+recordRun opts name window@(_, stop) sig =
+  record opts name (fst (psWindow @dom window)) $ do
     let xs = sampleN stop sig
     evaluate (xs `deepseqX` xs)
 
@@ -135,16 +145,17 @@ prints the footnote; never throws, as it runs inside Hedgehog's report.
 recordCounterexample ::
   forall dom a.
   (KnownDomain dom, NFDataX a) =>
+  WaveformOptions ->
   String ->
   (Int, Int) ->
   (HasCircuitContext => Signal dom a) ->
   IO String
-recordCounterexample name window sig = do
+recordCounterexample opts name window sig = do
   result <- try $ do
-    (_, rec) <- recordRun @dom name window sig
-    save Failure name (psWindow @dom window) rec
+    (_, rec) <- recordRun @dom opts name window sig
+    save Failure opts name (psWindow @dom window) rec
   case result of
-    Right True -> ("waveform: " <>) <$> makeAbsolute (waveformPath name)
+    Right True -> ("waveform: " <>) <$> makeAbsolute (waveformPath (format opts) name)
     Right False -> pure ("no waveform for " <> name <> ": nothing was recorded")
     Left (err :: SomeException) ->
       pure ("no waveform for " <> name <> ": " <> displayException err)

@@ -63,7 +63,7 @@ main = do
   createDirectoryIfMissing True "waveforms"
   (r, rec) <-
     withRecording
-      "waveforms/typelits-plugins.spill"
+      (Just "waveforms/typelits-plugins.spill")
       (evaluate (P.sum (P.map P.toInteger (sampleN 6 (ptr @2 (pure True))))))
   check "the run finished" (P.either (P.const False) (P.const True) r)
   let
@@ -85,7 +85,7 @@ main = do
   -- call, with the type there.
   (r2, rec2) <-
     withRecording
-      "waveforms/typelits-plugins-stepped.spill"
+      (Just "waveforms/typelits-plugins-stepped.spill")
       (evaluate (P.sum (P.map P.toInteger (sampleN 6 (stepped (pure True))))))
   check "the stepped run finished" (P.either (P.const False) (P.const True) r2)
   check

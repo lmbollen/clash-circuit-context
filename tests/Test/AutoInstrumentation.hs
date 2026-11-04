@@ -232,7 +232,7 @@ return its result with the recording.
 -}
 recorded :: String -> ((HasCircuitContext) => IO a) -> IO (a, Recording)
 recorded spill k = do
-  (r, rec) <- withRecording spill k
+  (r, rec) <- withRecording (Just spill) k
   either throwIO (\a -> pure (a, rec)) r
 
 -- | The keys of the recorded signals of one kind, in order.
@@ -346,6 +346,8 @@ main = do
         [s | s <- recordedSignals rec, signalKind s P.== TraceKind]
     )
   vcd <- writeVCD (0, 8) rec "auto-instrumentation.vcd"
+  -- The same recording as an FST, which check.sh compares with the VCD.
+  _ <- writeFST (0, 8) rec "auto-instrumentation.fst"
   discardRecording rec
   case vcd of
     Left err -> putStrLn ("VCD error: " <> err) >> exitFailure

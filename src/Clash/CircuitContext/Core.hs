@@ -155,7 +155,6 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
 import GHC.Natural (Natural)
-import System.Directory (removePathForcibly)
 import GHC.Stack (
   CallStack,
   HasCallStack,
@@ -356,9 +355,10 @@ fieldLoc fields loc
 
 {- | Run a simulation action under a fresh recording context, and return
 what the action returned (or threw) with the 'Recording'. The recording's
-values go to a spill file at this path while the simulation runs, so the
-recorded history is not kept in memory. Delete the file with
-'Clash.CircuitContext.Recording.discardRecording' when done.
+values go to a spill file at this path while the simulation runs, so memory
+does not grow with the length of the run; given 'Nothing', they stay in
+memory, as compact records, and nothing is written to disk. Delete a spill
+file with 'Clash.CircuitContext.Recording.discardRecording' when done.
 
 The action must /force/ the parts of the circuit it wants recorded (sampling
 does). When it stops, every trace is finished up to the time the furthest
@@ -368,11 +368,13 @@ can be forced less far than another (a register's input, for one).
 
 What the action recorded before it threw is in the recording too: that is
 what the waveform of a failing test is made of. An asynchronous exception
-(a cancelled test) is not caught: the spill file is deleted and the
-exception goes on.
+(a cancelled test) is not caught: the recording stops where it got to and
+the exception goes on. A spill file stays, and holds what was recorded: read
+it with 'Clash.CircuitContext.Recording.recoverRecording'. So does the spill
+file of a process that was killed, up to its signals' last whole chunks.
 -}
 withRecording ::
-  FilePath ->
+  Maybe FilePath ->
   ((HasCircuitContext) => IO r) ->
   IO (Either SomeException r, Recording)
 withRecording = withRecordingFrom 0
@@ -383,11 +385,11 @@ are evaluated, but nothing is written for them.
 -}
 withRecordingFrom ::
   Int ->
-  FilePath ->
+  Maybe FilePath ->
   ((HasCircuitContext) => IO r) ->
   IO (Either SomeException r, Recording)
-withRecordingFrom start path k = do
-  rec <- newRecorder path start
+withRecordingFrom start spill k = do
+  rec <- newRecorder spill start
   taps <- newIORef []
   ords <- newIORef emptyOrdinals
   r <-
@@ -397,8 +399,8 @@ withRecordingFrom start path k = do
       )
   case r of
     Left err | Just (_ :: SomeAsyncException) <- fromException err -> do
-      _ <- closeRecorder rec 0
-      removePathForcibly path
+      -- Stop now: no cycle is evaluated to finish the traces.
+      _ <- closeRecorder rec =<< recorderEnd rec
       throwIO err
     _ -> (,) r <$> finishRecording rec taps
 

@@ -2,8 +2,8 @@
 
 Scoped simulation tracing for [Clash](https://clash-lang.org/) designs: a
 small runtime plus a GHC plugin that instruments your design automatically.
-Simulate as usual, get a **hierarchical VCD** of every named signal in your
-design — on **unmodified `clash-prelude`**, with no changes to how you
+Simulate as usual, get a **hierarchical waveform** (FST or VCD) of every named
+signal in your design — on **unmodified `clash-prelude`**, with no changes to how you
 simulate. Beside it comes a **typed-waveform sidecar** from
 [`clash-shockwaves`](https://github.com/clash-lang/clash-shockwaves), so a
 viewer shows a 72-bit wire as the `WishboneM2S` it is — constructors and named
@@ -83,7 +83,7 @@ modules). Nothing else, and in particular no patched `clash-prelude`.
 
 Then instrument a function with the two annotations above, and see
 [Waveforms from your test suite](#waveforms-from-your-test-suite) for getting
-a VCD out of a test.
+a waveform out of a test.
 
 ## Example
 
@@ -119,12 +119,12 @@ import Clash.CircuitContext.Waveform
 
 main :: IO ()
 main = do
-  -- 100 cycles; writes waveforms/top.vcd (+ .json) of cycles [0, 100).
-  _samples <- writeWaveform "top" (0, 100) (top (fromList [1, 1 ..]))
+  -- 100 cycles; writes waveforms/top.fst (+ .json) of cycles [0, 100).
+  _samples <- writeWaveform defaultOptions "top" (0, 100) (top (fromList [1, 1 ..]))
   pure ()
 ```
 
-The VCD scope tree mirrors the design hierarchy; the two `acc` instances
+The waveform's scope tree mirrors the design hierarchy; the two `acc` instances
 are numbered by the call sites of their `component` calls:
 
 ```
@@ -378,24 +378,25 @@ design question, tracked as finding F1 in
 ## Waveforms from your test suite
 
 `Clash.CircuitContext.Waveform` writes the files for you, and in a test suite
-records only the run you will look at. Every function takes what `dumpVCD`
-takes: the `Signal` to observe (it supplies the `HasCircuitContext`) and a
+records only the run you will look at. Every function takes `WaveformOptions`
+(below), then what `dumpVCD` takes: the `Signal` to observe (it supplies the `HasCircuitContext`) and a
 window `(start, stop)` of cycles. The simulation runs `stop` cycles and the
 waveform shows cycles `start` to `stop - 1`; `(0, n)` shows all `n`. As in
 `dumpVCD`, `start` cannot be negative: VCD time is unsigned. Several outputs
 in one domain become one signal with `bundle`; a `clash-protocols` circuit
 becomes one with `toSignals`. For outputs in more than one domain, record by
-hand with `Clash.CircuitContext.Recording` (`withRecording`, `writeVCD`).
+hand with `Clash.CircuitContext.Recording` (`withRecording`, `writeFST` or
+`writeVCD`).
 
 ```haskell
 import Clash.CircuitContext.Waveform
 
--- Anywhere in IO: simulate, write waveforms/counter.vcd (+ .json), get the samples.
-main = writeWaveform "counter" (0, 1000) (top (fromList [1 ..])) >>= print
+-- Anywhere in IO: simulate, write waveforms/counter.fst (+ .json), get the samples.
+main = writeWaveform defaultOptions "counter" (0, 1000) (top (fromList [1 ..])) >>= print
 
 -- In a test: nothing is recorded while it passes; the failing run's waveform when it fails.
 case_counter :: Assertion
-case_counter = withWaveform "counter" (0, 1000) (top (fromList [1 ..])) $ \out ->
+case_counter = withWaveform defaultOptions "counter" (0, 1000) (top (fromList [1 ..])) $ \out ->
   out @?= expected
 ```
 
@@ -415,17 +416,29 @@ Recording only on failure matters under a parallel runner, where peak memory
 is the sum over concurrently running tests: on a real 24-core suite it took
 unconditional recording from 25.2 GB and 6m22s to **8.2 GB and 1m06s**.
 
-A recording does not keep its history in memory: each signal's value changes
-go to a spill file next to the waveform, `waveforms/<name>.spill`, while the
-simulation runs, and the VCD is written from there, straight to disk. The
-spill file is deleted when the waveform is written. The recorded history costs
-disk space, roughly the size of the VCD, instead of memory.
+### Options
 
-So a long run needs about the same memory as a short one. On a CPU design,
-237,000 recorded cycles took a maximum residency of 58 MB; before
-[#38](https://github.com/lmbollen/clash-circuit-context/issues/38) was fixed,
-a traced record field kept its raw design values alive, and the same run took
-1.05 GB.
+`WaveformOptions` chooses the file and where the recording keeps its values
+until the file is written. `defaultOptions` writes an FST, recorded in memory:
+
+```haskell
+opts = defaultOptions {format = VCD, spill = OnDisk}
+```
+
+* `format`: `FST` (`waveforms/<name>.fst`) or `VCD` (`waveforms/<name>.vcd`).
+  GTKWave and Surfer read both. The FST is compressed: on bittide's test
+  suite, 45 MB against 2.0 GB of VCD, written as fast.
+* `spill`: a recording keeps each signal's value changes as compact records,
+  and writes the waveform from them when the run ends.
+  * `InMemory`: nothing is written to disk but the waveform. Memory holds the
+    records, a few times smaller than the VCD. A run that is stopped
+    (cancelled, or killed) leaves nothing.
+  * `OnDisk`: the records go to `waveforms/<name>.spill` while the simulation
+    runs, deleted when the waveform is written. A long run needs about the same
+    memory as a short one (on a CPU design, 237,000 recorded cycles took a
+    maximum residency of 58 MB), and the values are written to disk twice. A run
+    that is stopped leaves the spill file, holding what it recorded;
+    `recoverWaveform opts name` writes its waveform.
 
 ### Hedgehog properties
 
@@ -439,7 +452,7 @@ import Clash.CircuitContext.Waveform.Hedgehog
 prop_counter :: Property
 prop_counter = property $ do
   xs  <- forAll genInputs
-  out <- simulateWaveform Counterexample "counter" (0, length xs) (top (fromList xs))
+  out <- simulateWaveform defaultOptions Counterexample "counter" (0, length xs) (top (fromList xs))
   out === model xs
 ```
 
@@ -464,7 +477,7 @@ waveforms the examples wrote and verifies they show the run they claim to
 
 ## Typed waveforms
 
-A hierarchical VCD knows *where* a signal is: `top.bus_Fwd`, 72 bits. It does
+A hierarchical waveform knows *where* a signal is: `top.bus_Fwd`, 72 bits. It does
 not know those bits are a `WishboneM2S 27 4` with an `addr` field in one range
 and a `cycleTypeIdentifier` in another. `clash-shockwaves` knows exactly that,
 from the payload type's `Waveform` instance, so the two are combined rather
@@ -478,8 +491,8 @@ than chosen between:
 
 Every traced or probed payload with a `Waveform` instance carries its
 description. The descriptor is captured at registration, where the payload
-type is still known, and the sidecar is written with the VCD, keyed by the very scope paths
-the VCD declares — sibling `_0`/`_1` suffixes and the `logic` scope of a
+type is still known, and the sidecar is written with the waveform, keyed by the very scope paths
+the waveform declares — sibling `_0`/`_1` suffixes and the `logic` scope of a
 top-level name included — so nothing is matched by name. The
 sidecar is in shockwaves' own format, and its
 [Surfer plugin](https://github.com/clash-lang/clash-shockwaves) reads it
@@ -514,21 +527,21 @@ Three things worth knowing:
   function) is never recorded, and since no instance could fix that, a type
   declared `NonTranslatable` is not reported at all.
 * **A waveform is a pair of files.** `Clash.CircuitContext.Waveform` writes
-  both through temp + rename with the sidecar landing first, so if the `.vcd`
-  is there its `.json` is there and complete. Without the sidecar the VCD is
-  still a complete untyped waveform. A description cannot cost you the VCD either: one that fails to
-  render (a hand-written `Waveform` instance whose width disagrees with
-  `BitSize`, say) is left out of the sidecar and named on stderr, and the
-  signal stays in the VCD as bits. The sidecar is small: about 0.04 % of the
-  VCD on real designs.
+  both through temp + rename with the sidecar landing first, so if the `.fst`
+  or `.vcd` is there its `.json` is there and complete. Without the sidecar
+  the waveform is still complete, untyped. A description cannot cost you the
+  waveform either: one that fails to render (a hand-written `Waveform`
+  instance whose width disagrees with `BitSize`, say) is left out of the
+  sidecar and named on stderr, and the signal stays in the waveform as bits.
+  The sidecar is small: about 0.04 % of the VCD on real designs.
 
 ## Manual API
 
 Everything the plugin injects is ordinary user API from
 `Clash.CircuitContext`, usable directly where you want explicit control:
 `component`, `imapComponents`, `traceSignalC`, `traceSignalSW`, `probe`,
-`probeSW`, `mealyProbed`, `withRecording` (with `writeVCD` from
-`Clash.CircuitContext.Recording` for the VCD and its sidecar), and the
+`probeSW`, `mealyProbed`, `withRecording` (with `writeFST` or `writeVCD` from
+`Clash.CircuitContext.Recording` for the waveform and its sidecar), and the
 `autoTrace`/`autoProbe` pair
 (these two still need the plugin enabled: its typechecker half reduces the
 `CanTrace`/`CanProbe`/`CanDescribe` type families).

@@ -72,7 +72,7 @@ recorded start stop k = liftIO $ do
   createDirectoryIfMissing True dir
   (path, h) <- openTempFile dir "recorder.vcd"
   hClose h
-  (r, rec) <- withRecordingFrom (start P.* period) (path -<.> "spill") k
+  (r, rec) <- withRecordingFrom (start P.* period) (Just (path -<.> "spill")) k
   a <- P.either throwIO pure r
   written <- writeVCD (start, stop) rec path
   discardRecording rec

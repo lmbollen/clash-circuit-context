@@ -28,6 +28,10 @@ extra-doc-files:
   CHANGELOG.md
   README.md
 
+extra-source-files:
+  cbits/libfst/*.h
+  cbits/libfst/LICENSE
+
 tested-with: ghc ==9.6.7 || ==9.10.3 || ==9.12.4
 
 source-repository head
@@ -59,6 +63,9 @@ library
 
   other-modules:
     Clash.CircuitContext.Internal.BitPackCompat
+    Clash.CircuitContext.Internal.Bits
+    Clash.CircuitContext.Internal.Fst
+    Clash.CircuitContext.Internal.FstOut
     Clash.CircuitContext.Internal.Recorder
     Clash.CircuitContext.Internal.Sidecar
     Clash.CircuitContext.Internal.Vcd
@@ -109,6 +116,18 @@ library
   if impl(ghc <9.8)
     build-depends: clash-shockwaves >=1.1.3
 
+  -- GTKWave's libfst (MIT), vendored at gtkwave/libfst 17f6a5d, for the FST
+  -- writer in Clash.CircuitContext.Internal.Fst. It needs zlib.
+  c-sources:
+    cbits/ccc_fst.c
+    cbits/libfst/fastlz.c
+    cbits/libfst/fstapi.c
+    cbits/libfst/lz4.c
+
+  include-dirs: cbits/libfst
+  cc-options: -O2 -DHAVE_FSEEKO -D_FILE_OFFSET_BITS=64
+  extra-libraries: z
+
   ghc-options:
     -- Clash normalizes through the runtime combinators inside user designs,
     -- so every unfolding must be available — not just the ones GHC happens
@@ -139,12 +158,14 @@ test-suite waveform-tests
     Test.Cancel
     Test.Capture
     Test.ExampleOutput
+    Test.Formats
     Test.Memory
     Test.Recorder
     Test.Vcd
 
   build-depends:
     base,
+    bytestring,
     clash-circuit-context,
     clash-prelude,
     containers,

@@ -81,13 +81,19 @@ lateStep = cnt
   step = traceSignalC "step" (cnt + 1)
 {-# OPAQUE lateStep #-}
 
+{- | The options of the tests that read a waveform back as text. The FST and
+spill tests below use their own.
+-}
+vcdOptions :: WaveformOptions
+vcdOptions = defaultOptions{format = VCD}
+
 vcdOf :: String -> FilePath
 vcdOf name = "waveforms" </> name <.> "vcd"
 
 -- | Leave the waveform of a failing run behind, as an earlier run would.
 plantFailure :: String -> IO ()
 plantFailure name = do
-  _ <- try @SomeException $ withWaveform name (0, 8) counter $ \xs -> evaluate (P.length xs) >> errorX "an earlier failure"
+  _ <- try @SomeException $ withWaveform vcdOptions name (0, 8) counter $ \xs -> evaluate (P.length xs) >> errorX "an earlier failure"
   (v, j) <- filesFor name
   assertBool "the earlier failure left its waveform" (v P.&& j)
 
@@ -103,8 +109,8 @@ withName name body = do
   let vcd = vcdOf name
   P.mapM_ (\p -> doesFileExist p >>= \e -> when e (removeFile p)) [vcd, vcd -<.> "json"]
   body name
-  spill <- doesFileExist (vcd -<.> "spill")
-  assertBool "the spill file is deleted" (P.not spill)
+  spilled <- doesFileExist (vcd -<.> "spill")
+  assertBool "the spill file is deleted" (P.not spilled)
 
 -- | How many cycles a VCD has (one @#@ timestamp per cycle).
 cyclesOf :: String -> IO Int
@@ -133,7 +139,7 @@ tests =
     "Test.Capture"
     [ testCase "writeWaveform writes the VCD and its sidecar" $
         withName "capture-written" $ \name -> do
-          out <- writeWaveform name (0, 8) counter
+          out <- writeWaveform vcdOptions name (0, 8) counter
           out @?= [0 .. 7]
           (v, j) <- filesFor name
           assertBool "both halves written" (v P.&& j)
@@ -142,7 +148,7 @@ tests =
       -- written the ordinary way, beside them, has the modes to expect.
       testCase "a waveform has the default permissions, not owner-only ones" $
         withName "capture-modes" $ \name -> do
-          _ <- writeWaveform name (0, 3) counter
+          _ <- writeWaveform vcdOptions name (0, 3) counter
           let reference = vcdOf name -<.> "reference"
               modes p = intersectFileModes accessModes . fileMode <$> getFileStatus p
           P.writeFile reference ""
@@ -151,22 +157,28 @@ tests =
           vcd <- modes (vcdOf name)
           json <- modes (vcdOf name -<.> "json")
           (vcd, json) @?= (expected, expected)
+          -- The same for an FST and its sidecar.
+          _ <- writeWaveform defaultOptions name (0, 3) counter
+          fst' <- modes (vcdOf name -<.> "fst")
+          json' <- modes (vcdOf name -<.> "json")
+          removeFile (vcdOf name -<.> "fst")
+          (fst', json') @?= (expected, expected)
     , -- withRecording is the API for a design with more than one domain. It
       -- used to open its spill file without making the directory, so the
       -- first run in a fresh checkout failed with "does not exist".
       testCase "withRecording makes the directory of its spill file" $ do
         let dir = "waveforms" </> "capture-new-directory"
         removePathForcibly dir
-        (out, rec) <- withRecording (dir </> "run.spill") (evaluate (sampleN 3 counter))
+        (out, rec) <- withRecording (Just (dir </> "run.spill")) (evaluate (sampleN 3 counter))
         P.either (P.error . P.show) pure out >>= (@?= [0, 1, 2])
-        spill <- doesFileExist (dir </> "run.spill")
-        assertBool "the spill file is in the new directory" spill
+        spilled <- doesFileExist (dir </> "run.spill")
+        assertBool "the spill file is in the new directory" spilled
         discardRecording rec
         removePathForcibly dir
     , -- A window shows its cycles only, and the samples are all of them.
       testCase "writeWaveform shows the window, and returns every sample" $
         withName "capture-window" $ \name -> do
-          out <- writeWaveform name (3, 8) counter
+          out <- writeWaveform vcdOptions name (3, 8) counter
           out @?= [0 .. 7]
           vcd <- P.readFile (vcdOf name)
           P.take 1 [l | l <- P.lines vcd, P.take 1 l P.== "#"] @?= ["#3"]
@@ -179,7 +191,7 @@ tests =
         withName "capture-unbounded" $ \name -> do
           _ <-
             try @SomeException $
-              withWaveform name (0, P.maxBound) counter $ \xs -> do
+              withWaveform vcdOptions name (0, P.maxBound) counter $ \xs -> do
                 _ <- evaluate (P.length (P.take 5 xs))
                 errorX "deliberate failure"
           (v, j) <- filesFor name
@@ -189,7 +201,7 @@ tests =
     , -- As dumpVCD, a window must have 0 <= start <= stop.
       testCase "a window that ends before it starts is refused" $
         withName "capture-bad-window" $ \name -> do
-          outcome <- try @ErrorCall (writeWaveform name (5, 3) counter)
+          outcome <- try @ErrorCall (writeWaveform vcdOptions name (5, 3) counter)
           assertBool "refused" (P.either (P.const True) (P.const False) outcome)
           (v, _) <- filesFor name
           assertBool "no VCD" (P.not v)
@@ -197,7 +209,7 @@ tests =
       -- recording context, so there is no history to render or discard.
       testCase "withWaveform writes nothing when the test passes" $
         withName "capture-passing" $ \name -> do
-          _ <- withWaveform name (0, 8) counter evaluate
+          _ <- withWaveform vcdOptions name (0, 8) counter evaluate
           (v, j) <- filesFor name
           assertBool "no VCD, no sidecar" (P.not v P.&& P.not j)
     , -- A file left by an earlier FAILING run is deleted when the test
@@ -205,14 +217,14 @@ tests =
       testCase "withWaveform deletes an earlier failure's files when the test passes" $
         withName "capture-stale" $ \name -> do
           plantFailure name
-          _ <- withWaveform name (0, 8) counter evaluate
+          _ <- withWaveform vcdOptions name (0, 8) counter evaluate
           (v, j) <- filesFor name
           assertBool "no stale VCD, no stale sidecar" (P.not v P.&& P.not j)
     , -- …but keeps a waveform that was written on purpose, by writeWaveform.
       testCase "withWaveform keeps a waveform written on purpose when the test passes" $
         withName "capture-requested" $ \name -> do
-          _ <- writeWaveform name (0, 8) counter
-          _ <- withWaveform name (0, 8) counter evaluate
+          _ <- writeWaveform vcdOptions name (0, 8) counter
+          _ <- withWaveform vcdOptions name (0, 8) counter evaluate
           (v, j) <- filesFor name
           assertBool "the requested waveform is still there" (v P.&& j)
     , -- A FAILING run writes both, and the check's exception propagates.
@@ -220,7 +232,7 @@ tests =
         withName "capture-failing" $ \name -> do
           outcome <-
             try @SomeException $
-              withWaveform name (0, 8) counter $ \xs -> do
+              withWaveform vcdOptions name (0, 8) counter $ \xs -> do
                 _ <- evaluate (P.length xs)
                 errorX "deliberate failure"
           assertBool
@@ -237,7 +249,7 @@ tests =
         withName "capture-one-cycle" $ \name -> do
           _ <-
             try @SomeException $
-              withWaveform name (0, 8) counter $ \xs -> do
+              withWaveform vcdOptions name (0, 8) counter $ \xs -> do
                 _ <- evaluate (P.take 1 xs P.== [0])
                 errorX "deliberate failure"
           (v, j) <- filesFor name
@@ -252,7 +264,7 @@ tests =
       -- own identifier.
       testCase "signals diverging only at the last (uncommitted) cycle are not aliased" $
         withName "capture-alias-tail" $ \name -> do
-          _ <- writeWaveform name (0, 4) twins
+          _ <- writeWaveform vcdOptions name (0, 4) twins
           vcd <- P.readFile (vcdOf name)
           assertBool
             "the divergent change line is present"
@@ -261,7 +273,7 @@ tests =
       -- to the end of the run: else its last cycle shows as not evaluated.
       testCase "a trace that only the end of the run evaluates has every cycle" $
         withName "capture-late-trace" $ \name -> do
-          out <- writeWaveform name (0, 2) lateStep
+          out <- writeWaveform vcdOptions name (0, 2) lateStep
           out @?= [0, 0]
           vcd <- P.readFile (vcdOf name)
           Map.lookup "step" (decodeVCD 2 vcd) @?= P.Just ["00000001", "00000001"]
@@ -271,7 +283,7 @@ tests =
         withName "capture-prop-passing" $ \name -> do
           ok <-
             Hedgehog.check . Hedgehog.property $ do
-              xs <- simulateWaveform Counterexample name (0, 8) counter
+              xs <- simulateWaveform vcdOptions Counterexample name (0, 8) counter
               P.length xs Hedgehog.=== 8
           assertBool "the passing property passes" ok
           (v, j) <- filesFor name
@@ -287,7 +299,7 @@ tests =
         withName "capture-prop-failing" $ \name -> do
           ok <-
             Hedgehog.check . Hedgehog.property $ do
-              xs <- simulateWaveform Counterexample name (0, 8) counter
+              xs <- simulateWaveform vcdOptions Counterexample name (0, 8) counter
               P.length xs Hedgehog.=== 7
           assertBool "the failing property fails" (P.not ok)
           (v, j) <- filesFor name
@@ -302,7 +314,7 @@ tests =
           ok <-
             Hedgehog.check . Hedgehog.property $ do
               xs <- Hedgehog.forAll (Gen.list (Range.linear 1 30) Gen.bool)
-              out <- simulateWaveform Counterexample name (0, P.length xs) counter
+              out <- simulateWaveform vcdOptions Counterexample name (0, P.length xs) counter
               Hedgehog.assert (P.length out P.< 3)
           assertBool "the failing property fails" (P.not ok)
           n <- cyclesOf name
@@ -346,7 +358,7 @@ tests =
         withName "capture-prop-sized" $ \name -> do
           ok <-
             Hedgehog.check . Hedgehog.withTests 20 . Hedgehog.property $ do
-              xs <- simulateWaveform (AtSize 10) name (0, 8) counter
+              xs <- simulateWaveform vcdOptions (AtSize 10) name (0, 8) counter
               P.length xs Hedgehog.=== 8
           assertBool "the property passes" ok
           (v, j) <- filesFor name
@@ -357,14 +369,14 @@ tests =
         withName "capture-prop-once" $ \name -> do
           _ <-
             Hedgehog.check . Hedgehog.withTests 5 . Hedgehog.property $
-              () <$ simulateWaveform (AtSize 0) name (0, 8) counter
+              () <$ simulateWaveform vcdOptions (AtSize 0) name (0, 8) counter
           first <- filesFor name
           first @?= (True, True)
           removeFile (vcdOf name)
           removeFile (vcdOf name -<.> "json")
           _ <-
             Hedgehog.check . Hedgehog.withTests 5 . Hedgehog.property $
-              () <$ simulateWaveform (AtSize 0) name (0, 8) counter
+              () <$ simulateWaveform vcdOptions (AtSize 0) name (0, 8) counter
           second <- filesFor name
           second @?= (False, False)
     ]

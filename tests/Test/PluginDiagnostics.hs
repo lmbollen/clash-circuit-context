@@ -371,7 +371,7 @@ top inp =
 -- | Record an action, rethrowing what it throws.
 recorded :: String -> ((HasCircuitContext) => IO a) -> IO Recording
 recorded spill k = do
-  (r, rec) <- withRecording spill k
+  (r, rec) <- withRecording (Just spill) k
   either throwIO (P.const (pure rec)) r
 
 -- | The recorded signals of one kind.

@@ -38,6 +38,21 @@ for g in manual-instrumentation auto-instrumentation; do
   fi
 done
 
+# The FST of the same recordings must show what the VCD shows, value for
+# value. Read with GTKWave's fst2vcd, so checked where it is installed.
+if command -v fst2vcd >/dev/null && command -v python3 >/dev/null; then
+  for g in manual-instrumentation auto-instrumentation; do
+    if fst2vcd "$g.fst" 2>/dev/null >"$g.fst.vcd" \
+      && python3 scripts/same-waveform.py "$g.vcd" "$g.fst.vcd"; then
+      echo "ok: $g.fst shows what $g.vcd shows"
+    else
+      echo "FAIL: $g.fst differs from $g.vcd"; fail=1
+    fi
+  done
+else
+  echo "skip: fst2vcd (GTKWave) or python3 is missing, so the FSTs are not compared with the VCDs"
+fi
+
 # Value-fidelity invariants (see Core.hs packMaskValue/expandRunsX/renderVC):
 #  - a never-sampled cycle renders 'z' (NOT evaluated), never a false '0';
 #  - an evaluated-but-undefined value renders 'x', with any DEFINED bits kept
