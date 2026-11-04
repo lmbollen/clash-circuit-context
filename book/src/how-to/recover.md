@@ -7,21 +7,27 @@ after it stopped.
 
 ## Record into a spill file
 
-Give the waveform functions the option `spill = OnDisk`:
+Give the waveform function the option `spill = OnDisk`:
 
 ```haskell
 opts :: WaveformOptions
 opts = defaultOptions{spill = OnDisk}
 
 case_firmware :: Assertion
-case_firmware =
-  withWaveform opts "firmware" (0, maxBound) (uartBytes design) $ \bytes ->
-    takeWhile (/= '\n') (decode bytes) @?= "RESULT: OK"
+case_firmware = do
+  bytes <- writeWaveform opts "firmware" (0, 1_000_000) (uartBytes design)
+  takeWhile (/= '\n') (decode bytes) @?= "RESULT: OK"
 ```
 
 The recorded values then go to `waveforms/<name>.spill` while the
 simulation runs. When the waveform is written, the spill file is deleted.
 When the run stops first, the spill file stays.
+
+Only a run that records can leave a spill file. `writeWaveform` records its
+run. `withWaveform` and `simulateWaveform` first run without recording, and
+record only when they run a failed case again. So a test that hangs and is
+cancelled in its first run leaves nothing. To keep the waveform of a test
+that can hang, use `writeWaveform`, as above.
 
 With the default, `spill = InMemory`, the recorded values are in memory, and
 a run that stops leaves nothing.
@@ -65,7 +71,9 @@ Do one of these:
 The waveform has the cycles that the run recorded, up to the last block of
 values that it wrote. The values of the last cycles before a process was
 killed can be missing: each signal writes its values in blocks of 16 KiB.
-A run that was cancelled writes all its values before it stops.
+A run that was cancelled writes all the values that it recorded before it
+stops. The last cycle of each signal can be missing: a trace records a cycle
+when the simulation evaluates the next one.
 
 The sidecar of the waveform is complete. A spill file has the descriptions
 of its signals, so the executables do not need the design or its types.

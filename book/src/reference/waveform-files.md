@@ -11,7 +11,7 @@ and their content.
 |---|---|---|
 | Waveform | `waveforms/<name>.fst`, or `waveforms/<name>.vcd` with `format = VCD` | kept |
 | Sidecar | `waveforms/<name>.json`, beside the waveform | kept |
-| Spill file | `waveforms/<name>.spill`, only with `spill = OnDisk` | while the simulation records. Deleted when the waveform is written. Kept when the run stops first |
+| Spill file | `waveforms/<name>.spill`, only with `spill = OnDisk` | while the simulation records. Deleted when the waveform is written. Kept when a recording run stops first. The first runs of `withWaveform` and `simulateWaveform` do not record |
 
 `<name>` is the name that you give to `writeWaveform`, `withWaveform` or
 `simulateWaveform`. One name is one pair of files: two tests must not use
@@ -100,6 +100,8 @@ file: for a binding that the plugin records, the position of the binding.
   in the order of their declaration, also inside a nested record.
 - The elements of a `Vec` have the position of their binding, and come in
   the order of their index: `outs_2` before `outs_10`.
+- The probes of a mealy or Moore machine have the position of its
+  `mealyProbed` or `mooreProbed` call, and come in the order of their names.
 - Signals without a position come last, by name.
 
 ### The window
@@ -134,10 +136,13 @@ can be read without the run. It is binary:
 - Then blocks. Each block has a tag, a length, and its content:
   - a signal: its name, kind (trace or probe), clock period, width, and its
     description for the sidecar;
-  - a chunk: up to 16 KiB of the value changes of one signal;
+  - a chunk: about 16 KiB of the value changes of one signal (the last chunk
+    of a signal can be smaller);
   - the entries of a lookup table of the sidecar, made when a value first
     occurs;
-  - the end of the run.
+  - the end of the run;
+  - the description of a signal that failed to render after the signal was
+    first recorded, with the error.
 
 A signal comes before its chunks. A block is written whole, also when the
 run is cancelled. A run that is killed can leave the last block cut off:

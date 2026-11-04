@@ -34,8 +34,9 @@ gives complete files.
    index-state: 2026-09-23T00:00:00Z
    ```
 
-   The `index-state` must be 2026-09-23 or later, for clash-shockwaves
-   1.1.3. To generate HDL, you also need `clash-lib` and `clash-ghc` from
+   On GHC 9.6, the `index-state` must be 2026-09-23 or later, for
+   clash-shockwaves 1.1.3, the first release that builds on GHC 9.6. To
+   generate HDL, you also need `clash-lib` and `clash-ghc` from
    the same commit: see [How to generate HDL from an instrumented
    design](hdl.md#get-a-clash-executable).
 
@@ -75,14 +76,14 @@ If a module with an empty `Traceable` instance is compiled without the
 plugin, the build fails with an error like this one:
 
 ```text
-Bus.hs:9:10: error: [GHC-39999]
-    • Could not deduce ‘Clash.CircuitContext.Auto.AutoTrace
-                          (Clash.CircuitContext.Auto.CanTrace (Signal dom (Unsigned 8)))
-                          (Signal dom (Unsigned 8))’
+Bus.hs:10:10: error: [GHC-39999]
+    • Could not deduce ‘Clash.CircuitContext.Auto.TurnOnThePlugin
+                          "add -fplugin=Clash.CircuitContext.Plugin to the ghc-options of this package, or to the command line of clash"’
         arising from a use of ‘Clash.CircuitContext.Auto.$dmtraceNamed’
 ```
 
-The fix is to turn on the plugin for that module: see step 3 or step 4. The
+The error says what to do: turn on the plugin for that module (see step 3
+or step 4). The
 `clash` executable does not read the `OPTIONS_GHC` pragma of a source file:
 see [How to generate HDL from an instrumented
 design](hdl.md#run-clash-on-a-source-file).

@@ -17,7 +17,7 @@ together, and why describing is separate from recording.
 
 The plugin records a signal, and also takes the description of its type from
 the `Waveform` instance at that moment, when the type is still known. The
-dump writes both files from one set of maps, and keys the sidecar by the
+dump writes both files from one recording, and keys the sidecar by the
 paths that the waveform declares. Nothing is matched by name later.
 
 ## Why recording and describing are separate
