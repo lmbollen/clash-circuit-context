@@ -421,11 +421,11 @@ simulation runs, and the VCD is written from there, straight to disk. The
 spill file is deleted when the waveform is written. The recorded history costs
 disk space, roughly the size of the VCD, instead of memory.
 
-A recorded run still needs memory that grows with its length, though: while it
-runs, the trace taps keep raw design values alive
-([#38](https://github.com/lmbollen/clash-circuit-context/issues/38)). On a CPU
-design, 237,000 recorded cycles took the maximum residency from 3.4 GB, with
-the history in memory, to 1.05 GB: lower, but not constant.
+So a long run needs about the same memory as a short one. On a CPU design,
+237,000 recorded cycles took a maximum residency of 58 MB; before
+[#38](https://github.com/lmbollen/clash-circuit-context/issues/38) was fixed,
+a traced record field kept its raw design values alive, and the same run took
+1.05 GB.
 
 ### Hedgehog properties
 

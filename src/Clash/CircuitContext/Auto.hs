@@ -467,7 +467,7 @@ response buses missing from one bittide waveform, with no error to point at
 the cause.
 -}
 instance (Selector s, AutoTrace (CanTrace c) c) => GTraceable (M1 S s (K1 r c)) where
-  gtraceNamed nm i m@(M1 (K1 c)) =
+  gtraceNamed nm i (M1 (K1 c)) =
     (i + 1, M1 (K1 (let ?circuitContext = inField in autoTraceAt @(CanTrace c) fieldName c)))
    where
     -- The position of the field, so that the VCD lists the fields in
@@ -481,7 +481,9 @@ instance (Selector s, AutoTrace (CanTrace c) c) => GTraceable (M1 S s (K1 r c)) 
     -- of them a scope wrapping one positional leaf ('wbB0_Fwd' containing only
     -- '_3'). Flat names keep the same information and match the 'Vec' instance
     -- above, which has always used '_'.
-    fieldName = case selName m of
+    -- 'selName' of a value of the field's type, not of the field: a name
+    -- left unevaluated must not keep the field's signal alive.
+    fieldName = case selName (undefined :: M1 S s (K1 r c) ()) of
       "" -> nm <> "_" <> show i
       fld -> nm <> "_" <> fld
 

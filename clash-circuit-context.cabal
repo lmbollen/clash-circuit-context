@@ -138,6 +138,7 @@ test-suite waveform-tests
     Example.SingleRun
     Test.Capture
     Test.ExampleOutput
+    Test.Memory
     Test.Recorder
     Test.Vcd
 
@@ -154,6 +155,9 @@ test-suite waveform-tests
     tasty-hunit,
     text,
     unix,
+
+  -- -T: Test.Memory reads the live heap size (GHC.Stats).
+  ghc-options: -rtsopts "-with-rtsopts=-T"
 
 -- Manual autoTrace calls (no renamer rewrite) against the real runtime;
 -- validates the oracle's trace/fallback decisions per type.

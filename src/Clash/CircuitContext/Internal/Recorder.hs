@@ -51,7 +51,7 @@ module Clash.CircuitContext.Internal.Recorder (
 ) where
 
 import Control.Concurrent.MVar (MVar, modifyMVar, modifyMVar_, newMVar, readMVar)
-import Control.Exception (bracket)
+import Control.Exception (bracket, evaluate)
 import Control.Monad (forM)
 import Data.Bits (shiftL, shiftR, xor, (.&.), (.|.))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
@@ -61,6 +61,8 @@ import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrBytes, withForeignPtr)
 import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Storable (pokeByteOff)
 import GHC.Natural (Natural)
+import System.Directory (createDirectoryIfMissing)
+import System.FilePath (takeDirectory)
 import System.IO (
   Handle,
   IOMode (ReadMode, WriteMode),
@@ -70,8 +72,6 @@ import System.IO (
   hSeek,
   openBinaryFile,
  )
-import System.Directory (createDirectoryIfMissing)
-import System.FilePath (takeDirectory)
 import System.IO.Unsafe (unsafeInterleaveIO)
 
 import qualified Data.ByteString as ByteString
@@ -103,7 +103,7 @@ data Recorder = Recorder
 
 -- | One recorded signal, while the simulation runs.
 data Sig = Sig
-  { sigKey :: String
+  { sigKey :: !String
   , sigKind :: Kind
   , sigPeriod :: !Int
   , sigWidth :: !Int
@@ -149,6 +149,10 @@ newRecorder path start = do
 newSig ::
   Recorder -> String -> Kind -> Int -> Int -> Maybe (TypeName, Translator) -> IO Sig
 newSig rec key kind period width adt = do
+  -- A key is built lazily from the design (a generic field name holds the
+  -- field's value), so an unevaluated one keeps the signal it names alive,
+  -- with every cycle the simulation gives it.
+  _ <- evaluate (foldr seq () key)
   buf <- mallocForeignPtrBytes cap
   st <- newMVar (SigState 0 Nothing True 0 buf cap 0 [] 14695981039346656037)
   let sig = Sig key kind period width adt (rStart rec `div` period) st
