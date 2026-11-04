@@ -431,20 +431,24 @@ opts = defaultOptions {format = VCD, spill = OnDisk}
 * `spill`: a recording keeps each signal's value changes as compact records,
   and writes the waveform from them when the run ends.
   * `InMemory`: nothing is written to disk but the waveform. Memory holds the
-    records, a few times smaller than the VCD. A run that is stopped
+    records, a few times smaller than the VCD. A recording that is stopped
     (cancelled, or killed) leaves nothing.
   * `OnDisk`: the records go to `waveforms/<name>.spill` while the simulation
     runs, deleted when the waveform is written. A long run needs about the same
     memory as a short one (on a CPU design, 237,000 recorded cycles took a
-    maximum residency of 58 MB), and the values are written to disk twice. A run
-    that is stopped leaves the spill file, holding what it recorded (see
-    below).
+    maximum residency of 58 MB), and the values are written to disk twice. A
+    recording that is stopped leaves the spill file, holding what it recorded
+    (see below).
 
 ### A run that was stopped
 
-A run with `spill = OnDisk` that is cancelled (a test timeout, Ctrl-C) or
-killed leaves `waveforms/<name>.spill`, and a cancelled one says where on
-stderr. The file describes itself: its signals, their descriptions, and the
+A recording with `spill = OnDisk` that is cancelled (a test timeout, Ctrl-C)
+or killed leaves `waveforms/<name>.spill`, and a cancelled one says where on
+stderr. Only a run that records can leave one: a run of `writeWaveform`, or
+the rerun of a failed check of `withWaveform` or `simulateWaveform`. Their
+first runs do not record, so a test that hangs and is cancelled in its first
+run leaves nothing; to keep the waveform of such a test, simulate it with
+`writeWaveform`. The file describes itself: its signals, their descriptions, and the
 values recorded up to there. Write its waveform from Haskell:
 
 ```haskell

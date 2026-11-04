@@ -26,7 +26,7 @@ relative to the working directory. One name is one pair of files, so two
 tests must not share a name. While a simulation records, its values are kept
 as compact records, in memory or in @waveforms\/\<name\>.spill@ (see
 'Spill'); a spill file is deleted when the waveform is written, and kept when
-the run is stopped, for 'recoverWaveform'.
+a recording run is stopped, for 'recoverWaveform'.
 
 > opts = defaultOptions {format = VCD, spill = OnDisk}
 
