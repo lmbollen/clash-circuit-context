@@ -42,7 +42,7 @@ import qualified Hedgehog.Range as Range
 
 import Clash.Explicit.Prelude
 
-import Clash.CircuitContext (HasCircuitContext, traceSignalC)
+import Clash.CircuitContext (CircuitContextOnly, traceSignalC)
 import Clash.CircuitContext.Waveform.Hedgehog (
   Capture (..),
   Format (VCD),
@@ -65,7 +65,7 @@ genStim = Gen.list (Range.linear 1 32) (Gen.integral Range.linearBounded)
 
 -- | A running sum with real state; its model is 'accModel'.
 accDut ::
-  (HasCircuitContext) =>
+  (CircuitContextOnly) =>
   Signal System (Unsigned 8) ->
   Signal System (Unsigned 8)
 accDut inp0 = out
@@ -87,7 +87,7 @@ accModel xs = out
 -- | Deliberately wrong: adds one to every sample. Its example asserts it
 -- equals its input, fails, and leaves the counterexample.
 offByOne ::
-  (HasCircuitContext) =>
+  (CircuitContextOnly) =>
   Signal System (Unsigned 8) ->
   Signal System (Unsigned 8)
 offByOne inp = traceSignalC "wrong" (inp + 1)

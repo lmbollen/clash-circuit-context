@@ -73,7 +73,7 @@ module Clash.CircuitContext.Auto (
   TurnOnThePlugin,
 ) where
 
-import Clash.Magic (SimOnly)
+import Clash.Magic (SimOnly (..), clashSimulation)
 import Clash.Prelude (
   BitPack (..),
   DSignal,
@@ -130,7 +130,7 @@ import GHC.Generics (
   (:+:) (..),
  )
 import GHC.Stack (HasCallStack, withFrozenCallStack)
-import GHC.TypeLits (Symbol, type (+))
+import GHC.TypeLits (type (+))
 import Numeric.Natural (Natural)
 import System.IO (Handle)
 import System.Mem.StableName (StableName)
@@ -138,8 +138,10 @@ import System.Mem.Weak (Weak)
 
 import Clash.CircuitContext.Core (
   CircuitContext (ccFields),
-  HasCircuitContext,
+  CircuitContextOnly,
+  TurnOnThePlugin,
   HasProbe,
+  circuitContext,
   probe,
   probeSW,
   traceSignalC,
@@ -193,26 +195,12 @@ WRITTEN context, so keep that context to ordinary class constraints, as
 above — no @Generic@\/@GTraceable@ noise (they are default-method
 constraints, not instance constraints, so this comes naturally).
 -}
-{- | Proof that "Clash.CircuitContext.Plugin" is on in this module. The
-class has no instances: only the plugin solves it, and its argument is the
-message of the error when the plugin is off.
-
-The generic path of 'Traceable' needs the oracle of the plugin to decide each
-field. Without the plugin, an empty @instance Traceable T@ does not compile,
-and GHC's error names only the internals of that path (@AutoTrace@,
-@CanTrace@, @$dmtraceNamed@). With this constraint on the default method,
-the error also gives the fix:
-
-> No instance for ‘TurnOnThePlugin
->                    "add -fplugin=Clash.CircuitContext.Plugin to the ghc-options of this package, or to the command line of clash"’
--}
-class TurnOnThePlugin (fix :: Symbol)
 
 class Traceable t where
-  traceNamed :: (HasCallStack, HasCircuitContext) => String -> t -> t
+  traceNamed :: (HasCallStack, CircuitContextOnly) => String -> t -> t
   default traceNamed ::
     ( HasCallStack
-    , HasCircuitContext
+    , CircuitContextOnly
     , TurnOnThePlugin
         "add -fplugin=Clash.CircuitContext.Plugin to the ghc-options of this package, or to the command line of clash"
     , Generic t
@@ -227,7 +215,7 @@ class Traceable t where
 tuple instances below, whose contexts give each field's 'AutoTrace' already.
 -}
 genericTraceNamed ::
-  (HasCallStack, HasCircuitContext, Generic t, GTraceable (Rep t)) => String -> t -> t
+  (HasCallStack, CircuitContextOnly, Generic t, GTraceable (Rep t)) => String -> t -> t
 -- Freeze the stack so every leaf registers under the call site of the
 -- record trace itself (the auto-traced binding), keeping sibling
 -- disambiguation design-ordered.
@@ -285,6 +273,11 @@ instance (KnownDomain dom) => Traceable (Enable dom) where
 
 {- | Vectors of traceable things trace element-wise, names indexed by
 structural position.
+
+The elements carry no position (see 'ccFields'): adding one to the context
+here stopped HDL generation of a design compiled without optimisation
+("Hit specialization limit"). So a vector of records is listed field by
+field: @outs_0_a@, @outs_1_a@, @outs_0_b@, …
 -}
 instance (KnownNat n, Traceable t) => Traceable (Vec n t) where
   traceNamed nm = imap (\i -> traceNamed (nm <> "_" <> show i))
@@ -424,7 +417,7 @@ across a constructor, naming positional fields @_0@, @_1@, ….
 -}
 class GTraceable f where
   gtraceNamed ::
-    (HasCallStack, HasCircuitContext) => String -> Int -> f p -> (Int, f p)
+    (HasCallStack, CircuitContextOnly) => String -> Int -> f p -> (Int, f p)
 
 instance (GTraceable f) => GTraceable (M1 D meta f) where
   gtraceNamed nm i (M1 x) = M1 <$> gtraceNamed nm i x
@@ -468,11 +461,8 @@ the cause.
 -}
 instance (Selector s, AutoTrace (CanTrace c) c) => GTraceable (M1 S s (K1 r c)) where
   gtraceNamed nm i (M1 (K1 c)) =
-    (i + 1, M1 (K1 (let ?circuitContext = inField in autoTraceAt @(CanTrace c) fieldName c)))
+    (i + 1, M1 (K1 (atPosition i (autoTraceAt @(CanTrace c) fieldName c))))
    where
-    -- The position of the field, so that the VCD lists the fields in
-    -- declaration order: they all share the call site of the record trace.
-    inField = ?circuitContext{ccFields = ccFields ?circuitContext <> [i]}
     -- '_', never '.': a dot is the COMPONENT separator, and the VCD renderer
     -- turns every dotted segment into a '$scope'. Qualifying a field with one
     -- would claim the value is a design hierarchy level, which it is not — a
@@ -487,9 +477,25 @@ instance (Selector s, AutoTrace (CanTrace c) c) => GTraceable (M1 S s (K1 r c)) 
       "" -> nm <> "_" <> show i
       fld -> nm <> "_" <> fld
 
+{- | Run @k@ with a record field position added to the context (see
+'ccFields'): the fields of a record share the call site of their binding,
+and their positions put them in declaration order in the VCD.
+
+During HDL generation this is @k@: the position is only ever read in
+simulation, and Clash, which compiles a design without optimisation at its
+default, could not reduce the context with it.
+-}
+atPosition :: (CircuitContextOnly) => Int -> ((CircuitContextOnly) => r) -> r
+atPosition i k
+  | clashSimulation = let ?circuitContext = SimOnly ctx{ccFields = ccFields ctx <> [i]} in k
+  | otherwise = k
+ where
+  ctx = circuitContext
+{-# INLINE atPosition #-}
+
 -- | Flag-indexed dispatch; the flag comes from 'CanTrace'.
 class AutoTrace (flag :: Bool) t where
-  autoTraceAt :: (HasCallStack, HasCircuitContext) => String -> t -> t
+  autoTraceAt :: (HasCallStack, CircuitContextOnly) => String -> t -> t
 
 instance (Traceable t) => AutoTrace 'True t where
   autoTraceAt = traceNamed
@@ -502,7 +508,7 @@ instance AutoTrace 'False t where
 -}
 autoTrace ::
   forall t.
-  (HasCallStack, HasCircuitContext, AutoTrace (CanTrace t) t) =>
+  (HasCallStack, CircuitContextOnly, AutoTrace (CanTrace t) t) =>
   String ->
   t ->
   t
@@ -700,7 +706,7 @@ mention it (see "Clash.CircuitContext.Plugin.Oracle").
 -}
 class Describable t where
   traceDescribed ::
-    (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack t, NFDataX t) =>
+    (HasCallStack, CircuitContextOnly, KnownDomain dom, BitPack t, NFDataX t) =>
     String ->
     Signal dom t ->
     Signal dom t
@@ -713,7 +719,7 @@ instance (Waveform t) => Describable t where
 -- | Flag-indexed dispatch; the flag comes from 'CanDescribe'.
 class AutoDescribe (flag :: Bool) t where
   traceDescribedAt ::
-    (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack t, NFDataX t) =>
+    (HasCallStack, CircuitContextOnly, KnownDomain dom, BitPack t, NFDataX t) =>
     String ->
     Signal dom t ->
     Signal dom t

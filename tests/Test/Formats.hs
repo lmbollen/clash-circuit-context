@@ -117,7 +117,7 @@ createDomain vSystem{vName = "Formats15", vPeriod = 15000}
 {- | A counter of the domain of 15 ns, and one of System that it samples:
 the recording's timescale, 5 ns, is a cycle of neither.
 -}
-twoDomains :: (HasCircuitContext) => Signal Formats15 (Unsigned 8)
+twoDomains :: (CircuitContextOnly) => Signal Formats15 (Unsigned 8)
 twoDomains =
   (+)
     <$> traceSignalSW "slow" (fromList (P.cycle [0 .. 255]))
@@ -128,7 +128,7 @@ twoDomains =
 {-# OPAQUE twoDomains #-}
 
 -- | A traced counter, described in the sidecar; it runs as long as it is sampled.
-counter :: (HasCircuitContext) => Signal System (Unsigned 8)
+counter :: (CircuitContextOnly) => Signal System (Unsigned 8)
 counter = traceSignalSW "count" (fromList (P.cycle [0 .. 255]))
 {-# OPAQUE counter #-}
 
@@ -137,14 +137,14 @@ seen only through its spine, so that only the recorder computes its values: a
 run that is cancelled during the wait is cancelled while the recorder packs
 that value. A run that is not cancelled ends after 4000 cycles.
 -}
-slow :: (HasCircuitContext) => Signal System (Unsigned 8)
+slow :: (CircuitContextOnly) => Signal System (Unsigned 8)
 slow = P.const 0 <$> traceSignalSW "count" (fromList [valueAt i | i <- [0 :: Int ..]])
 {-# OPAQUE slow #-}
 
 {- | Values that do not compress: an FST of them is as large as they are.
 Eight bytes a cycle.
 -}
-noise :: (HasCircuitContext) => Signal System (Unsigned 64)
+noise :: (CircuitContextOnly) => Signal System (Unsigned 64)
 noise =
   traceSignalSW
     "noise"
@@ -156,7 +156,7 @@ ran :: Signal System (Unsigned 8)
 ran = P.error "the design ran"
 
 -- | 300 traced signals that each change every 64 cycles.
-quietMany :: (HasCircuitContext) => Signal System (Unsigned 16)
+quietMany :: (CircuitContextOnly) => Signal System (Unsigned 16)
 quietMany =
   P.foldr1
     (liftA2 (+))
@@ -168,7 +168,7 @@ quietMany =
 {-# OPAQUE quietMany #-}
 
 -- | A signal that changes every cycle, and one that never changes.
-busyAndQuiet :: (HasCircuitContext) => Signal System (Unsigned 8)
+busyAndQuiet :: (CircuitContextOnly) => Signal System (Unsigned 8)
 busyAndQuiet =
   (+)
     <$> traceSignalSW "busy" (fromList (P.cycle [0 .. 255]))
@@ -711,7 +711,7 @@ children =
     )
   ]
  where
-  stoppedRun :: String -> ((HasCircuitContext) => IO ()) -> IO ()
+  stoppedRun :: String -> ((CircuitContextOnly) => IO ()) -> IO ()
   stoppedRun name act = do
     scrub [name]
     stopped <-

@@ -60,7 +60,7 @@ import qualified Hedgehog.Range as Range
 import Test.Vcd (asInts, decodeVCD)
 
 -- | A trivial traced design; the payload type is irrelevant to what we assert.
-counter :: (HasCircuitContext) => Signal System (Unsigned 8)
+counter :: (CircuitContextOnly) => Signal System (Unsigned 8)
 counter = traceSignalC "count" (fromList [0 ..])
 {-# OPAQUE counter #-}
 
@@ -70,7 +70,7 @@ the next cell is forced), so it is recorded only when the run ends. Sampled 4
 cycles, both record @[0, 0, 0]@ while the run goes, and the divergent cycle 3
 when it ends.
 -}
-twins :: (HasCircuitContext) => Signal System (Unsigned 8, Unsigned 8)
+twins :: (CircuitContextOnly) => Signal System (Unsigned 8, Unsigned 8)
 twins =
   bundle
     ( traceSignalC "same" (fromList [0, 0, 0, 0, 0])
@@ -82,7 +82,7 @@ need the value of "next", so 2 sampled cycles force the spine of "next" but
 not "step". "step" is first evaluated when the run ends and finishes the last
 cycle of "next".
 -}
-lateStep :: (HasCircuitContext) => Signal System (Unsigned 8)
+lateStep :: (CircuitContextOnly) => Signal System (Unsigned 8)
 lateStep = cnt
  where
   cnt = traceSignalC "cnt" (register clockGen resetGen enableGen 0 next)
@@ -99,10 +99,10 @@ A run of 2 cycles of @s0@ reaches @s1@ only. Finishing @s1@ evaluates cycle 0
 of @s2@, which registers then. The source sets the flag when the simulation
 evaluates it.
 -}
-pipeline :: (HasCircuitContext) => IORef Bool -> Signal System (Unsigned 8)
+pipeline :: (CircuitContextOnly) => IORef Bool -> Signal System (Unsigned 8)
 pipeline reached = stage 0
  where
-  stage :: (HasCircuitContext) => Int -> Signal System (Unsigned 8)
+  stage :: (CircuitContextOnly) => Int -> Signal System (Unsigned 8)
   stage 6 =
     traceSignalC "src" (unsafePerformIO (writeIORef reached True >> pure (fromList [6 ..])))
   stage i = traceSignalC ("s" <> P.show i) (fromIntegral i :- stage (i P.+ 1))
@@ -112,7 +112,7 @@ pipeline reached = stage 0
 after it. A run reaches a stage per cycle, but finishing a stage up to the
 end of the run reaches the stages after it, without end.
 -}
-endless :: (HasCircuitContext) => Unsigned 8 -> Signal System (Unsigned 8)
+endless :: (CircuitContextOnly) => Unsigned 8 -> Signal System (Unsigned 8)
 endless n = traceSignalC "stim" (n :- endless (n P.+ 1))
 {-# OPAQUE endless #-}
 

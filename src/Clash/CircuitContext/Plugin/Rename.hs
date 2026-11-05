@@ -43,6 +43,13 @@ The renamer-stage rewrite ('GHC.renamedResultAction'):
   non-final fall-through guard sets are skipped, with a warning (their
   bindings still trace, at the enclosing scope).
 
+* Every function whose signature needs a context, top-level or local, is
+  split into a wrapper that keeps its name and signature and a worker that
+  keeps its body and pragmas (see 'splitGroups'). The wrapper adds the site
+  of each call, which GHC passes in the call stack that @HasCircuitContext@
+  asks for, to the context's call path; that is what numbers the instances
+  of one plugin-made component by their calls.
+
 * The pass is IDEMPOTENT: an injection this pass would make, and that is
   already there under the same name, is not made twice (see
   'alreadyInjected'). Two things stop being surprises because of it —
@@ -50,6 +57,8 @@ The renamer-stage rewrite ('GHC.renamedResultAction'):
   @OPTIONS_GHC@ pragma (which nested every component wrap in itself,
   @switch.switch@), and hand-writing the @component "f"@ the plugin would
   have written.
+  A group that holds a wrapper was split by an earlier run, and is left
+  as it is.
 
 * Opt-outs: binder names starting with @_@; compiler-generated bindings are
   skipped via their non-real spans; per module, don't enable the plugin.
@@ -82,7 +91,7 @@ import GHC.Hs
 import qualified GHC.Plugins as GHC
 import qualified GHC.Tc.Types as GHC
 import qualified GHC.Tc.Utils.Env as GHC (tcLookupGlobal, tcLookupTyCon)
-import qualified GHC.Tc.Utils.Monad as GHC (tryTcDiscardingErrs)
+import qualified GHC.Tc.Utils.Monad as GHC (getGblEnv, tryTcDiscardingErrs)
 import GHC.Types.Basic (Origin)
 import GHC.Types.Fixity (LexicalFixity (Prefix))
 import GHC.Types.SrcLoc (GenLocated (..), unLoc)
@@ -102,6 +111,8 @@ a signature — the renamer runs before synonyms are expanded).
 data Ctx = Ctx
   { ctxAbi :: AbiNames
   , ctxSyns :: [(GHC.Name, LHsType GhcRn)]
+  , ctxSynParams :: [(GHC.Name, [GHC.Name])]
+  -- ^ The parameters of each of 'ctxSyns', to expand an application of it.
   }
 
 {- | One thing to say, and where. Rendered by
@@ -124,7 +135,9 @@ renamePass _opts env grp =
           Ctx
             { ctxAbi = abi
             , ctxSyns = localSynonyms grp
+            , ctxSynParams = localSynonymParams grp
             }
+      topEntityErrors ctx grp
       (grp', notes) <- rewriteGroup ctx grp
       methods <- methodNotes ctx grp
       mapM_ (\(spn, cat, body) -> Diag.report spn cat body) (notes <> methods)
@@ -138,8 +151,20 @@ localSynonyms grp =
   , L _ SynDecl{tcdLName = L _ n, tcdRhs = rhs} <- group_tyclds tyclGroup
   ]
 
+-- | The parameters of the module's own type synonyms, by name.
+localSynonymParams :: HsGroup GhcRn -> [(GHC.Name, [GHC.Name])]
+localSynonymParams grp =
+  [ (n, mapMaybe binderName (hsQTvExplicit tvs))
+  | tyclGroup <- hs_tyclds grp
+  , L _ SynDecl{tcdLName = L _ n, tcdTyVars = tvs} <- group_tyclds tyclGroup
+  ]
+
 rewriteGroup :: Ctx -> HsGroup GhcRn -> GHC.TcM (HsGroup GhcRn, [Note])
 rewriteGroup ctx grp = case hs_valds grp of
+  -- A second run of the pass (the plugin enabled twice) meets the wrappers of
+  -- the first: the group is done.
+  XValBindsLR (NValBinds groups _)
+    | any (isWrapper . unLoc) (concatMap (bindsToList . snd) groups) -> pure (grp, [])
   XValBindsLR (NValBinds groups sigs) -> do
     (modes, both) <- classifySigs ctx sigs
     let
@@ -158,11 +183,18 @@ rewriteGroup ctx grp = case hs_valds grp of
               <$> mapM (onTopBind ctx modes opaques sigTypes) (bindsToList bs)
         )
         groups
+    mdl <- GHC.tcg_mod <$> GHC.getGblEnv
+    (groups', sigs') <-
+      splitGroups
+        ctx
+        (topWorkerName mdl)
+        (otherAnnotated (ctxAbi ctx) grp)
+        [(r, bindsFromList (map fst prs)) | (r, prs) <- results]
+        sigs
     let
-      groups' = [(r, bindsFromList (map fst prs)) | (r, prs) <- results]
       skipped = concat [concatMap snd prs | (_, prs) <- results]
       notes = diagnose modes opaques signed both vouched groups
-    pure (grp{hs_valds = XValBindsLR (NValBinds groups' sigs)}, skipped <> notes)
+    pure (grp{hs_valds = XValBindsLR (NValBinds groups' sigs')}, skipped <> notes)
   _ -> pure (grp, [])
 
 isOpaqueSpec :: GHC.InlineSpec -> Bool
@@ -216,9 +248,10 @@ sigModesT ctx (L _ (HsSig _ _ body)) = do
  where
   elems = ctxElems body
 
-probeIP, circuitContextIP :: GHC.FastString
+probeIP, circuitContextIP, callSitesIP :: GHC.FastString
 probeIP = GHC.fsLit "probe"
 circuitContextIP = GHC.fsLit "circuitContext"
+callSitesIP = GHC.fsLit "circuitCallSites"
 
 ctxElems :: LHsType GhcRn -> [LHsType GhcRn]
 ctxElems (L _ t) = case t of
@@ -365,7 +398,7 @@ diagnose modes opaques signed both vouched groups = concatMap check binders
     [ note spn $
         [ "'" <> occ <> "' has HasCircuitContext but no OPAQUE pragma."
         , "Its bindings trace in the CALLER's scope, not a scope of its own."
-        , "Add {-# OPAQUE " <> occ <> " #-} if you wanted one."
+        , "Add {-# OPAQUE " <> prefix <> " #-} if you wanted one."
         ]
     | lookup nm modes == Just TraceMode
     , nm `notElem` opaques
@@ -392,6 +425,10 @@ diagnose modes opaques signed both vouched groups = concatMap check binders
          ]
    where
     occ = GHC.getOccString nm
+    -- A pragma names an operator in parentheses: @{-# OPAQUE (<+>) #-}@.
+    prefix
+      | GHC.isSymOcc (GHC.getOccName nm) = "(" <> occ <> ")"
+      | otherwise = occ
 
   note spn body = (spn, Diag.Uninstrumented, body)
 
@@ -425,6 +462,74 @@ noScopeAnnotated abi grp =
   [ nm
   | annDecl <- hs_annds grp
   , any mentionsMarker (SYB.listify isExpr annDecl)
+  , ValueAnnProvenance (L _ nm) <- SYB.listify isProvenance annDecl
+  ]
+ where
+  isExpr :: HsExpr GhcRn -> Bool
+  isExpr _ = True
+
+  isProvenance :: AnnProvenance GhcRn -> Bool
+  isProvenance _ = True
+
+  mentionsMarker :: HsExpr GhcRn -> Bool
+  mentionsMarker (HsVar _ (L _ n)) = n == abiNoCircuitScope abi
+  mentionsMarker _ = False
+
+{- | A top entity (a @Synthesize@ or @TopEntity@ annotation of Clash) whose
+signature asks for @HasCircuitContext@ is an error. A top entity cannot take
+a context: Clash would name the ports after the call sites and the context
+(@eta@, @eta1@, …) and the names of a @Synthesize@ would land on the wrong
+ports. The fix is a top entity without the constraint that supplies it.
+-}
+topEntityErrors :: Ctx -> HsGroup GhcRn -> GHC.TcM ()
+topEntityErrors ctx grp = case hs_valds grp of
+  XValBindsLR (NValBinds _ sigs) -> do
+    traced <-
+      filterM
+        (fmap snd . sigModes ctx . snd)
+        [(n, ty) | L _ (TypeSig _ ns ty) <- sigs, L _ n <- ns]
+    sequence_
+      [ Diag.reportError
+          spn
+          [ "'"
+              <> GHC.getOccString n
+              <> "' is a top entity, and its signature asks for HasCircuitContext."
+          , "A top entity cannot take a context: Clash would add its ports for it, and"
+          , "the port names of the annotation would land on the wrong ports."
+          , "Give the top entity a signature without HasCircuitContext, and supply"
+          , "the context inside it: topEntity ... = withoutCircuitContext (design ...)"
+          ]
+      | L l annDecl <- hs_annds grp
+      , any isTopEntityAnn (SYB.listify isName annDecl)
+      , ValueAnnProvenance (L _ n) <- SYB.listify isProvenance annDecl
+      , n `elem` map fst traced
+      , let spn = locA l
+      ]
+  _ -> pure ()
+ where
+  isName :: GHC.Name -> Bool
+  isName _ = True
+
+  isProvenance :: AnnProvenance GhcRn -> Bool
+  isProvenance _ = True
+
+  isTopEntityAnn n =
+    maybe
+      False
+      ((== "Clash.Annotations.TopEntity") . GHC.moduleNameString . GHC.moduleName)
+      (GHC.nameModule_maybe n)
+      && GHC.getOccString n `elem` ["Synthesize", "defSyn"]
+
+{- | The binders with an annotation other than 'NoCircuitScope': the pass
+does not split them into a wrapper and a worker (see 'splitGroups'). An
+annotation names the binder for Clash too (a @Synthesize@ or @TopEntity@,
+or a primitive): a wrapper is not what it means.
+-}
+otherAnnotated :: AbiNames -> HsGroup GhcRn -> [GHC.Name]
+otherAnnotated abi grp =
+  [ nm
+  | annDecl <- hs_annds grp
+  , not (any mentionsMarker (SYB.listify isExpr annDecl))
   , ValueAnnProvenance (L _ nm) <- SYB.listify isProvenance annDecl
   ]
  where
@@ -579,7 +684,8 @@ rewriteInside ctx mode0 = goM mode0
           [(n, ty) | L _ (TypeSig _ ns ty) <- sigs, L _ n <- ns]
     let localSigned = [n | L _ (TypeSig _ ns _) <- sigs, L _ n <- ns]
     groups' <- mapM (onGroup m localModes localSigned rankN) groups
-    pure (XValBindsLR (NValBinds groups' sigs))
+    (groups'', sigs') <- splitGroups ctx localWorkerName [] groups' sigs
+    pure (XValBindsLR (NValBinds groups'' sigs'))
   onVB _ vb = pure vb
 
   wrappable :: GHC.Name -> [GHC.Name] -> [GHC.Name] -> GHC.NameSet -> Bool
@@ -1098,6 +1204,361 @@ wrapGRHSs abi m nm spn (GRHSs x grhss localBinds) =
   gets its own @x@ — two names there are two signals the author asked for. -}
   recorders =
     abiAutoTrace abi : abiAutoProbe abi : abiExplicitRecorders abi
+
+--------------------------------------------------------------------------------
+-- Wrapper and worker
+--------------------------------------------------------------------------------
+
+{- | Split every function of a binding group whose signature needs a context
+into a wrapper and a worker:
+
+> f :: sig                              f :: sig
+> f x = body                      ⇒     f = let ?circuitContext = callContext
+> {\-# OPAQUE f #-\}                              ?callStack = rootCallStack
+>                                           in $wf
+>                                       {\-# INLINE f #-\}
+>
+>                                       $wf :: sig
+>                                       $wf x = body
+>                                       {\-# OPAQUE $wf #-\}
+
+The wrapper keeps the name and the signature, so every caller, also one in
+a module without the plugin, calls it. 'HasCircuitContext' asks for a
+'GHC.Stack.HasCallStack', so GHC adds the site of each call to the wrapper's
+call stack, and 'Clash.CircuitContext.Core.callContext' adds it to the
+context's call path. The worker keeps the body and the other pragmas
+(@OPAQUE@, @INLINE@, …), and starts from the same call stack at every call:
+Clash makes one HDL module of it, and names it @f@ (it drops the @$w@).
+
+This is done after the rest of the pass, to the function as the pass left
+it: a component's @component "f"@ is in the worker's body. A recursive call
+in the body calls the wrapper again, which is what counts the levels of a
+recursion (see 'Clash.CircuitContext.Core.ccCallPath').
+
+Not split: a function with an annotation other than 'NoCircuitScope' (see
+'otherAnnotated'), a class or instance method (a method has no binding of
+its own here), and a function without a signature. Their calls are not on
+the call path.
+-}
+splitGroups ::
+  Ctx ->
+  -- | The worker's name for a binder
+  (GHC.Name -> GHC.TcM GHC.Name) ->
+  -- | Binders not to split
+  [GHC.Name] ->
+  [(GHC.RecFlag, LHsBinds GhcRn)] ->
+  [LSig GhcRn] ->
+  GHC.TcM ([(GHC.RecFlag, LHsBinds GhcRn)], [LSig GhcRn])
+splitGroups ctx workerName keep groups sigs = do
+  needing <-
+    filterM
+      (fmap snd . sigModes ctx . snd)
+      [(n, ty) | L _ (TypeSig _ ns ty) <- sigs, L _ n <- ns, n `notElem` keep]
+  let
+    candidates =
+      [ n
+      | (_, bs) <- groups
+      , L _ b@FunBind{fun_id = L _ n} <- bindsToList bs
+      , n `elem` map fst needing
+      , not (isWorker n)
+      , not (isWrapper b)
+      ]
+  workers <- mapM (\n -> (,) n <$> workerName n) candidates
+  -- The wrapper's and the worker's signature of each signature that names a
+  -- split binder.
+  sigPairs <-
+    sequence
+      [ (,,) ns
+          <$> withContext ctx [abiCallSitesOnly abi, abiCircuitContextOnly abi] ty
+          <*> withContext ctx [abiCircuitContextOnly abi] ty
+      | L _ (TypeSig _ ns ty) <- sigs
+      , any (`elem` map fst workers) [n | L _ n <- ns]
+      ]
+  specTys <-
+    sequence
+      [ (,) n <$> mapM (withSigContext ctx [abiCircuitContextOnly abi]) tys
+      | L _ (SpecSig _ (L _ n) tys _) <- sigs
+      , n `elem` map fst workers
+      ]
+  let
+    pairFor ns = case [(wr, wo) | (ns', wr, wo) <- sigPairs, map unLoc ns' == map unLoc ns] of
+      p : _ -> Just p
+      [] -> Nothing
+    split lb@(L l b) = case b of
+      FunBind{fun_id = L _ n}
+        | Just w <- lookup n workers ->
+            [ L l b{fun_ext = GHC.mkNameSet [w], fun_matches = wrapperMG n w (locA l) (fun_matches b)}
+            , -- The equations keep the user's name: GHC names the function
+              -- of an equation after it in its messages.
+              L l b{fun_id = L (noAnnSrcSpan (locA l)) w}
+            ]
+      _ -> [lb]
+    splitSig = \case
+      L l (TypeSig x ns _)
+        | Just (wrapperTy, workerTy) <- pairFor ns ->
+            L l (TypeSig x ns wrapperTy)
+              : [ L l (TypeSig x [L ln w] workerTy)
+                | L ln n <- ns
+                , Just w <- [lookup n workers]
+                ]
+      L l (InlineSig x (L ln n) prag)
+        | Just w <- lookup n workers -> [L l (InlineSig x (L ln w) prag)]
+      -- The body is the worker's: so is what specialises it.
+      L l (SpecSig x (L ln n) tys prag)
+        | Just w <- lookup n workers ->
+            [L l (SpecSig x (L ln w) (fromMaybe tys (lookup n specTys)) prag)]
+      s0 -> [s0]
+    inlineSigs =
+      [ L
+          (noAnnSrcSpan (GHC.getSrcSpan n))
+          (InlineSig noAnn (L (noAnnSrcSpan (GHC.getSrcSpan n)) n) GHC.alwaysInlinePragma)
+      | (n, _) <- workers
+      ]
+    touched bs =
+      any
+        (\(L _ b) -> case b of FunBind{fun_id = L _ n} -> n `elem` map fst workers; _ -> False)
+        bs
+  pure
+    ( [ ( if touched (bindsToList bs) then GHC.Recursive else r
+        , bindsFromList (concatMap split (bindsToList bs))
+        )
+      | (r, bs) <- groups
+      ]
+    , concatMap splitSig sigs <> inlineSigs
+    )
+ where
+  abi = ctxAbi ctx
+
+  -- The wrapper's one equation: no arguments, the context of the call, the
+  -- worker.
+  wrapperMG ::
+    GHC.Name ->
+    GHC.Name ->
+    GHC.SrcSpan ->
+    MatchGroup GhcRn (LHsExpr GhcRn) ->
+    MatchGroup GhcRn (LHsExpr GhcRn)
+  wrapperMG n w spn (MG x (L lm ms)) = case ms of
+    L lm1 (Match mx mc _ (GRHSs gx (L lg (GRHS gex _ _) : _) _)) : _ ->
+      MG
+        x
+        ( L
+            lm
+            [ L
+                lm1
+                ( Match
+                    mx
+                    (renameCtxt n mc)
+                    (mkMatchPats [])
+                    ( GRHSs
+                        gx
+                        [L lg (GRHS gex [] (wrapperBody spn w))]
+                        (EmptyLocalBinds noExtField)
+                    )
+                )
+            ]
+        )
+    _ -> MG x (L lm ms)
+
+  wrapperBody spn w =
+    mkLetE
+      spn
+      ( HsIPBinds
+          noAnn
+          ( IPBinds
+              noExtField
+              [ ipBind
+                  spn
+                  circuitContextIP
+                  ( mkHsApp
+                      (mkVarE spn (abiCallContext abi))
+                      (L (noAnnSrcSpan spn) (mkIPVar callSitesIP))
+                  )
+              , ipBind spn callSitesIP (mkVarE spn (abiRootCallStack abi))
+              ]
+          )
+      )
+      (mkVarE spn w)
+
+  ipBind spn ip e =
+    L (noAnnSrcSpan spn) (IPBind noExtField (L (noAnnSrcSpan spn) (HsIPName ip)) e)
+
+  renameCtxt w = \case
+    c@FunRhs{mc_fun = L lf _} -> c{mc_fun = L lf w}
+    c -> c
+
+{- | A signature with each @HasCircuitContext@ in the constraints of its spine
+replaced by @with@: the wrapper asks for @CallSitesOnly, CircuitContextOnly@,
+the worker for @CircuitContextOnly@.
+
+The wrapper's constraints are written out, also those behind a synonym of
+the designer's (@type MyC dom = (HasCircuitContext, KnownDomain dom)@): GHC
+9.8 gives two calls in one expression one call stack when the callee's type
+asks for a constraint tuple, and a synonym of a tuple is one (see
+'Clash.CircuitContext.Core.CallSitesOnly'). The worker leaves out the call
+sites, which Clash would specialise it on, and 'TurnOnTheCircuitContextPlugin',
+which only this module's plugin solves.
+-}
+withContext :: Ctx -> [GHC.Name] -> LHsSigWcType GhcRn -> GHC.TcM (LHsSigWcType GhcRn)
+withContext ctx with (HsWC wx sig) = HsWC wx <$> withSigContext ctx with sig
+
+withSigContext :: Ctx -> [GHC.Name] -> LHsSigType GhcRn -> GHC.TcM (LHsSigType GhcRn)
+withSigContext ctx with (L sl (HsSig sx bndrs body)) = L sl . HsSig sx bndrs <$> spine body
+ where
+  spine (L l t) =
+    L l <$> case t of
+      HsForAllTy x tele inner -> HsForAllTy x tele <$> spine inner
+      HsQualTy x (L lc ctxt) inner ->
+        HsQualTy x . L lc <$> (concat <$> mapM (expandContext ctx with) ctxt) <*> spine inner
+      HsParTy x inner -> HsParTy x <$> spine inner
+      _ -> pure t
+
+{- | One constraint of a context, with @HasCircuitContext@ replaced by
+@with@, written directly or behind a synonym (expanded as 'ctxMentions'
+follows one: the module's own through its written right-hand side, another
+through its type-checked one). A synonym that cannot be expanded stays.
+-}
+expandContext :: Ctx -> [GHC.Name] -> LHsType GhcRn -> GHC.TcM [LHsType GhcRn]
+expandContext ctx with = go (5 :: Int)
+ where
+  abi = ctxAbi ctx
+  go fuel c@(L l t) = case t of
+    HsTyVar _ _ (L _ n)
+      | n == abiHasCircuitContext abi ->
+          pure [L l (HsTyVar noAnn NotPromoted (L (noAnnSrcSpan (locA l)) n')) | n' <- with]
+    HsParTy _ inner -> go fuel inner
+    HsTupleTy _ _ elems -> concat <$> mapM (go fuel) elems
+    _
+      | fuel > 0
+      , Just (n, args) <- synApp c ->
+          ctxMentions ctx circuitContextIP c >>= \case
+            False -> pure [c]
+            True ->
+              expandSynonym ctx (locA l) n args >>= \case
+                Just elems -> concat <$> mapM (go (fuel - 1)) elems
+                Nothing -> pure [c]
+      | otherwise -> pure [c]
+
+  synApp = goApp []
+   where
+    goApp args (L _ t) = case t of
+      HsTyVar _ _ (L _ n) -> Just (n, args)
+      HsAppTy _ f a -> goApp (a : args) f
+      HsParTy _ inner -> goApp args inner
+      _ -> Nothing
+
+{- | The constraints a synonym applied to these arguments stands for, or
+'Nothing' when it cannot be written out: not a synonym, the wrong number of
+arguments, or a parameter where it cannot be put back.
+-}
+expandSynonym ::
+  Ctx -> GHC.SrcSpan -> GHC.Name -> [LHsType GhcRn] -> GHC.TcM (Maybe [LHsType GhcRn])
+expandSynonym ctx spn n args
+  | Just rhs <- lookup n (ctxSyns ctx)
+  , Just params <- lookup n (ctxSynParams ctx)
+  , length params == length args =
+      pure (Just (elements (substParams (zip params args) rhs)))
+  | GHC.isExternalName n =
+      GHC.tryTcDiscardingErrs (pure Nothing) $ do
+        tc <- GHC.tcLookupTyCon n
+        pure $ case GHC.synTyConDefn_maybe tc of
+          Just (tvs, rhs)
+            | length tvs == length args -> coreElements (zip tvs args) rhs
+          _ -> Nothing
+  | otherwise = pure Nothing
+ where
+  spanA = noAnnSrcSpan spn
+
+  elements (L _ (HsParTy _ inner)) = elements inner
+  elements (L _ (HsTupleTy _ _ elems)) = elems
+  elements t = [t]
+
+  substParams sub = SYB.everywhere (SYB.mkT replace)
+   where
+    replace :: LHsType GhcRn -> LHsType GhcRn
+    replace t@(L _ (HsTyVar _ _ (L _ v))) = fromMaybe t (lookup v sub)
+    replace t = t
+
+  -- A type-checked right-hand side: a constraint tuple is its elements.
+  coreElements :: [(GHC.TyVar, LHsType GhcRn)] -> GHC.Type -> Maybe [LHsType GhcRn]
+  coreElements sub rhs = case GHC.splitTyConApp_maybe rhs of
+    Just (tc, elems)
+      | GHC.isCTupleTyConName (GHC.getName tc) -> mapM (coreToHs sub) elems
+    _ -> (: []) <$> coreToHs sub rhs
+
+  -- Back to the syntax of a signature: a parameter becomes its argument, a
+  -- synonym (which may hide a HasCircuitContext) is applied by name, and
+  -- anything else without a parameter is embedded as it is.
+  coreToHs :: [(GHC.TyVar, LHsType GhcRn)] -> GHC.Type -> Maybe (LHsType GhcRn)
+  coreToHs sub ty
+    | Just v <- GHC.getTyVar_maybe ty = lookup v sub
+    | Just (tc, tyArgs) <- GHC.splitTyConApp_maybe ty
+    , GHC.isTypeSynonymTyCon tc || mentions ty =
+        foldl app (L spanA (HsTyVar noAnn NotPromoted (L (noAnnSrcSpan spn) (GHC.getName tc))))
+          <$> mapM (coreToHs sub) (GHC.filterOutInvisibleTypes tc tyArgs)
+    | not (mentions ty) = Just (L spanA (XHsType ty))
+    | otherwise = Nothing
+   where
+    mentions t = any (`GHC.elemVarSet` GHC.tyCoVarsOfType t) (map fst sub)
+    app f a = L spanA (HsAppTy noExtField f a)
+
+-- | A worker that 'splitGroups' made: its name starts with @$w@.
+isWorker :: GHC.Name -> Bool
+isWorker n = "$w" `isPrefixOf` GHC.getOccString n
+
+-- | A wrapper that 'splitGroups' made: one equation that binds the context.
+isWrapper :: HsBind GhcRn -> Bool
+isWrapper = \case
+  FunBind{fun_matches = MG _ (L _ [L _ m])}
+    | GRHSs _ [L _ (GRHS _ [] (L _ body))] _ <- m_grhss m
+    , Just (rhs, _) <- ctxLetBody body
+    , (L _ (HsVar _ (L _ f)), _) <- appSpine rhs ->
+        GHC.getOccString f == "callContext"
+  _ -> False
+
+-- | The worker's name of a top-level binder: external, in this module.
+topWorkerName :: GHC.Module -> GHC.Name -> GHC.TcM GHC.Name
+topWorkerName mdl n = do
+  u <- getUniqueM
+  pure
+    (GHC.mkExternalName u mdl (GHC.mkVarOcc ("$w" <> GHC.getOccString n)) (GHC.getSrcSpan n))
+
+-- | The worker's name of a local binder.
+localWorkerName :: GHC.Name -> GHC.TcM GHC.Name
+localWorkerName n = do
+  u <- getUniqueM
+  pure (GHC.mkInternalName u (GHC.mkVarOcc ("$w" <> GHC.getOccString n)) (GHC.getSrcSpan n))
+
+{- FOURMOLU_DISABLE -}
+-- fourmolu cannot parse CPP inside a declaration; keep this region verbatim.
+
+-- | An implicit parameter as an expression: @?ip@.
+mkIPVar :: GHC.FastString -> HsExpr GhcRn
+#if __GLASGOW_HASKELL__ >= 910
+mkIPVar ip = HsIPVar noExtField (HsIPName ip)
+#else
+mkIPVar ip = HsIPVar noAnn (HsIPName ip)
+#endif
+
+-- | The name a synonym's parameter binds (GHC 9.12 allows a wildcard).
+binderName :: LHsTyVarBndr flag GhcRn -> Maybe GHC.Name
+#if __GLASGOW_HASKELL__ >= 912
+binderName = hsLTyVarName
+#else
+binderName = Just . hsLTyVarName
+#endif
+
+-- | The first binding of a @let@ that binds implicit parameters, and the
+-- body, if this is one.
+ctxLetBody :: HsExpr GhcRn -> Maybe (LHsExpr GhcRn, LHsExpr GhcRn)
+ctxLetBody = \case
+#if __GLASGOW_HASKELL__ >= 910
+  HsLet _ (HsIPBinds _ (IPBinds _ (L _ (IPBind _ (L _ (HsIPName ip)) rhs) : _))) body
+#else
+  HsLet _ _ (HsIPBinds _ (IPBinds _ (L _ (IPBind _ (L _ (HsIPName ip)) rhs) : _))) _ body
+#endif
+    | ip == circuitContextIP -> Just (rhs, body)
+  _ -> Nothing
+{- FOURMOLU_ENABLE -}
 
 --------------------------------------------------------------------------------
 -- Idempotence

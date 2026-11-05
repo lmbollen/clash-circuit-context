@@ -17,8 +17,10 @@ Instrumentation is two annotations per function:
 The plugin then wraps the function in a named *component* (a hierarchy
 level), auto-traces every named local binding of traceable type under its
 binder name, and auto-probes bindings inside `HasProbe` functions (e.g.
-mealy step functions). Remove the plugin (or use `noCircuitContext`) and
-every combinator collapses to identity.
+mealy step functions). Under `noCircuitContext` (or `withoutCircuitContext`)
+every combinator collapses to identity. A design that asks for
+`HasCircuitContext` needs the plugin: without it, a call of an instrumented
+function is an error that names `TurnOnTheCircuitContextPlugin`.
 
 ## Adding it to your project
 
@@ -72,8 +74,9 @@ harmless: the renamer pass is idempotent.
 When you run the `clash` executable on a source file directly (`clash
 Design.hs --verilog`), Clash does not load a plugin that only an `OPTIONS_GHC`
 pragma names. Pass `-fplugin=Clash.CircuitContext.Plugin` on the command
-line. Without it, a design with an empty `Traceable` instance does not
-compile. A module that `clash` loads precompiled from a package built with
+line. Without it, the design does not compile: each call of a function with
+`HasCircuitContext` asks for `TurnOnTheCircuitContextPlugin`, which only the
+plugin solves (and so does an empty `Traceable` instance). A module that `clash` loads precompiled from a package built with
 the plugin is not affected, and neither is `clashi`.
 
 Requires GHC 9.6, 9.8, 9.10 or 9.12, `clash-prelude >= 1.9 && < 1.12` and
@@ -124,9 +127,8 @@ main = do
   pure ()
 ```
 
-The waveform's scope tree mirrors the design hierarchy. The plugin makes `acc` a
-component, so its two instances share one `component` call site and are
-numbered in the order the simulation first reaches them:
+The waveform's scope tree mirrors the design hierarchy; the two `acc` instances
+are numbered by their call sites in `top`:
 
 ```
 top
@@ -237,13 +239,23 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
   contexts to ordinary class constraints, as above — the oracle recognizes
   an instance by recursing on its written context.
 * Multiple instances of the same component under one parent are named
-  `name_0`, `name_1`, …, ordered by the call site of `component` in the
-  design. Instances with the *same* call site are numbered in the order the
-  simulation first reaches them. Two cases have one call site:
-  `fmap acc`-style replication, and every instance of one automatic
-  component, because the plugin writes `component "f"` inside `f`. To fix
-  the names, use `imapComponents` (structural position) or call
-  `component` by hand at each site.
+  `name_0`, `name_1`, …, ordered by their call sites in the design. The
+  plugin splits each function whose signature asks for `HasCircuitContext`
+  into a wrapper, which keeps the name and the signature, and a worker,
+  `$wf`, which keeps the body and the pragmas. `HasCircuitContext` asks for
+  the call sites, a `CallStack` of its own, so GHC gives the wrapper the
+  site of every call — through `$`, an operator, a partial application, or
+  from a module without the plugin — and the wrapper adds it to the
+  context's call path. A helper with a signature passes the path on, so its
+  calls order the instances it makes, and the signals it records into its
+  caller's scope come call by call. Clash names the worker's module after
+  `f` and makes one module of it. Instances with the *same* call site are
+  numbered in the order the simulation first reaches them: `map acc`- or
+  `fmap acc`-style replication over a vector, and the calls of a class
+  method, of a local function without a signature, or of a function with an
+  annotation other than `NoCircuitScope` (those are not split). To fix
+  those names, use `imapComponents` (structural position) or call
+  `component` by hand.
 * Every signal and scope in a scope has a name of its own. A name that is
   used once is kept as it is. The duplicates of a name (instances, or the
   signals that the calls of a helper record) are numbered `name_0`,
@@ -375,7 +387,7 @@ signature is untouched. To opt back out, at four granularities:
 | --- | --- |
 | One binding | Prefix the binder with `_`: `_hidden = acc inp` is skipped. Works for `circuit` ports too (`_dbg`). |
 | One function | Omit the `OPAQUE` pragma (no component scope) or the constraint (no instrumentation at all). |
-| One module | Don't enable the plugin on it. |
+| One module | Give its functions no `HasCircuitContext`. Turning the plugin off for a module that has such functions makes each call of them fail to compile. |
 | A call, and everything under it | `withoutCircuitContext` — discharges the constraint without duplicating the callee's signature just to drop it. |
 
 ```haskell
@@ -403,7 +415,7 @@ design question, tracked as finding F1 in
 
 `Clash.CircuitContext.Waveform` writes the files for you, and in a test suite
 records only the run you will look at. Every function takes `WaveformOptions`
-(below), then what `dumpVCD` takes: the `Signal` to observe (it supplies the `HasCircuitContext`) and a
+(below), then what `dumpVCD` takes: the `Signal` to observe (it supplies the context, `CircuitContextOnly`) and a
 window `(start, stop)` of cycles. The simulation runs `stop` cycles and the
 waveform shows cycles `start` to `stop - 1`; `(0, n)` shows all `n`. As in
 `dumpVCD`, `start` cannot be negative: VCD time is unsigned. Several outputs
@@ -657,7 +669,15 @@ you want explicit control. From `Clash.CircuitContext`: `component`,
 
 ## How it works
 
-* The context is one implicit parameter, `?circuitContext`. `component`
+* The context is one implicit parameter, `?circuitContext :: SimOnly
+  CircuitContext`, beside the call sites `?circuitCallSites :: CallStack`
+  that give each call its site (see the instance names above), and
+  `TurnOnTheCircuitContextPlugin`, which only the plugin solves: a design
+  compiled without the plugin does not compile, rather than giving HDL with
+  one module per call. Code instrumented by hand without the plugin asks
+  for `CircuitContextOnly`. `SimOnly` (from `Clash.Magic`) is what
+  Clash ignores: a context that differs at each call site does not make it
+  duplicate a component. `component`
   pushes a hierarchy segment; trace/probe registrations qualify their keys
   with the path at creation time. All state lives in a per-simulation
   recorder created by `withRecording` — there is no global mutable state,
@@ -698,8 +718,8 @@ bindings into a `let` inside the component wrap, so Clash's generated wire
 names and declaration order can differ, and a traced `Vec` binding can leave
 an identity generate loop. Compare the two with an equivalence checker (e.g.
 Yosys `equiv_make`/`equiv_induct`), not with `diff`. The only thing a caller
-must do is discharge the `HasCircuitContext` constraint, e.g. `let
-?circuitContext = noCircuitContext in …` at the synthesis entry point.
+must do is discharge the `HasCircuitContext` constraint, e.g. with
+`withoutCircuitContext` at the synthesis entry point.
 
 The same gate keeps **simulation cheap when you are not recording**: under
 `noCircuitContext` (i.e. not inside `withRecording`) the combinators

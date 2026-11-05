@@ -65,14 +65,14 @@ import qualified Hedgehog.Range as Range
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext (
-  HasCircuitContext,
+  CircuitContextOnly,
   component,
   traceSignalC,
   traceSignalSW,
   withRecording,
   withRecordingFrom,
  )
-import Clash.CircuitContext.Core (HierSeg (..), ProbeCtx (..), probe)
+import Clash.CircuitContext.Core (HierSeg (..), ProbeCtx (..), circuitContext, probe)
 import Clash.CircuitContext.Recording (
   discardRecording,
   recordedChanges,
@@ -101,14 +101,14 @@ VCD (empty if none was written). Every file goes in a fresh name, as the
 properties run in parallel.
 -}
 recorded ::
-  Int -> Int -> ((HasCircuitContext) => IO a) -> PropertyT IO (a, Int, String)
+  Int -> Int -> ((CircuitContextOnly) => IO a) -> PropertyT IO (a, Int, String)
 recorded start stop k = do
   (a, end, vcd, _) <- recordedWithSidecar start stop k
   pure (a, end, vcd)
 
 -- | 'recorded', with the sidecar of the VCD (empty if none was written).
 recordedWithSidecar ::
-  Int -> Int -> ((HasCircuitContext) => IO a) -> PropertyT IO (a, Int, String, String)
+  Int -> Int -> ((CircuitContextOnly) => IO a) -> PropertyT IO (a, Int, String, String)
 recordedWithSidecar start stop k = liftIO $ do
   createDirectoryIfMissing True dir
   (path, h) <- openTempFile dir "recorder.vcd"
@@ -246,7 +246,7 @@ prop_siblingsFollowSourceOrder = property $ do
   asInts wave0 === model [0, 0, 1]
   asInts wave1 === model [0, 0, 100]
  where
-  writtenFirst, writtenSecond :: (HasCircuitContext) => Signal System (Unsigned 8)
+  writtenFirst, writtenSecond :: (CircuitContextOnly) => Signal System (Unsigned 8)
   writtenFirst = component "acc" (counting 1)
   writtenSecond = component "acc" (counting 100)
   counting step =
@@ -290,7 +290,7 @@ prop_declarationsAreSorted = property $ do
         , "up"
         ]
  where
-  written :: (HasCircuitContext) => [[Unsigned 8]]
+  written :: (CircuitContextOnly) => [[Unsigned 8]]
   written =
     [ sampleN 2 (traceSignalC "sig" (stim @System [1, 2]))
     , sampleN 2 (traceSignalC "b_10" (stim @System [1, 2]))
@@ -380,7 +380,7 @@ prop_probesWithOneKey = property $ do
     caches <- P.mapM (P.const (newIORef Map.empty)) [1, 2 :: Int]
     let path = [HierSeg "machine" ""]
         probed =
-          [ let ?probe = ProbeCtx ?circuitContext period path 0 cache in probe "p" v
+          [ let ?probe = ProbeCtx circuitContext period path 0 cache in probe "p" v
           | (cache, v) <- P.zip caches [1, 2 :: Unsigned 8]
           ]
     -- Something sampled, so that the run has a cycle.
@@ -409,7 +409,7 @@ prop_probeFirstFiringsRace = Hedgehog.withTests 20 $ property $ do
     cache <- newIORef Map.empty
     gate <- newMVar ([], False)
     let path = [HierSeg "machine" ""]
-        fire nm c v = let ?probe = ProbeCtx ?circuitContext period path c cache in probe nm v
+        fire nm c v = let ?probe = ProbeCtx circuitContext period path c cache in probe nm v
     dones <-
       P.mapM
         ( \i -> do
@@ -493,7 +493,7 @@ of the design's counter at a cycle and the cycle says.
 -}
 lateProbeShows ::
   [Unsigned 8] ->
-  ((HasCircuitContext) => Signal System (Unsigned 8) -> Signal System (Unsigned 8)) ->
+  ((CircuitContextOnly) => Signal System (Unsigned 8) -> Signal System (Unsigned 8)) ->
   (Int -> Int -> Bool) ->
   PropertyT IO ()
 lateProbeShows xs design evaluatedAt = do
@@ -538,7 +538,7 @@ lateProbeShows xs design evaluatedAt = do
 8, as 'swapLate''s, and the hold repeats every 4.
 -}
 holdLate ::
-  (HasCircuitContext) => Signal System (Unsigned 8) -> Signal System (Unsigned 8)
+  (CircuitContextOnly) => Signal System (Unsigned 8) -> Signal System (Unsigned 8)
 holdLate = mealyProbed clockGen resetGen enableGen step (0, 0)
  where
   step ::
@@ -557,7 +557,7 @@ second two cycles later, and the first a cycle after that. So the late
 value of the earlier cycle comes after the later one's.
 -}
 swapLate ::
-  (HasCircuitContext) => Signal System (Unsigned 8) -> Signal System (Unsigned 8)
+  (CircuitContextOnly) => Signal System (Unsigned 8) -> Signal System (Unsigned 8)
 swapLate = mealyProbed clockGen resetGen enableGen step (0, 0, 0)
  where
   step ::

@@ -31,6 +31,7 @@ import qualified Test.ExampleOutput
 import qualified Test.Formats
 import qualified Test.Memory
 import qualified Test.Recorder
+import qualified Test.SourceOrder
 
 main :: IO ()
 main = do
@@ -51,6 +52,7 @@ suite =
       [ testGroup
           "the tests"
           [ Test.Recorder.tests
+          , Test.SourceOrder.tests
           , Test.Capture.tests
           , Test.Cancel.tests
           , Test.Formats.tests

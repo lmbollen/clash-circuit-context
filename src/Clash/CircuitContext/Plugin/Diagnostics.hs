@@ -78,6 +78,7 @@ module Clash.CircuitContext.Plugin.Diagnostics (
   Category (..),
   categoryFlag,
   report,
+  reportError,
   renderPlain,
 ) where
 
@@ -135,6 +136,19 @@ same message" is the same site.
 -- The wrapper around a plugin's own diagnostic gained and lost type
 -- parameters across the supported GHCs, so it is applied at the one place
 -- where 'TcRnUnknownMessage' fixes the type rather than named in a signature.
+-- | An error at this span: the module does not compile.
+reportError :: GHC.SrcSpan -> [String] -> GHC.TcM ()
+reportError spn body =
+  GHC.addDiagnosticAt spn
+    $ GHC.TcRnUnknownMessage
+#if __GLASGOW_HASKELL__ >= 908
+      (GHC.mkSimpleUnknownDiagnostic diagnostic)
+#else
+      (GHC.UnknownDiagnostic diagnostic)
+#endif
+ where
+  diagnostic = GHC.mkPlainDiagnostic GHC.ErrorWithoutFlag [] (GHC.vcat (map GHC.text body))
+
 report :: GHC.SrcSpan -> Category -> [String] -> GHC.TcM ()
 report spn cat body = do
   fresh <- GHC.liftIO (claim key)

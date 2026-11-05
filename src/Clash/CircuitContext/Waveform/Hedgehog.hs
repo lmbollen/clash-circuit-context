@@ -56,6 +56,9 @@ module Clash.CircuitContext.Waveform.Hedgehog (
   Spill (..),
   defaultOptions,
 
+  -- * The context that the design is given
+  CircuitContextOnly,
+
   -- * A property's waveform
   Capture (..),
   simulateWaveform,
@@ -76,7 +79,7 @@ import qualified Hedgehog.Gen as Gen
 import Clash.Explicit.Signal (Signal, sampleN)
 import Clash.Prelude (KnownDomain, NFDataX, deepseqX)
 
-import Clash.CircuitContext.Core (HasCircuitContext)
+import Clash.CircuitContext.Core (CircuitContextOnly)
 import Clash.CircuitContext.Internal.Recorder (Recording)
 import Clash.CircuitContext.Internal.Waveform
 
@@ -129,7 +132,7 @@ simulateWaveform ::
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
   (Int, Int) ->
   -- | The signal to observe
-  (HasCircuitContext => Signal dom a) ->
+  (CircuitContextOnly => Signal dom a) ->
   PropertyT IO [a]
 simulateWaveform opts capture path0 window@(_, stop) sig = do
   liftIO (checkPath path0)
@@ -157,7 +160,7 @@ recordRun ::
   WaveformOptions ->
   FilePath ->
   (Int, Int) ->
-  (HasCircuitContext => Signal dom a) ->
+  (CircuitContextOnly => Signal dom a) ->
   IO (Either SomeException [a], Recording)
 recordRun opts path window@(_, stop) sig =
   record opts path (fst (psWindow @dom window)) $ do
@@ -173,7 +176,7 @@ recordCounterexample ::
   WaveformOptions ->
   FilePath ->
   (Int, Int) ->
-  (HasCircuitContext => Signal dom a) ->
+  (CircuitContextOnly => Signal dom a) ->
   IO String
 recordCounterexample opts path window sig = do
   result <- try $ do

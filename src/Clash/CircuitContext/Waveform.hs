@@ -15,10 +15,11 @@ Write the waveform of a simulation, from any IO code or from a test.
 writes an FST, recorded in memory), and what 'Clash.Signal.Trace.dumpVCD'
 takes: the 'Signal' to observe and a window @(start, stop)@ of cycles. The
 simulation runs @stop@ cycles, and the waveform shows cycles @start@ to
-@stop - 1@; use @(0, n)@ to see all @n@. The signal carries 'HasCircuitContext', which they supply. A
-design with outputs in one domain gives one signal with @bundle@; a
-@clash-protocols@ circuit gives one with @toSignals@. For outputs in more
-than one domain, see "Clash.CircuitContext.Recording".
+@stop - 1@; use @(0, n)@ to see all @n@. The signal asks for the context
+('CircuitContextOnly'), which they supply. A design with outputs in one
+domain gives one signal with @bundle@; a @clash-protocols@ circuit gives one
+with @toSignals@. For outputs in more than one domain, see
+"Clash.CircuitContext.Recording".
 
 A waveform is a pair of files at the path you give, which has no extension:
 @\<path\>.fst@ (or @.vcd@, see 'Format') and the @\<path\>.json@ sidecar a
@@ -52,6 +53,9 @@ module Clash.CircuitContext.Waveform (
   Spill (..),
   defaultOptions,
 
+  -- * The context that the design is given
+  CircuitContextOnly,
+
   -- * Writing a waveform
   writeWaveform,
   withWaveform,
@@ -73,7 +77,7 @@ import Clash.Explicit.Signal (Signal, sampleN)
 import Clash.Prelude (KnownDomain, NFDataX, deepseqX)
 
 import Clash.CircuitContext.Core (
-  HasCircuitContext,
+  CircuitContextOnly,
   withoutCircuitContext,
  )
 import Clash.CircuitContext.Internal.Message (say)
@@ -113,7 +117,7 @@ writeWaveform ::
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
   (Int, Int) ->
   -- | The signal to observe
-  (HasCircuitContext => Signal dom a) ->
+  (CircuitContextOnly => Signal dom a) ->
   IO [a]
 writeWaveform opts path0 window@(_, stop) sig = do
   checkPath path0
@@ -181,7 +185,7 @@ withWaveform ::
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
   (Int, Int) ->
   -- | The signal to observe
-  (HasCircuitContext => Signal dom a) ->
+  (CircuitContextOnly => Signal dom a) ->
   -- | The check
   ([a] -> IO b) ->
   IO b

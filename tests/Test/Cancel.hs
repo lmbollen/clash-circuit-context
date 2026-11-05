@@ -89,12 +89,12 @@ gate = unsafePerformIO (putMVar reached () >> takeMVar opened >> pure P.Nothing)
 {-# NOINLINE gate #-}
 
 -- | A traced signal of 'Gated'.
-gatedSignal :: (HasCircuitContext) => Signal System Gated
+gatedSignal :: (CircuitContextOnly) => Signal System Gated
 gatedSignal = traceSignalSW "gated" (fromList (P.map Gated [0 ..]))
 {-# OPAQUE gatedSignal #-}
 
 -- | A traced counter from a run-time value, so that no run shares it.
-counter :: (HasCircuitContext) => Int -> Signal System (Unsigned 8)
+counter :: (CircuitContextOnly) => Int -> Signal System (Unsigned 8)
 counter k = traceSignalC "count" (fromList (P.map P.fromIntegral [k ..]))
 {-# OPAQUE counter #-}
 
