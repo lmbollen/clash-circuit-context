@@ -143,6 +143,7 @@ import Control.Exception (
   SomeException,
   evaluate,
   fromException,
+  onException,
   throwIO,
   try,
  )
@@ -165,6 +166,8 @@ import GHC.Stack (
   srcLocStartCol,
   srcLocStartLine,
  )
+import System.Directory (makeAbsolute)
+import System.IO (hPutStrLn, stderr)
 import System.IO.Unsafe (unsafeDupablePerformIO, unsafePerformIO)
 import System.Mem.StableName (StableName, hashStableName, makeStableName)
 
@@ -369,9 +372,11 @@ can be forced less far than another (a register's input, for one).
 What the action recorded before it threw is in the recording too: that is
 what the waveform of a failing test is made of. An asynchronous exception
 (a cancelled test) is not caught: the recording stops where it got to and
-the exception goes on. A spill file stays, and holds what was recorded: read
-it with 'Clash.CircuitContext.Recording.recoverRecording'. So does the spill
-file of a process that was killed, up to its signals' last whole chunks.
+the exception goes on. A spill file stays, holds what was recorded, and a
+message on stderr says where it is: read it with
+'Clash.CircuitContext.Recording.recoverRecording'. The spill file of a
+process that was killed stays too, with what it recorded up to about a second
+before.
 -}
 withRecording ::
   Maybe FilePath ->
@@ -400,9 +405,27 @@ withRecordingFrom start spill k = do
   case r of
     Left err | Just (_ :: SomeAsyncException) <- fromException err -> do
       -- Stop now: no cycle is evaluated to finish the traces.
-      _ <- closeRecorder rec =<< recorderEnd rec
+      stopped rec
       throwIO err
-    _ -> (,) r <$> finishRecording rec taps
+    _ -> (,) r <$> finishRecording rec taps `onException` stopped rec
+ where
+  stopped rec = do
+    _ <- closeRecorder rec =<< recorderEnd rec
+    mapM_ stoppedMessage spill
+
+{- | Say on stderr that a run was stopped, and where its spill file is, as an
+ABSOLUTE path: the working directory differs between ways of running a suite.
+-}
+stoppedMessage :: FilePath -> IO ()
+stoppedMessage f = do
+  path <- makeAbsolute f
+  hPutStrLn
+    stderr
+    ( "clash-circuit-context: the run was stopped; what it recorded is in "
+        <> path
+        <> ". Write its waveform with spill2fst or spill2vcd (executables of"
+        <> " clash-circuit-context), or with recoverWaveform or writeSpill"
+    )
 
 {- | Finish every trace up to the end of the run, then close the recorder.
 
