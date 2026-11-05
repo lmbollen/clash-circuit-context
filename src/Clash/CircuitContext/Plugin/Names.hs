@@ -26,6 +26,14 @@ data AbiNames = AbiNames
   { abiAutoTrace :: GHC.Name
   , abiAutoProbe :: GHC.Name
   , abiComponent :: GHC.Name
+  , abiCallContext :: GHC.Name
+  -- ^ What a wrapper binds @?circuitContext@ to (see @splitGroups@).
+  , abiRootCallStack :: GHC.Name
+  -- ^ What a wrapper binds @?circuitCallSites@ to for its worker.
+  , abiCircuitContextOnly :: GHC.Name
+  -- ^ What a worker's signature asks for instead of @HasCircuitContext@.
+  , abiCallSitesOnly :: GHC.Name
+  -- ^ With 'abiCircuitContextOnly', what a wrapper's signature asks for.
   , abiHasCircuitContext :: GHC.Name
   , abiHasProbe :: GHC.Name
   , abiNoCircuitScope :: GHC.Name
@@ -52,6 +60,10 @@ lookupAbiNames = do
       autoTraceN <- GHC.lookupOrig am (GHC.mkVarOcc "autoTrace")
       autoProbeN <- GHC.lookupOrig am (GHC.mkVarOcc "autoProbe")
       componentN <- GHC.lookupOrig cm (GHC.mkVarOcc "component")
+      callContextN <- GHC.lookupOrig cm (GHC.mkVarOcc "callContext")
+      rootCallStackN <- GHC.lookupOrig cm (GHC.mkVarOcc "rootCallStack")
+      contextOnlyN <- GHC.lookupOrig cm (GHC.mkTcOcc "CircuitContextOnly")
+      callSitesOnlyN <- GHC.lookupOrig cm (GHC.mkTcOcc "CallSitesOnly")
       hasCircuitContextN <- GHC.lookupOrig cm (GHC.mkTcOcc "HasCircuitContext")
       hasProbeN <- GHC.lookupOrig cm (GHC.mkTcOcc "HasProbe")
       noCircuitScopeN <- GHC.lookupOrig cm (GHC.mkDataOcc "NoCircuitScope")
@@ -67,6 +79,10 @@ lookupAbiNames = do
               { abiAutoTrace = autoTraceN
               , abiAutoProbe = autoProbeN
               , abiComponent = componentN
+              , abiCallContext = callContextN
+              , abiRootCallStack = rootCallStackN
+              , abiCircuitContextOnly = contextOnlyN
+              , abiCallSitesOnly = callSitesOnlyN
               , abiHasCircuitContext = hasCircuitContextN
               , abiHasProbe = hasProbeN
               , abiNoCircuitScope = noCircuitScopeN

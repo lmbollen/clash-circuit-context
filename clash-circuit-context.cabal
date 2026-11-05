@@ -187,6 +187,9 @@ test-suite waveform-tests
     Test.Formats
     Test.Memory
     Test.Recorder
+    Test.SourceOrder
+    Test.SourceOrder.Acc
+    Test.SourceOrder.Plain
     Test.Vcd
 
   build-depends:

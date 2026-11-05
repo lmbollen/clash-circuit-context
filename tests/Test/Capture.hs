@@ -51,7 +51,7 @@ import qualified Hedgehog.Range as Range
 import Test.Vcd (decodeVCD)
 
 -- | A trivial traced design; the payload type is irrelevant to what we assert.
-counter :: (HasCircuitContext) => Signal System (Unsigned 8)
+counter :: (CircuitContextOnly) => Signal System (Unsigned 8)
 counter = traceSignalC "count" (fromList [0 ..])
 {-# OPAQUE counter #-}
 
@@ -61,7 +61,7 @@ the next cell is forced), so it is recorded only when the run ends. Sampled 4
 cycles, both record @[0, 0, 0]@ while the run goes, and the divergent cycle 3
 when it ends.
 -}
-twins :: (HasCircuitContext) => Signal System (Unsigned 8, Unsigned 8)
+twins :: (CircuitContextOnly) => Signal System (Unsigned 8, Unsigned 8)
 twins =
   bundle
     ( traceSignalC "same" (fromList [0, 0, 0, 0, 0])
@@ -73,7 +73,7 @@ need the value of "next", so 2 sampled cycles force the spine of "next" but
 not "step". "step" is first evaluated when the run ends and finishes the last
 cycle of "next".
 -}
-lateStep :: (HasCircuitContext) => Signal System (Unsigned 8)
+lateStep :: (CircuitContextOnly) => Signal System (Unsigned 8)
 lateStep = cnt
  where
   cnt = traceSignalC "cnt" (register clockGen resetGen enableGen 0 next)

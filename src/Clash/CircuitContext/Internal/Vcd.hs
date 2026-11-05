@@ -280,7 +280,7 @@ follow in 'naturalKey' order of their names.
 sourceOrder ::
   [(String, RecordedSignal)] ->
   String ->
-  (Bool, Maybe (Word, Int, Int, [Int]), ([Either Integer String], String))
+  (Bool, Maybe ([(Word, Int, Int, Int)], [Int]), ([Either Integer String], String))
 sourceOrder named = \n ->
   let site = Map.findWithDefault Nothing n sites
    in (isNothing site, site, naturalKey (last (splitPath n)))
@@ -359,24 +359,33 @@ parseSeg s = case splitOn '@' s of
  where
   isOrd ds = not (null ds) && all isDigit ds
 
-{- | Parse an encoded call site @L\<line\>C\<col\>F\<hash\>@, optionally
-followed by record field positions @P\<i\>@ (see
-'Clash.CircuitContext.Core.fieldLoc'), into a sort key (file hash, line,
-col, field positions).
+{- | Parse an encoded call site into a sort key: one or more call sites
+@L\<line\>C\<col\>F\<hash\>@, each maybe followed by @R\<n\>@ when it was
+reached @n@ times in a row (the calls that led to the recorder, see
+'Clash.CircuitContext.Core.callPath', then the recorder's own), each as
+(file hash, line, col, times), then the record field positions @P\<i\>@
+(see 'Clash.CircuitContext.Core.fieldLoc').
 -}
-parseLoc :: String -> Maybe (Word, Int, Int, [Int])
-parseLoc ('L' : s0)
-  | (l@(_ : _), 'C' : s1) <- span isDigit s0
-  , (c@(_ : _), 'F' : s2) <- span isDigit s1
-  , (f@(_ : _), s3) <- span isDigit s2
-  , Just ps <- fields s3 =
-      Just (read f, read l, read c, ps)
+parseLoc :: String -> Maybe ([(Word, Int, Int, Int)], [Int])
+parseLoc s0 = case sites s0 of
+  Just (ss@(_ : _), rest) -> (,) ss <$> fields rest
+  _ -> Nothing
  where
+  sites ('L' : s1)
+    | (l@(_ : _), 'C' : s2) <- span isDigit s1
+    , (c@(_ : _), 'F' : s3) <- span isDigit s2
+    , (f@(_ : _), s4) <- span isDigit s3 = do
+        let (n, s5) = case s4 of
+              'R' : s6 | (r@(_ : _), s7) <- span isDigit s6 -> (read r, s7)
+              _ -> (1, s4)
+        (ss, rest) <- sites s5
+        Just ((read f, read l, read c, n) : ss, rest)
+    | otherwise = Nothing
+  sites s = Just ([], s)
   fields "" = Just []
   fields ('P' : s)
     | (p@(_ : _), rest) <- span isDigit s = (read p :) <$> fields rest
   fields _ = Nothing
-parseLoc _ = Nothing
 
 {- | Strip instance tags from all keys. Groups siblings by (parent, name): a
 name with a single instance keeps its clean name; a name with several gets

@@ -59,7 +59,7 @@ import Clash.Explicit.Signal (Signal, sampleN)
 import Clash.Prelude (KnownDomain, NFDataX, deepseqX)
 
 import Clash.CircuitContext.Core (
-  HasCircuitContext,
+  CircuitContextOnly,
   withoutCircuitContext,
  )
 import Clash.CircuitContext.Internal.Waveform
@@ -85,7 +85,7 @@ writeWaveform ::
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
   (Int, Int) ->
   -- | The signal to observe
-  (HasCircuitContext => Signal dom a) ->
+  (CircuitContextOnly => Signal dom a) ->
   IO [a]
 writeWaveform opts name window@(_, stop) sig = do
   checkWindow name window
@@ -135,7 +135,7 @@ withWaveform ::
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
   (Int, Int) ->
   -- | The signal to observe
-  (HasCircuitContext => Signal dom a) ->
+  (CircuitContextOnly => Signal dom a) ->
   -- | The check
   ([a] -> IO b) ->
   IO b

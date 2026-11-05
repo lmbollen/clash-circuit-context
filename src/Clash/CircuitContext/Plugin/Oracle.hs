@@ -111,6 +111,7 @@ data OracleEnv = OracleEnv
   , describableClass :: API.Class
   , nonTranslatableTyCon :: API.TyCon
   , turnOnThePluginClass :: API.Class
+  , turnOnTheCircuitContextPluginClass :: API.Class
   }
 
 {- FOURMOLU_DISABLE -}
@@ -144,6 +145,14 @@ initEnv = do
       let
         tc nm = API.tcLookupTyCon =<< API.lookupOrig md (API.mkTcOcc nm)
         cl nm = API.tcLookupClass =<< API.lookupOrig md (API.mkTcOcc nm)
+        -- 'HasCircuitContext' asks for it too, so it lives in Core.
+        coreName = API.mkModuleName "Clash.CircuitContext.Core"
+        coreClass :: String -> API.TcPluginM 'API.Init API.Class
+        coreClass nm = do
+          coreFound <- API.findImportedModule coreName =<< API.resolveImport coreName Nothing
+          case coreFound of
+            API.Found _ cm -> API.tcLookupClass =<< API.lookupOrig cm (API.mkTcOcc nm)
+            _ -> error "Clash.CircuitContext.Plugin: cannot find Clash.CircuitContext.Core"
       env <-
         OracleEnv
           <$> tc "CanTrace"
@@ -156,7 +165,8 @@ initEnv = do
           <*> cl "AutoDescribe"
           <*> cl "Describable"
           <*> tc "NonTranslatable"
-          <*> cl "TurnOnThePlugin"
+          <*> coreClass "TurnOnThePlugin"
+          <*> coreClass "TurnOnTheCircuitContextPlugin"
       -- Same hazard one package over: CanDescribe asks for clash-shockwaves'
       -- Waveform per payload, and a module that never mentions
       -- clash-shockwaves never loads its instances, so every stock payload
@@ -318,7 +328,8 @@ solveStuck env givens wanteds = do
   -- proof. A class without methods or superclasses has a dictionary without
   -- fields.
   isPluginRequired ct = case GHC.classifyPredType (API.ctPred ct) of
-    GHC.ClassPred cls _ -> cls == turnOnThePluginClass env
+    GHC.ClassPred cls _ ->
+      cls == turnOnThePluginClass env || cls == turnOnTheCircuitContextPluginClass env
     _ -> False
   pluginOn ct = case GHC.classifyPredType (API.ctPred ct) of
     GHC.ClassPred cls tys -> API.EvExpr (API.evDataConApp (GHC.classDataCon cls) tys [])
