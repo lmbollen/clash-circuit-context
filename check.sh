@@ -22,6 +22,9 @@ run cabal test adt-sidecar -j1 "$@"
 # Constraint synonyms, idempotence under a double plugin enable, and the
 # compile-time diagnostics (grepped from the build log below).
 runlog cabal test plugin-diagnostics -j1 "$@"
+# The plugin after the typelits solver plugins: compiling this suite is the
+# test that the oracle leaves GHC's rounds of plugin progress to them.
+run cabal test typelits-plugins -j1 "$@"
 # The Example level (usage, kept honest by running) and the Test level
 # (recorder properties, the capture contract, and the tasty-sequenced tests
 # that decode the waveforms the Example level wrote).
