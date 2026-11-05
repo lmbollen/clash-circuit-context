@@ -23,6 +23,7 @@ import Control.Exception (ErrorCall, SomeException, evaluate, try)
 import Control.Monad (when)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (isPrefixOf)
+import qualified Data.Map.Strict as Map
 import System.Directory (doesFileExist, removeFile, removePathForcibly)
 import System.Posix.Files (accessModes, fileMode, getFileStatus, intersectFileModes)
 import System.FilePath ((-<.>), (<.>), (</>))
@@ -47,6 +48,8 @@ import Hedgehog.Internal.Runner (checkReport)
 import qualified Hedgehog.Internal.Seed as Seed
 import qualified Hedgehog.Range as Range
 
+import Test.Vcd (decodeVCD)
+
 -- | A trivial traced design; the payload type is irrelevant to what we assert.
 counter :: (HasCircuitContext) => Signal System (Unsigned 8)
 counter = traceSignalC "count" (fromList [0 ..])
@@ -64,6 +67,19 @@ twins =
     ( traceSignalC "same" (fromList [0, 0, 0, 0, 0])
     , traceSignalC "diff" (fromList [0, 0, 0, 1, 0])
     )
+
+{- | A trace that the run does not evaluate: in reset, the register does not
+need the value of "next", so 2 sampled cycles force the spine of "next" but
+not "step". "step" is first evaluated when the run ends and finishes the last
+cycle of "next".
+-}
+lateStep :: (HasCircuitContext) => Signal System (Unsigned 8)
+lateStep = cnt
+ where
+  cnt = traceSignalC "cnt" (register clockGen resetGen enableGen 0 next)
+  next = traceSignalC "next" (mux (pure True) step cnt)
+  step = traceSignalC "step" (cnt + 1)
+{-# OPAQUE lateStep #-}
 
 vcdOf :: String -> FilePath
 vcdOf name = "waveforms" </> name <.> "vcd"
@@ -241,6 +257,14 @@ tests =
           assertBool
             "the divergent change line is present"
             (P.any ("b00000001 " `isPrefixOf`) (P.lines vcd))
+    , -- A trace that the end of the run reaches first is finished too, up
+      -- to the end of the run: else its last cycle shows as not evaluated.
+      testCase "a trace that only the end of the run evaluates has every cycle" $
+        withName "capture-late-trace" $ \name -> do
+          out <- writeWaveform name (0, 2) lateStep
+          out @?= [0, 0]
+          vcd <- P.readFile (vcdOf name)
+          Map.lookup "step" (decodeVCD 2 vcd) @?= P.Just ["00000001", "00000001"]
     , -- The same contract inside a hedgehog property, where a failure is a
       -- VALUE in the property monad and no amount of `try` in IO can see it.
       testCase "simulateWaveform writes nothing when the property passes" $
