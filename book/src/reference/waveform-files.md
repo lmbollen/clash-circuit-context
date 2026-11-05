@@ -95,11 +95,11 @@ file: for a binding that the plugin records, the position of the binding.
 
 - The signals of one function come in the order of their bindings.
 - A helper without `OPAQUE` records into the scope of its caller. Its
-  signals have the positions of its own bindings. If the helper is above the
-  caller in the file, its signals come first, wherever the call is. If the
-  helper is in another file, its signals are in a group of their own,
-  before or after the signals of the caller. Two calls of the helper give
-  signals of the same name, which are numbered in the order of the calls.
+  signals have the position of the call: they come where the helper is
+  called, the signals of one call together, in the order of the helper's
+  own bindings. Two calls of the helper give signals of the same name, which
+  are numbered in the order of the calls: `count_0`, `other_0`, `count_1`,
+  `other_1`.
 - The fields of a record have the position of their binding, and then come
   in the order of their declaration, also inside a nested record.
 - The elements of a `Vec` have the position of their binding, and come in

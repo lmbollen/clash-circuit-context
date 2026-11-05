@@ -67,9 +67,15 @@ vector is the information that is missing. `imapComponents` gives it, and
 names element `i` as `name_i`.
 
 The plugin does not mark some calls, and their instances are also numbered
-in the order in which the simulation reaches them: a call of an operator
-written between its arguments, a call of a local function, and a call of a
-function whose type is polymorphic outside of its arguments.
+in the order in which the simulation reaches them:
+
+- a call of an operator written between its arguments;
+- a call of a local function;
+- a call of a function without a type signature;
+- a call that still takes a higher-rank argument after its arguments, for
+  example `withClock c $ …`, and a call of a function whose type is
+  polymorphic outside of its arguments;
+- a call inside a quotation.
 
 ## Scopes are components, and nothing else
 
