@@ -246,6 +246,7 @@ test-suite typelits-plugins
   import: common-options
   type: exitcode-stdio-1.0
   main-is: Test/TypelitsPlugins.hs
+  other-modules: Test.RewriterShapes
   hs-source-dirs: tests
   build-depends:
     base,
@@ -254,6 +255,7 @@ test-suite typelits-plugins
     directory,
     ghc-typelits-knownnat,
     ghc-typelits-natnormalise,
+    tagged,
 
   ghc-options:
     -fplugin=GHC.TypeLits.Normalise

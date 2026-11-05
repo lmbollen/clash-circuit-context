@@ -179,6 +179,25 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
   fi
 fi
 
+# The rewriter decides a type with free variables only to say yes; a no
+# waits for the solver stage, which has all the givens. So the plugin warns
+# about Test/RewriterShapes.hs exactly where the solver stage does: once on
+# each line marked "-- warns", and nowhere else. Same fresh-build caveat.
+if grep -q "Compiling Test.RewriterShapes" "$log" 2>/dev/null; then
+  shapes=tests/Test/RewriterShapes.hs
+  got=$(awk -v f="$shapes" '
+    index($0, f ":") == 1 && / warning/ { split($0, p, ":"); at = p[2] ":" p[3]; next_is = 1; next }
+    next_is { if ($0 ~ /^ *(not (traced|probed)|recorded as raw bits)/) print at; next_is = 0 }
+  ' "$log" | sort -u)
+  gotLines=$(printf '%s\n' "$got" | cut -d: -f1 | grep . | sort -n | tr '\n' ' ')
+  wantLines=$(grep -n -- '-- warns$' "$shapes" | cut -d: -f1 | sort -n | tr '\n' ' ')
+  if [ "$gotLines" = "$wantLines" ]; then
+    echo "ok: the rewriter decides no negative early (warnings at lines $gotLines)"
+  else
+    echo "FAIL: warnings of $shapes at lines [$gotLines], want [$wantLines]"; fail=1
+  fi
+fi
+
 # A payload without Waveform is still traced and probed, as raw bits. That
 # is reported -- it asks for the instance -- but as undescribed, never as
 # untraced/undecided: those mean a LOST signal, and
