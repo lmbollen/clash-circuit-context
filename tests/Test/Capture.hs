@@ -363,8 +363,11 @@ tests =
               xs <- simulateWaveform vcdOptions (AtSize 10) name (0, 8) counter
               P.length xs Hedgehog.=== 8
           assertBool "the property passes" ok
-          (v, j) <- filesFor name
+          -- Under its own name, so that a counterexample does not replace it.
+          (v, j) <- filesFor (name <> "_10")
           assertBool "both halves written" (v P.&& j)
+          filesFor name >>= (@?= (False, False))
+          P.mapM_ removeFile [vcdOf (name <> "_10"), vcdOf (name <> "_10") -<.> "json"]
     , -- …and only once per name: a second property with the same name, run
       -- in the same process, does not write it again.
       testCase "AtSize keeps one case per name, once" $
@@ -372,13 +375,13 @@ tests =
           _ <-
             Hedgehog.check . Hedgehog.withTests 5 . Hedgehog.property $
               () <$ simulateWaveform vcdOptions (AtSize 0) name (0, 8) counter
-          first <- filesFor name
+          first <- filesFor (name <> "_0")
           first @?= (True, True)
-          removeFile (vcdOf name)
-          removeFile (vcdOf name -<.> "json")
+          removeFile (vcdOf (name <> "_0"))
+          removeFile (vcdOf (name <> "_0") -<.> "json")
           _ <-
             Hedgehog.check . Hedgehog.withTests 5 . Hedgehog.property $
               () <$ simulateWaveform vcdOptions (AtSize 0) name (0, 8) counter
-          second <- filesFor name
+          second <- filesFor (name <> "_0")
           second @?= (False, False)
     ]

@@ -24,7 +24,7 @@ import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (forM_, when)
 import Data.List (isPrefixOf)
 import Foreign.Ptr (plusPtr)
-import System.Directory (doesFileExist, getFileSize, removeFile)
+import System.Directory (doesFileExist, getFileSize, makeAbsolute, removeFile)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath ((<.>), (</>))
 import System.IO.Unsafe (unsafePerformIO)
@@ -176,7 +176,8 @@ tests =
         assertBool "the run was cancelled" (P.null stopped)
         existing name ["spill", "vcd"] >>= (@?= [True, False])
         recovered <- recoverWaveform vcd name
-        recovered @?= Right (file name "vcd")
+        absolute <- makeAbsolute (file name "vcd")
+        recovered @?= Right absolute
         cycles <- timestamps (file name "vcd")
         assertBool "the recovered waveform has cycles" (cycles P.> 1)
         existing name ["spill"] >>= (@?= [False])

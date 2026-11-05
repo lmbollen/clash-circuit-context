@@ -106,8 +106,8 @@ vcdOf :: String -> FilePath
 vcdOf name = "waveforms" </> name <.> "vcd"
 
 largestVcd, sizedVcd, counterexampleVcd :: FilePath
-largestVcd = vcdOf "example-largest-case"
-sizedVcd = vcdOf "example-sized-case"
+largestVcd = vcdOf "example-largest-case_99"
+sizedVcd = vcdOf "example-sized-case_15"
 counterexampleVcd = vcdOf "example-counterexample"
 
 -- | Delete the files of a previous run, so the output tests can only be

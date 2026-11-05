@@ -60,7 +60,6 @@ import Control.Exception (SomeException, displayException, evaluate, throwIO, tr
 import Control.Monad.IO.Class (liftIO)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import qualified Data.Set as Set
-import System.Directory (makeAbsolute)
 import System.IO.Unsafe (unsafePerformIO)
 
 import Hedgehog (PropertyT, Size)
@@ -84,8 +83,9 @@ data Capture
     of how large a case is, so a small one gives a short waveform you can read
     end to end. A property runs at sizes 0, 1, 2, … in order, up to 99, and
     then from 0 again, so a property of @n@ tests reaches sizes below
-    @min n 100@. If the property later fails, the counterexample replaces
-    this waveform.
+    @min n 100@. The waveform of this case has the size in its name:
+    @waveforms\/\<name\>_\<size\>.fst@ for @AtSize \<size\>@, so the
+    counterexample's waveform does not replace it, nor it the counterexample's.
     -}
     AtSize Size
   deriving (Show, Eq)
@@ -94,8 +94,9 @@ data Capture
 except as 'Capture' asks; see the module header. A waveform shows the cycles
 @[start, stop)@ of the window, as in "Clash.CircuitContext.Waveform".
 
-The waveform is @waveforms\/\<name\>.fst@ or @.vcd@ (and its @.json@ sidecar); give each
-property its own name.
+The counterexample's waveform is @waveforms\/\<name\>.fst@ or @.vcd@ (and
+its @.json@ sidecar), and the case of an 'AtSize' capture's
+@waveforms\/\<name\>_\<size\>.fst@ or @.vcd@; give each property its own name.
 -}
 simulateWaveform ::
   forall dom a.
@@ -112,16 +113,16 @@ simulateWaveform ::
 simulateWaveform opts capture name window@(_, stop) sig = do
   liftIO (checkWindow name window)
   keepThis <- case capture of
-    Counterexample -> pure False
+    Counterexample -> pure Nothing
     AtSize size -> firstAtSize name size
   out <-
-    liftIO $
-      if keepThis
-        then do
-          (xs, rec) <- recordRun @dom opts name window sig
-          _ <- save Requested opts name (psWindow @dom window) rec
-          either throwIO pure xs
-        else simulate stop sig
+    liftIO $ case keepThis of
+      Just sized -> do
+        (xs, rec) <- recordRun @dom opts sized window sig
+        save Requested opts sized (psWindow @dom window) rec
+          >>= either (announce sized . Left) (const (pure ()))
+        either throwIO pure xs
+      Nothing -> simulate stop sig
   footnote (onPrint (recordCounterexample @dom opts name window sig))
   pure out
 
@@ -154,11 +155,10 @@ recordCounterexample opts name window sig = do
   result <- try $ do
     (_, rec) <- recordRun @dom opts name window sig
     save Failure opts name (psWindow @dom window) rec
-  case result of
-    Right True -> ("waveform: " <>) <$> makeAbsolute (waveformPath (format opts) name)
-    Right False -> pure ("no waveform for " <> name <> ": nothing was recorded")
-    Left (err :: SomeException) ->
-      pure ("no waveform for " <> name <> ": " <> displayException err)
+  pure $ case result of
+    Right (Right path) -> "waveform: " <> path
+    Right (Left err) -> "no waveform for " <> name <> ": " <> err
+    Left (err :: SomeException) -> "no waveform for " <> name <> ": " <> displayException err
 
 {- | A string whose evaluation runs an action: the footnote text above.
 
@@ -169,16 +169,20 @@ onPrint :: IO String -> String
 onPrint = unsafePerformIO
 {-# NOINLINE onPrint #-}
 
-{- | Is this the first case of at least this size for this name? Asked inside
-a generator, because that is where Hedgehog gives the size; it renders as
-nothing and has no shrinks.
+{- | Is this the first case of at least this size for this name? Then the
+name of its waveform: @\<name\>_\<size\>@. Asked inside a generator, because
+that is where Hedgehog gives the size; it renders as nothing and has no
+shrinks.
 -}
-firstAtSize :: String -> Size -> PropertyT IO Bool
+firstAtSize :: String -> Size -> PropertyT IO (Maybe String)
 firstAtSize name size =
   forAllWithT (const "") . Gen.sized $ \current ->
     if current >= size
-      then liftIO (atomicModifyIORef' fired (\names -> (Set.insert name names, Set.notMember name names)))
-      else pure False
+      then liftIO (atomicModifyIORef' fired (\names -> (Set.insert sized names, first names)))
+      else pure Nothing
+ where
+  sized = name <> "_" <> show (fromIntegral size :: Int)
+  first names = if Set.member sized names then Nothing else Just sized
 
 {- | The waveform names an 'AtSize' capture has used in this process. Only
 names, so it does not grow with the waveforms. It is what makes "once" hold
