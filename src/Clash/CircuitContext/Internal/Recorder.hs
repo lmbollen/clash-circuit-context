@@ -622,6 +622,9 @@ this is dropped.
 closeRecorder :: Recorder -> Int -> IO Recording
 closeRecorder rec end = do
   readIORef (rTicker rec) >>= mapM_ killThread
+  -- A last tick: the progress of a signal without new records (one that has
+  -- not changed since the last tick) is in no chunk the flush below writes.
+  _ <- uninterruptibleMask_ (tick rec)
   sigs <- reverse <$> readIORef (rSignals rec)
   frozen <- forM sigs $ \sig -> modifyMVar (sigState sig) $ \s0 -> do
     s <- flush rec sig s0
