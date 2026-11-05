@@ -16,6 +16,10 @@ GHC stops after four rounds in which a plugin made progress
 each binding that the typelits plugins had to rewrite first, and @ptr@ below
 then failed to compile with @solveWanteds: too many iterations@. The
 compile is the regression test; the run checks that the bindings are traced.
+
+"Test.RewriterShapes" holds the shapes where the oracle must not decide
+early, and @check.sh@ checks its warnings. The run checks the one of them
+that records a signal: @stepped@'s @next@.
 -}
 module Main where
 
@@ -34,6 +38,8 @@ import Clash.CircuitContext.Recording (
   recordedChanges,
   recordedSignals,
  )
+
+import Test.RewriterShapes (stepped)
 
 -- | A pointer one bit wider than its address: the width is @aw + 1@.
 ptr ::
@@ -61,8 +67,6 @@ main = do
       (evaluate (P.sum (P.map P.toInteger (sampleN 6 (ptr @2 (pure True))))))
   check "the run finished" (P.either (P.const False) (P.const True) r)
   let
-    -- A key is @scope\@ordinal\@callsite.name\@ordinal\@callsite@.
-    leaf = P.takeWhile (P./= '@') . P.reverse . P.takeWhile (P./= '.') . P.reverse
     named name = [s | s <- recordedSignals rec, leaf (signalKey s) P.== name]
   check "p is traced" (P.not (P.null (named "p")))
   check "next is traced" (P.not (P.null (named "next")))
@@ -76,3 +80,18 @@ main = do
         (changes P.== [(c, P.Just (0, v)) | (c, v) <- [(0, 1), (2, 2), (3, 3), (4, 4), (5, 5)]])
     [] -> pure ()
   discardRecording rec
+
+  -- A local function that GHC generalises: its binding is recorded at the
+  -- call, with the type there.
+  (r2, rec2) <-
+    withRecording
+      "waveforms/typelits-plugins-stepped.spill"
+      (evaluate (P.sum (P.map P.toInteger (sampleN 6 (stepped (pure True))))))
+  check "the stepped run finished" (P.either (P.const False) (P.const True) r2)
+  check
+    "a generalised local function's binding is traced"
+    (P.any ((P.== "next") . leaf . signalKey) (recordedSignals rec2))
+  discardRecording rec2
+ where
+  -- A key is @scope\@ordinal\@callsite.name\@ordinal\@callsite@.
+  leaf = P.takeWhile (P./= '@') . P.reverse . P.takeWhile (P./= '.') . P.reverse
