@@ -444,7 +444,8 @@ opts = defaultOptions {format = VCD, spill = OnDisk}
 
 A recording with `spill = OnDisk` that is cancelled (a test timeout, Ctrl-C)
 or killed leaves `waveforms/<name>.spill`, and a cancelled one says where on
-stderr. Only a run that records can leave one: a run of `writeWaveform`, or
+stderr. A cancelled run keeps everything it recorded; a killed one,
+everything up to about a second before (a second Ctrl-C kills). Only a run that records can leave one: a run of `writeWaveform`, or
 the rerun of a failed check of `withWaveform` or `simulateWaveform`. Their
 first runs do not record, so a test that hangs and is cancelled in its first
 run leaves nothing; to keep the waveform of such a test, simulate it with
@@ -489,8 +490,9 @@ when Hedgehog prints it, simulates that case again with recording and writes
 the waveform. Hedgehog prints footnotes only for the case it reports, so the
 waveform is of the **shrunk counterexample**, recorded once, and the report
 ends with its path. `AtSize s` additionally keeps the first passing case of at
-least size `s` (once per waveform name): a small size gives a short waveform
-you can read end to end, and a property of `n` tests reaches sizes below `n`.
+least size `s` (once per waveform name), as `waveforms/<name>_<s>.fst`: a
+small size gives a short waveform you can read end to end, and a property of
+`n` tests reaches sizes below `n`.
 
 A worked version of all of this is the Example level of the test suite,
 which `check.sh` builds and runs:
