@@ -51,7 +51,7 @@ module Clash.CircuitContext.Recording (
   recordedChanges,
 ) where
 
-import Control.Exception (evaluate)
+import Control.Exception (IOException, displayException, evaluate, try)
 import Data.Maybe (fromMaybe)
 import GHC.Natural (Natural)
 import System.Directory (removePathForcibly)
@@ -76,15 +76,15 @@ import Clash.CircuitContext.Internal.Waveform (Format (..))
 {- | The time from which the recording has cycles, in units of the timescale
 (see 'recordingEnd'): the start of the window it was recorded with.
 -}
-recordingStart :: Recording -> Int
-recordingStart rec = recordingStartPs rec `div` timescale rec
+recordingStart :: Recording -> Natural
+recordingStart rec = fromIntegral (recordingStartPs rec `div` timescale rec)
 
 {- | The time at which the simulation stopped, in units of the VCD timescale
 (the greatest common divisor of the recorded signals' periods). For a design
 in one domain: the number of cycles the simulation evaluated.
 -}
-recordingEnd :: Recording -> Int
-recordingEnd rec = ticks rec (recordingEndPs rec)
+recordingEnd :: Recording -> Natural
+recordingEnd rec = fromIntegral (ticks rec (recordingEndPs rec))
 
 {- | Delete the recording's spill file, if it has one. The recording cannot be
 used after this.
@@ -94,31 +94,39 @@ discardRecording = mapM_ removePathForcibly . recordingSpill
 
 {- | Read the spill file at this path as a recording: also the file of a run
 that was stopped, with what its signals had recorded up to their last whole
-chunks of values. 'Left' when it is not a spill file.
+chunks of values. 'Left' when it is not a spill file, or cannot be read.
 -}
 recoverRecording :: FilePath -> IO (Either String Recording)
-recoverRecording = readSpill
+recoverRecording path = either (\(e :: IOException) -> Left (displayException e)) id <$> try (readSpill path)
 
 {- | Write the waveform of the window @[start, stop)@: the VCD at this path,
 and beside it the @.json@ sidecar a typed-waveform viewer reads. As in
 'Clash.Signal.Trace.dumpVCD', the window is in units of the timescale
 (for a design in one domain: cycles), and @start@ is the first value shown.
 The window ends at 'recordingEnd' at the latest: what was not simulated
-cannot be shown.
+cannot be shown. The last timestamp of the VCD is the end of the window, so
+that a viewer shows the last cycle whole.
 
-'Left', and no file written, when nothing was recorded, or when a name has a
-character VCD does not allow.
+'Left', and no file written, when nothing was recorded, when the window is
+empty or starts at or after 'recordingEnd', when a name has a character VCD
+does not allow, or when a file cannot be written.
 -}
-writeVCD :: (Int, Int) -> Recording -> FilePath -> IO (Either String ())
-writeVCD = writeFiles "No comment"
+writeVCD :: (Natural, Natural) -> Recording -> FilePath -> IO (Either String ())
+writeVCD = writeFiles "No comment" . toInts
 
 {- | 'writeVCD', as an FST at this path: the same signals, names, scopes and
 window, with times in ps. Compressed, so much smaller than the VCD.
 
-'Left', and no file written, when nothing was recorded.
+'Left', and no file written, as for 'writeVCD'.
 -}
-writeFST :: (Int, Int) -> Recording -> FilePath -> IO (Either String ())
-writeFST = writeFst "No comment"
+writeFST :: (Natural, Natural) -> Recording -> FilePath -> IO (Either String ())
+writeFST = writeFst "No comment" . toInts
+
+-- | A window as the writers take it; beyond 'maxBound' is the end of time anyway.
+toInts :: (Natural, Natural) -> (Int, Int)
+toInts (start, stop) = (toInt start, toInt stop)
+ where
+  toInt n = if n > fromIntegral (maxBound :: Int) then maxBound else fromIntegral n
 
 -- | The signals recorded, in the order they were registered.
 recordedSignals :: Recording -> [RecordedSignal]
@@ -148,16 +156,25 @@ at the second path: over this window, in units of the timescale (see
 'writeVCD'), or, given 'Nothing', everything the run recorded. Also for the
 spill file of a run that was stopped. The spill file is kept.
 
-'Left', and no file written, when the file is not a spill file or holds no
-recorded cycle.
+Returns the window it wrote: the one given, up to 'recordingEnd' at the
+latest. 'Left', and no file written, when the file cannot be read, is not a
+spill file or holds no recorded cycle, and as for 'writeVCD'.
 -}
-writeSpill :: Format -> Maybe (Int, Int) -> FilePath -> FilePath -> IO (Either String ())
+writeSpill ::
+  Format ->
+  Maybe (Natural, Natural) ->
+  FilePath ->
+  FilePath ->
+  IO (Either String (Natural, Natural))
 writeSpill fmt window spill out = do
-  read' <- readSpill spill
+  read' <- recoverRecording spill
   case read' of
     Left err -> pure (Left err)
-    Right rec ->
-      writer (fromMaybe (recordingStart rec, recordingEnd rec) window) rec out
+    Right rec
+      | recordingEnd rec <= recordingStart rec -> pure (Left "it holds no recorded cycle")
+      | otherwise -> do
+          let (start, stop) = fromMaybe (recordingStart rec, recordingEnd rec) window
+          ((start, min stop (recordingEnd rec)) <$) <$> writer (start, stop) rec out
  where
   writer = case fmt of
     VCD -> writeVCD

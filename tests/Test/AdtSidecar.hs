@@ -236,7 +236,7 @@ dump path n k = do
   createDirectoryIfMissing True (takeDirectory path)
   (r, rec) <- withRecording (Just (path -<.> "spill")) k
   a <- P.either throwIO pure r
-  written <- writeVCD (0, n) rec path
+  written <- writeVCD (0, P.fromIntegral n) rec path
   discardRecording rec
   case written of
     P.Left err -> pure (a, P.Left err)

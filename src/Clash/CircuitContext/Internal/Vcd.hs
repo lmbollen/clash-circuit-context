@@ -24,6 +24,9 @@ module Clash.CircuitContext.Internal.Vcd (
   renderVCD,
 
   -- * Shared with the FST writer
+  shownWindow,
+  writeSidecar,
+  ioLeft,
   aliasMap,
   sourceOrder,
   parseSeg,
@@ -32,6 +35,7 @@ module Clash.CircuitContext.Internal.Vcd (
   naturalKey,
 ) where
 
+import Control.Exception (IOException, displayException, onException, try)
 import Data.Char (isDigit, ord)
 import Data.List (intercalate, sortOn)
 import qualified Data.List as List
@@ -40,7 +44,12 @@ import Data.Maybe (fromMaybe, isNothing)
 import Data.Ord (Down (..))
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
-import System.Directory (createDirectoryIfMissing, removeFile, renameFile)
+import System.Directory (
+  createDirectoryIfMissing,
+  removeFile,
+  removePathForcibly,
+  renameFile,
+ )
 import System.FilePath (takeDirectory, takeFileName, (-<.>), (<.>))
 import System.IO (
   BufferMode (BlockBuffering),
@@ -79,28 +88,71 @@ FIRST. The temporary files get the default permissions (the umask), not the
 owner-only ones of 'openTempFile', so a waveform is as readable as any other
 file the process writes: if the @.vcd@ is there, its @.json@ is there and complete. (Not that
 the two are from the same run: a crash between the renames leaves a new
-@.json@ beside the previous run's @.vcd@.) On 'Left' neither is written.
+@.json@ beside the previous run's @.vcd@.) On 'Left' (see 'shownWindow';
+also when a file cannot be written) neither is written.
 -}
 writeFiles :: String -> (Int, Int) -> Recording -> FilePath -> IO (Either String ())
-writeFiles comment window rec path = withReader rec $ \records -> do
-  createDirectoryIfMissing True dir
-  (vTmp, vH) <- openBinaryTempFileWithDefaultPermissions dir (takeFileName path <.> "tmp")
-  hSetBuffering vH (BlockBuffering Nothing)
-  rendered <- renderVCD records comment window rec vH
-  hClose vH
-  case rendered of
-    Left err -> removeFile vTmp >> pure (Left err)
-    Right () -> do
-      meta <- sidecar [(vcdPath n, s) | (n, s) <- namedSignals rec] (recordingLuts rec)
-      (jTmp, jH) <- openBinaryTempFileWithDefaultPermissions dir (takeFileName sidecarPath <.> "tmp")
-      ByteStringLazy.hPut jH (Json.encode meta)
-      hClose jH
-      renameFile jTmp sidecarPath
-      renameFile vTmp path
-      pure (Right ())
+writeFiles comment window0 rec path = case shownWindow rec window0 of
+  Left err -> pure (Left err)
+  Right window -> ioLeft $ withReader rec $ \records -> do
+    createDirectoryIfMissing True dir
+    (vTmp, vH) <- openBinaryTempFileWithDefaultPermissions dir (takeFileName path <.> "tmp")
+    flip onException (hClose vH >> removePathForcibly vTmp) $ do
+      hSetBuffering vH (BlockBuffering Nothing)
+      rendered <- renderVCD records comment window rec vH
+      hClose vH
+      case rendered of
+        Left err -> removeFile vTmp >> pure (Left err)
+        Right () -> do
+          writeSidecar rec path
+          renameFile vTmp path
+          pure (Right ())
+ where
+  dir = takeDirectory path
+
+{- | Write the typed-waveform sidecar of the waveform at this path: beside
+it, with extension @.json@, through a temporary file and a rename.
+-}
+writeSidecar :: Recording -> FilePath -> IO ()
+writeSidecar rec path = do
+  meta <- sidecar [(vcdPath n, s) | (n, s) <- namedSignals rec] (recordingLuts rec)
+  (jTmp, jH) <-
+    openBinaryTempFileWithDefaultPermissions dir (takeFileName sidecarPath <.> "tmp")
+  flip onException (hClose jH >> removePathForcibly jTmp) $ do
+    ByteStringLazy.hPut jH (Json.encode meta)
+    hClose jH
+    renameFile jTmp sidecarPath
  where
   dir = takeDirectory path
   sidecarPath = path -<.> "json"
+
+{- | The part of a window @[start, stop)@, in units of the recording's
+'timescale', that a waveform shows: it ends where the simulation stopped, at
+the latest. 'Left', with the reason, when it shows nothing.
+-}
+shownWindow :: Recording -> (Int, Int) -> Either String (Int, Int)
+shownWindow rec (start, stop)
+  | null (recordingSignals rec) = Left "nothing was traced or probed in this run"
+  | end <= 0 = Left "the run evaluated no cycle"
+  | start < 0 || stop <= start = Left ("the window " <> shown <> " is empty")
+  | start >= end =
+      Left
+        ( "the window "
+            <> shown
+            <> " starts after the end of the run, at "
+            <> show end
+            <> " (in units of the timescale, "
+            <> show (timescale rec)
+            <> " ps)"
+        )
+  | otherwise = Right (start, min stop end)
+ where
+  end = ticks rec (recordingEndPs rec)
+  shown = "[" <> show start <> ", " <> show stop <> ")"
+
+-- | An action's 'IOException' as a 'Left'.
+ioLeft :: IO (Either String a) -> IO (Either String a)
+ioLeft act = either (\(e :: IOException) -> Left (displayException e)) id <$> try act
 
 {- | Every signal of a recording with its name in the VCD: its key with the
 instance tags resolved by 'disambiguate'. In name order.
@@ -112,14 +164,16 @@ namedSignals rec =
 {- | Write the VCD of a recording over the window @[start, stop)@, in units
 of its timescale (for a single domain: cycles), to the handle. The records
 are read through the 'Reader' (see "Clash.CircuitContext.Internal.Recorder").
-The window ends at the end of the recording at the latest. The comment goes in the @$comment@ line.
+The window must be one 'shownWindow' gives. The comment goes in the
+@$comment@ line. The last timestamp is @stop@, so that a viewer shows the
+last cycle whole, as in the FST.
 
 'Left', and nothing written, when there is no signal, or when a name has a
 character VCD does not allow (only printable ASCII is).
 -}
 renderVCD ::
   Reader -> String -> (Int, Int) -> Recording -> Handle -> IO (Either String ())
-renderVCD records comment (start, stop0) rec out
+renderVCD records comment (start, stop) rec out
   | null named = pure (Left "nothing was traced or probed in this run")
   | nm : _ <- filter (any (not . printable)) (map fst named) =
       pure
@@ -166,13 +220,15 @@ renderVCD records comment (start, stop0) rec out
                 , t < stop
                 ]
             )
+          <> "#"
+          <> Builder.intDec stop
+          <> "\n"
       pure (Right ())
  where
   named = namedSignals rec
 
   -- 'insertVar' appends, so sorting all vars first sorts every scope.
   sourceOrder' (n, _, _) = sourceOrder named n
-  stop = min stop0 (ticks rec (recordingEndPs rec))
   scale = timescale rec
 
   header date =

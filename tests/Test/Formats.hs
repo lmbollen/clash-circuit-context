@@ -25,7 +25,7 @@ import Control.Monad (forM_, when)
 import Data.List (isPrefixOf)
 import Foreign.Ptr (plusPtr)
 import System.Directory (doesFileExist, getFileSize, removeFile)
-import System.Exit (ExitCode (ExitSuccess))
+import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath ((<.>), (</>))
 import System.IO.Unsafe (unsafePerformIO)
 import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, fdReadBuf, openFd)
@@ -47,6 +47,7 @@ import Clash.CircuitContext.Recording (
   recordingEnd,
   recordingStart,
   recoverRecording,
+  writeFST,
   writeVCD,
  )
 import Clash.CircuitContext.Waveform
@@ -234,6 +235,49 @@ tests =
             assertBool "both signals have values" (P.length values P.> 2)
             assertBool "no signal is z" (P.not (P.any ('z' `P.elem`) values))
         removeFile snapshot
+    , testCase "writeVCD and writeFST refuse a window that shows nothing, and IO errors" $ do
+        let name = "formats-windows"
+        scrub [name]
+        (_, rec) <-
+          withRecording Nothing (evaluate (P.sum (P.map P.toInteger (sampleN 40 counter))))
+        recordingEnd rec @?= 40
+        let refused w = do
+              v <- writeVCD w rec (file name "vcd")
+              f <- writeFST w rec (file name "fst")
+              assertBool
+                ("VCD of " <> P.show w <> " refused")
+                (P.either (P.const True) (P.const False) v)
+              assertBool
+                ("FST of " <> P.show w <> " refused")
+                (P.either (P.const True) (P.const False) f)
+        refused (30, 20)
+        refused (10, 10)
+        refused (40, 50)
+        refused (1000, 2000)
+        existing name ["vcd", "fst", "json"] >>= (@?= [False, False, False])
+        -- A file that cannot be written is a Left, not an exception.
+        unwritable <- writeVCD (0, 40) rec "/proc/no-such-directory/x.vcd"
+        assertBool "cannot write" (P.either (P.const True) (P.const False) unwritable)
+        unwritable' <- writeFST (0, 40) rec "/proc/no-such-directory/x.fst"
+        assertBool "cannot write" (P.either (P.const True) (P.const False) unwritable')
+        -- A window past the end ends at the end; its last timestamp is the end
+        -- of the last cycle, as in the FST.
+        written <- writeVCD (35, 100) rec (file name "vcd")
+        written @?= Right ()
+        body <- vcdBody (file name "vcd")
+        P.filter ("#" `isPrefixOf`) body @?= ["#35", "#36", "#37", "#38", "#39", "#40"]
+    , testCase
+        "spill2vcd says why it cannot read a file, and refuses a spill file without cycles"
+        $ do
+          let spillFile = file "formats-cli-empty" "spill"
+          scrub ["formats-cli-empty"]
+          missing <- spillWith VCD "spill2vcd" [file "formats-cli-missing" "spill"]
+          missing @?= ExitFailure 1
+          (_, rec) <- withRecording (Just spillFile) (pure ())
+          empty <- spillWith VCD "spill2vcd" [spillFile]
+          empty @?= ExitFailure 1
+          existing "formats-cli-empty" ["vcd", "json"] >>= (@?= [False, False])
+          discardRecording rec
     , testCase "a spill file cut off in a block is read up to its last whole block" $ do
         let
           spillFile = file "formats-cut" "spill"
