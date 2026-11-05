@@ -20,7 +20,7 @@ module Test.Formats (tests) where
 import qualified Prelude as P
 
 import Control.Concurrent (threadDelay)
-import Control.Exception (SomeException, evaluate, try)
+import Control.Exception (AsyncException (ThreadKilled), SomeException, evaluate, throwIO, try)
 import Control.Monad (forM_, when)
 import Data.List (isPrefixOf)
 import Foreign.Ptr (plusPtr)
@@ -236,6 +236,33 @@ tests =
             assertBool "both signals have values" (P.length values P.> 2)
             assertBool "no signal is z" (P.not (P.any ('z' `P.elem`) values))
         removeFile snapshot
+    , -- A cancelled run writes everything it recorded: also the progress of a
+      -- signal that has not changed since the last tick.
+      testCase "a cancelled run's spill file has every signal up to the end" $ do
+        let spillFile = file "formats-cancelled-quiet" "spill"
+        scrub ["formats-cancelled-quiet"]
+        stopped <- try @AsyncException $ withRecording (Just spillFile) $ do
+          -- One instance, sampled in two steps.
+          let xs = P.map P.toInteger (sample busyAndQuiet)
+          _ <- evaluate (P.sum (P.take 3000 xs))
+          -- A tick writes "quiet" and its progress; after it, "quiet" has no
+          -- new records.
+          threadDelay 1500000
+          _ <- evaluate (P.sum (P.take 6000 xs))
+          throwIO ThreadKilled
+        assertBool "the run was cancelled" (P.either (P.const True) (P.const False) stopped)
+        recovered <- recoverRecording spillFile
+        case recovered of
+          Left err -> assertFailure err
+          Right rec -> do
+            assertBool "every cycle but the last" (recordingEnd rec P.>= 5999)
+            written <- writeVCD (0, recordingEnd rec) rec (file "formats-cancelled-quiet" "vcd")
+            written @?= Right ()
+            body <- vcdBody (file "formats-cancelled-quiet" "vcd")
+            assertBool
+              "no signal is z"
+              (P.not (P.any ('z' `P.elem`) [l | l <- body, P.take 1 l P.== "b"]))
+            discardRecording rec
     , testCase "writeVCD and writeFST refuse a window that shows nothing, and IO errors" $ do
         let name = "formats-windows"
         scrub [name]
