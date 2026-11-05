@@ -16,10 +16,11 @@ stuck cases); ordinary instance resolution does the rest.
 
 Two cooperating stages — spike findings:
 
-* GHC does NOT reliably pass the enclosing implication's givens to
-  type-family REWRITER plugins (empirically @[]@), so
-  'API.tcPluginRewrite' only decides GROUND types (no free type variables);
-  everything else defers.
+* 'API.tcPluginRewrite' decides a GROUND type, and a type with skolems
+  when GHC passes it the givens of the occurrence. GHC does so in the round
+  that checks a binding against its signature, but not in a round that
+  infers the type of a local binding (@[]@ there). Deciding here costs no
+  round of GHC's plugin loop (see 'rewriteFlag'); everything else defers.
 * 'API.tcPluginSolve' catches the resulting stuck wanteds
   @AutoTrace (CanTrace t) t@ / @AutoProbe (CanProbe t) t@ — the solver
   stage DOES receive givens — decides from them, and solves by emitting the
@@ -186,78 +187,86 @@ initEnv = do
         )
 
 --------------------------------------------------------------------------------
--- Rewriter stage: ground types only (givens are NOT available here)
+-- Rewriter stage: decide while GHC rewrites the wanted, when it can
 --------------------------------------------------------------------------------
 
 rewriters :: OracleEnv -> GHC.UniqFM API.TyCon API.TcPluginRewriter
 rewriters env =
   GHC.listToUFM
-    [ (canTraceTyCon env, rewriteGround env (canTraceTyCon env) (traceableClass env))
-    , (canProbeTyCon env, rewriteGround env (canProbeTyCon env) (probeableClass env))
+    [ (canTraceTyCon env, rewriteFlag env (canTraceTyCon env) (traceableClass env))
+    , (canProbeTyCon env, rewriteFlag env (canProbeTyCon env) (probeableClass env))
     ,
       ( canDescribeTyCon env
-      , rewriteGround env (canDescribeTyCon env) (describableClass env)
+      , rewriteFlag env (canDescribeTyCon env) (describableClass env)
       )
     ]
 
-rewriteGround ::
+{- | Reduce a flag where GHC meets it: a ground type, or a type with skolems
+when GHC gives the rewriter the givens of the occurrence. It does in the
+round that checks a binding against its signature; in a round that infers
+the type of a local binding there are none, and the type has metavariables
+besides, so the decision waits for the solver stage ('solveStuck').
+
+Deciding here, and not in the solver stage, costs no round of the solver's
+plugin loop. That matters: GHC stops after four rounds in which a plugin
+made progress (@-fconstraint-solver-iterations@), and the typelits plugins
+need rounds of their own. A component of type @Signal dom (Unsigned (n +
+1))@ under @ghc-typelits-natnormalise@ and @ghc-typelits-knownnat@ took one
+round for the normalisation, one for its @CanTrace@, one for the
+@CanDescribe@ that its @Traceable@ instance asks for, and one for the
+@KnownNat (1 + n)@ that @Waveform@ asks for: then GHC gave up, with
+@solveWanteds: too many iterations@.
+-}
+rewriteFlag ::
   OracleEnv ->
   API.TyCon ->
   API.Class ->
   [API.Ct] ->
   [API.Type] ->
   API.TcPluginM 'API.Rewrite API.TcPluginRewriteResult
-rewriteGround env fam cls _givens [t]
-  | GHC.noFreeVarsOfType t = do
-      decision <-
+rewriteFlag env fam cls givens [t] = do
+  decision <-
+    if GHC.noFreeVarsOfType t || not (null givens)
+      then
         solvablePred
           API.getInstEnvs
           reduceFamily
           (totalClassesOf env)
-          []
+          (map API.ctPred givens)
           fuel0
           (GHC.mkClassPred cls [t])
-      case decision of
-        Defer -> pure API.TcPluginNoRewrite
-        _ -> do
-          loc <- API.rewriteEnvCtLoc <$> API.askRewriteEnv
-          reportDeclined env loc cls t decision
-          pure $
-            API.TcPluginRewriteTo
-              ( API.mkTyFamAppReduction
-                  "clash-circuit-context"
-                  GHC.Nominal
-                  []
-                  fam
-                  [t]
-                  (boolTy (isYes decision))
-              )
-              []
--- Not ground, but never recordable whatever its unknowns are: @NonTranslatable@
--- reduces to ''True' for the type as it stands (a list, a function, …). Say
--- so NOW, while GHC is still inferring the type of the binding. Deferring
--- would leave a @CanTrace@ constraint over the unknowns, which GHC will not
--- quantify over, so a closed binding such as @xs = Nothing : xs@ would lose
--- its generalisation, and a second use at another type would not compile
--- (#24). Never recordable is never reported ('neverRecordable').
-rewriteGround env fam cls _givens [t]
-  | cls /= describableClass env = do
-      never <- nonTranslatable env t
-      pure $
-        if never
-          then
-            API.TcPluginRewriteTo
-              ( API.mkTyFamAppReduction
-                  "clash-circuit-context"
-                  GHC.Nominal
-                  []
-                  fam
-                  [t]
-                  (boolTy False)
-              )
-              []
-          else API.TcPluginNoRewrite
-rewriteGround _ _ _ _ _ = pure API.TcPluginNoRewrite
+      else pure Defer
+  case decision of
+    Defer
+      -- Not decided, but never recordable whatever its unknowns are:
+      -- @NonTranslatable@ reduces to ''True' for the type as it stands (a
+      -- list, a function, …). Say so NOW, while GHC is still inferring the
+      -- type of the binding. Deferring would leave a @CanTrace@ constraint
+      -- over the unknowns, which GHC will not quantify over, so a closed
+      -- binding such as @xs = Nothing : xs@ would lose its generalisation,
+      -- and a second use at another type would not compile (#24). Never
+      -- recordable is never reported ('neverRecordable').
+      | cls /= describableClass env -> do
+          never <- nonTranslatable env t
+          pure (if never then rewriteTo False else API.TcPluginNoRewrite)
+      | otherwise -> pure API.TcPluginNoRewrite
+    _ -> do
+      loc <- API.rewriteEnvCtLoc <$> API.askRewriteEnv
+      reportDeclined env loc cls t decision
+      pure (rewriteTo (isYes decision))
+ where
+  rewriteTo b =
+    API.TcPluginRewriteTo
+      ( API.mkTyFamAppReduction
+          "clash-circuit-context"
+          GHC.Nominal
+          []
+          fam
+          [t]
+          (boolTy b)
+      )
+      []
+rewriteFlag _ _ _ _ _ = pure API.TcPluginNoRewrite
 
 --------------------------------------------------------------------------------
 -- Solver stage: stuck Auto{Trace,Probe} wanteds (givens available)
