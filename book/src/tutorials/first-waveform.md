@@ -12,7 +12,8 @@ You need GHC and Cabal, in a version from
 Make a directory `counters`, with these two files.
 
 `cabal.project`: the package is not on Hackage, so take it from Git. For
-`<commit>`, use a commit of its main branch. The second package is the
+`<commit>`, use the full hash, of 40 characters, of a commit of its main
+branch (Cabal does not accept a short hash). The second package is the
 clash-prelude that the package is tested with. Copy its `tag` and the
 `index-state` from the [`cabal.project` of the
 package](https://github.com/lmbollen/clash-circuit-context/blob/main/cabal.project):
@@ -35,7 +36,8 @@ index-state: 2026-09-23T00:00:00Z
 ```
 
 `counters.cabal`: one library, with the plugin on for the whole package,
-and the language extensions that Clash code uses:
+and the language extensions, type-checker plugins and flags that Clash code
+uses:
 
 ```cabal
 cabal-version: 2.4
@@ -58,12 +60,25 @@ library
     TypeApplications
     TypeFamilies
     TypeOperators
-  ghc-options:        -fplugin=Clash.CircuitContext.Plugin
+  ghc-options:
+    -fplugin=GHC.TypeLits.Normalise
+    -fplugin=GHC.TypeLits.Extra.Solver
+    -fplugin=GHC.TypeLits.KnownNat.Solver
+    -fplugin=Clash.CircuitContext.Plugin
+    -fexpose-all-unfoldings
+    -fno-worker-wrapper
   build-depends:
     base,
     clash-prelude,
     clash-circuit-context,
+    ghc-typelits-extra,
+    ghc-typelits-knownnat,
+    ghc-typelits-natnormalise,
 ```
+
+The three `GHC.TypeLits` plugins solve the type-level arithmetic of Clash
+types, for example `Index 4` in a data type, or `Unsigned (n + 1)`. The last
+two flags are the ones that Clash needs to make HDL from the package.
 
 ## Write the design
 
@@ -172,9 +187,8 @@ Notice three things:
   name of the binding. The signals of a scope come in the order of their
   bindings in the source.
 - The two calls of `counter` are two scopes, `counter_0` and `counter_1`.
-  The numbers come from the order in which the simulation first reaches
-  each call (see [About the design
-  hierarchy](../explanation/hierarchy.md#how-instances-are-named)).
+  The numbers come from the order of the calls in the source (see [About
+  the design hierarchy](../explanation/hierarchy.md#how-instances-are-named)).
 
 ## Look at the waveform
 

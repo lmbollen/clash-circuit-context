@@ -38,14 +38,19 @@ A run that is cancelled writes a message on stderr with the absolute path of
 the spill file:
 
 ```text
-clash-circuit-context: firmware: the run was stopped; what it recorded is in
-/home/you/project/waveforms/firmware.spill. Write its waveform with
-recoverWaveform, or with spill2fst or spill2vcd (executables of
-clash-circuit-context)
+clash-circuit-context: the run was stopped; what it recorded is in
+/home/you/project/waveforms/firmware.spill. Write its waveform with spill2fst
+or spill2vcd (executables of clash-circuit-context), or with recoverWaveform
+or writeSpill
 ```
 
+`withRecording` with a spill file writes the same message.
+
 A process that is killed writes no message. Its spill file is in the same
-place.
+place. A second Ctrl-C kills the process: the first one cancels the run, and
+the second one stops the process before the run can write its message. Some
+tools send the signal twice, for example `timeout -s INT`, which sends it to
+the process and to its process group.
 
 ## Write the waveform
 
@@ -61,19 +66,33 @@ Do one of these:
   keeps the spill file. Give `--delete` to delete it. For all options, see
   [Executables](../reference/executables.md).
 
+  The executable prints the window that it wrote, for example
+  `spill2fst: wrote waveforms/firmware.fst, window 0,128717`: the run
+  recorded 128717 cycles.
+
 - From Haskell, use `recoverWaveform` with the options of the waveform. It
-  writes `waveforms/<name>.fst` or `.vcd`, and deletes the spill file:
+  writes `waveforms/<name>.fst` or `.vcd`, deletes the spill file, and gives
+  the absolute path of the waveform:
 
   ```haskell
   recoverWaveform defaultOptions "firmware" >>= print
   ```
 
-The waveform has the cycles that the run recorded, up to the last block of
-values that it wrote. The values of the last cycles before a process was
-killed can be missing: each signal writes its values in blocks of 16 KiB.
-A run that was cancelled writes all the values that it recorded before it
-stops. The last cycle of each signal can be missing: a trace records a cycle
-when the simulation evaluates the next one.
+  For the spill file of `withRecording`, which can have any path, use
+  `writeSpill` (see [Write the files
+  yourself](../reference/waveform-files.md#write-the-files-yourself)).
+
+What the waveform has:
+
+- A run that was cancelled: all the values that it recorded before it
+  stopped.
+- A process that was killed: the values up to about one second before it was
+  killed. A recording writes the new values of all signals to the spill file
+  once each second.
+
+In both cases the last cycles of the signals can end at different times,
+over a few cycles: a signal that the simulation did not evaluate in a cycle
+is `z` in that cycle.
 
 The sidecar of the waveform is complete. A spill file has the descriptions
 of its signals, so the executables do not need the design or its types.

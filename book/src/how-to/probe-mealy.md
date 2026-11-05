@@ -75,6 +75,11 @@ These values are never computed, so the probes that depend only on them are
 example a value that both the new state and the output read, has a value in
 these cycles.
 
+The same is true in each cycle, not only in the first and the last: a probe
+is `z` in each cycle in which the simulation does not need its value. For
+example, a value that only the untaken branch of an `if` reads is not
+computed in that cycle.
+
 ## A Moore machine
 
 Use `mooreProbed`. It takes two functions: the transition function and the
