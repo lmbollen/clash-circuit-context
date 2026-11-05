@@ -102,11 +102,18 @@ directories, the language extensions and the other plugins of your package:
 cabal exec -- clash -isrc src/Design.hs --verilog -fplugin=Clash.CircuitContext.Plugin <extensions and plugins of the package>
 ```
 
-If you do not give the plugin, a design with an empty `Traceable` instance
-does not compile. The error names `TurnOnThePlugin`, with the flag to add
-(see [If the plugin is not
+If you do not give the plugin, an instrumented design does not compile.
+The error names `TurnOnTheCircuitContextPlugin` (see [If the plugin is not
 on](add-to-project.md#if-the-plugin-is-not-on)). `clashi` loads the plugin
 from the pragma.
+
+Clash writes the HDL to `verilog/<Module>.topEntity/` (or `vhdl/…`). Each
+component is one module with the name of its function, also when it is
+called from several places. The names of instances in the HDL are Clash's,
+and can differ from the names of the scopes in the waveform. A module name
+with a number, such as `adder_0`, is a second variant of `adder` that Clash
+made, for example for a constant argument; in the waveform, `adder_0` is the
+first instance of `adder`.
 
 ## Compare with the HDL of the design without instrumentation
 

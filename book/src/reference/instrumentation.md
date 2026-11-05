@@ -11,9 +11,23 @@ pass.
 | The signature of a top-level function has | The plugin |
 |---|---|
 | `HasCircuitContext`, and the function has `OPAQUE` | makes the function a component, and traces its named local bindings |
-| `HasCircuitContext`, without `OPAQUE` | traces its named local bindings, in the scope of the caller. Warning: `x-circuit-context-uninstrumented` |
+| `HasCircuitContext`, without `OPAQUE` | traces its named local bindings, in the scope of the caller. Warning: `x-circuit-context-uninstrumented`, if the function has named local bindings |
 | `HasProbe` | probes its named local bindings |
 | neither | does not change it |
+
+The plugin also splits each function whose signature has
+`HasCircuitContext`, top-level or local, in two: a wrapper with the name and
+the signature of the function, which adds the site of each call to the
+context, and a worker `$wf` with the body and the pragmas of the function.
+Clash makes one HDL module of the worker, with the name of the function.
+GHC's warnings about the body, for example `-Wredundant-constraints`, can
+name the worker. A `RULES` pragma for an instrumented function does not
+fire: the wrapper is inlined first.
+
+A top entity (a `Synthesize` or `TopEntity` annotation of Clash) whose
+signature has `HasCircuitContext` is an error. Give the top entity a
+signature without it, and supply the context inside:
+`topEntity … = withoutCircuitContext (design …)`.
 
 The plugin sees the constraint in these forms:
 

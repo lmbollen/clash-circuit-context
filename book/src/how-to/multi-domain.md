@@ -44,9 +44,12 @@ recordBoth = do
 8
 ```
 
+- `createDomain` is Template Haskell: the module needs the extension
+  `TemplateHaskell`.
 - `withRecording` gives the design its context, as `writeWaveform` does. It
-  returns what the action returned or threw (`Either SomeException r`),
-  and the `Recording`.
+  returns what the action returned or threw (`Either SomeException r`), and
+  the `Recording`. A cancellation, such as Ctrl-C, is not returned: it goes
+  on after the recording stops.
 - The first argument of `withRecording` says where the recorded values
   wait. `Nothing` keeps them in memory. `Just path` writes them to a spill
   file at `path`, and makes its directory. Delete the spill file with

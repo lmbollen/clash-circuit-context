@@ -50,32 +50,43 @@ by its name, and then gives the siblings numbers: `name_0`, `name_1`, … .
 
 The numbers come from the calls, in the order of the source: the call of
 the function, for a component that the plugin makes, and the call of
-`component` otherwise. A lazy simulation can evaluate the
-second instance first. If the numbers followed evaluation, a small change to
-a test could swap the names of two instances. With the order of the source,
-the same design gives the same names in each simulation.
+`component` otherwise. A lazy simulation can evaluate the second instance
+first. If the numbers followed evaluation, a small change to a test could
+swap the names of two instances.
 
 The plugin writes `component "f"` inside `f`, so all instances of `f` reach
-one `component` call. To tell them apart, the plugin marks each call of a
-function that needs `HasCircuitContext` with its place in the source, and
-`component` uses that mark.
+one `component` call. To tell them apart, each call passes its place in the
+source: `HasCircuitContext` asks for an implicit parameter of type
+`CallStack`, and GHC adds the site of each call to it, as it does for
+`HasCallStack`. This works for each way of calling: plain calls, `$`,
+operators, partial application and higher-rank arguments, also from another
+module. In HDL, the call sites have no effect: a component is one module,
+whatever the number of calls.
 
-Some instances come from one call, for example those that `map` makes over
-a vector. The source cannot order these instances, so they are numbered in
-the order in which the simulation first reaches them. The position in the
-vector is the information that is missing. `imapComponents` gives it, and
-names element `i` as `name_i`.
+The numbers rank the instances that the run evaluated. A test that
+evaluates only some of the instances numbers those in the same order, but
+from 0: if a test reads only one output of a sorting network, the
+comparators that this output needs are `cas_0`, `cas_1`, …, and `cas_4` can
+be another comparator than in a test that reads all outputs. A single
+evaluated instance has no number: `syncFF`, not `syncFF_0`. Within one
+waveform, the names are in the order of the source. Between two waveforms,
+compare names only when the tests evaluate the same parts of the design.
 
-The plugin does not mark some calls, and their instances are also numbered
-in the order in which the simulation reaches them:
+Some instances are numbered in the order in which the simulation first
+reaches them:
 
-- a call of an operator written between its arguments;
-- a call of a local function;
-- a call of a function without a type signature;
-- a call that still takes a higher-rank argument after its arguments, for
-  example `withClock c $ …`, and a call of a function whose type is
-  polymorphic outside of its arguments;
-- a call inside a quotation.
+- The instances that one call makes, for example `map` over a vector. The
+  source cannot order them, and the order of evaluation can be the reverse
+  of the index. `imapComponents` names element `i` as `name_i`.
+- The instances made through a local function without a type signature.
+  GHC adds a call site only for a function whose type asks for it, so two
+  calls of such a helper are told apart only by the calls inside it. Give
+  the helper a signature with `HasCircuitContext`.
+- The instances made by a class method, and by a function with an
+  annotation other than `NoCircuitScope`.
+
+For how signals and scopes are ordered and named in a waveform, see
+[Waveform files](../reference/waveform-files.md#the-waveform).
 
 ## Scopes are components, and nothing else
 

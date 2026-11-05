@@ -56,6 +56,25 @@ pair
     late
 ```
 
+## Use a component with hidden clocks
+
+A component can use the hidden clock, reset and enable of
+`Clash.Prelude`: give it `HiddenClockResetEnable dom` next to
+`HasCircuitContext`, and call it under `withClockResetEnable` or
+`exposeClockResetEnable`, as usual:
+
+```haskell
+syncFF :: (HasCircuitContext, HiddenClockResetEnable dom) => Signal dom Bool -> Signal dom Bool
+syncFF = register False . register False
+{-# OPAQUE syncFF #-}
+
+pair :: (HasCircuitContext) => Clock Fast -> Reset Fast -> Signal Fast Bool -> Signal Fast Bool
+pair clk rst inp = withClockResetEnable clk rst enableGen $ syncFF inp .&&. syncFF (not <$> inp)
+```
+
+Each call has its own instance, numbered in the order of the calls, also
+through `$`.
+
 ## Put a helper in the scope of its caller
 
 If a small helper does not need a scope of its own, keep `HasCircuitContext`

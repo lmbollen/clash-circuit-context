@@ -27,7 +27,9 @@ simulation records it.
 ## In a simulation that records: time and memory
 
 A recording packs the value of each signal in each cycle, and keeps the
-changes, in memory or in a spill file. At the end, the waveform is written
+changes, in memory or in a spill file. This takes time for each signal in
+each cycle: in one design with 474 recorded signals, a recording run took
+about 26 times as long as a run without recording. At the end, the waveform is written
 from them. In a
 test suite that runs tests in parallel, the peak memory is the sum over the
 tests that run at the same time, so the time and memory of recording add up
