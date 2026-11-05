@@ -112,7 +112,7 @@ check what ok
 
 main :: IO ()
 main = do
-  (_, rec) <- withRecording "oracle-fallback.spill" $ do
+  (_, rec) <- withRecording (Just "oracle-fallback.spill") $ do
     let
       mono =
         autoTrace "mono" (fromList [1, 2, 3, 4] :: Signal System (Unsigned 8))

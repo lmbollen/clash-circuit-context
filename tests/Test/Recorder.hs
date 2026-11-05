@@ -72,13 +72,13 @@ recorded start stop k = liftIO $ do
   createDirectoryIfMissing True dir
   (path, h) <- openTempFile dir "recorder.vcd"
   hClose h
-  (r, rec) <- withRecordingFrom (start P.* period) (path -<.> "spill") k
+  (r, rec) <- withRecordingFrom (start P.* period) (Just (path -<.> "spill")) k
   a <- P.either throwIO pure r
-  written <- writeVCD (start, stop) rec path
+  written <- writeVCD (P.fromIntegral start, P.fromIntegral stop) rec path
   discardRecording rec
   vcd <- P.either (P.const (pure Text.empty)) (P.const (TextIO.readFile path)) written
   P.mapM_ removePathForcibly [path, path -<.> "json"]
-  pure (a, recordingEnd rec, Text.unpack vcd)
+  pure (a, P.fromIntegral (recordingEnd rec), Text.unpack vcd)
  where
   dir = "waveforms/test-recorder"
   period = snatToNum (clockPeriod @System)

@@ -22,6 +22,9 @@ run cabal test adt-sidecar -j1 "$@"
 # Constraint synonyms, idempotence under a double plugin enable, and the
 # compile-time diagnostics (grepped from the build log below).
 runlog cabal test plugin-diagnostics -j1 "$@"
+# The plugin after the typelits solver plugins: compiling this suite is the
+# test that the oracle leaves GHC's rounds of plugin progress to them.
+run cabal test typelits-plugins -j1 "$@"
 # The Example level (usage, kept honest by running) and the Test level
 # (recorder properties, the capture contract, and the tasty-sequenced tests
 # that decode the waveforms the Example level wrote).
@@ -34,6 +37,21 @@ for g in manual-instrumentation auto-instrumentation; do
     echo "FAIL: $g.vcd differs from golden"; fail=1
   fi
 done
+
+# The FST of the same recordings must show what the VCD shows, value for
+# value. Read with GTKWave's fst2vcd, so checked where it is installed.
+if command -v fst2vcd >/dev/null && command -v python3 >/dev/null; then
+  for g in manual-instrumentation auto-instrumentation; do
+    if fst2vcd "$g.fst" 2>/dev/null >"$g.fst.vcd" \
+      && python3 scripts/same-waveform.py "$g.vcd" "$g.fst.vcd"; then
+      echo "ok: $g.fst shows what $g.vcd shows"
+    else
+      echo "FAIL: $g.fst differs from $g.vcd"; fail=1
+    fi
+  done
+else
+  echo "skip: fst2vcd (GTKWave) or python3 is missing, so the FSTs are not compared with the VCDs"
+fi
 
 # Value-fidelity invariants (see Core.hs packMaskValue/expandRunsX/renderVC):
 #  - a never-sampled cycle renders 'z' (NOT evaluated), never a false '0';
@@ -173,6 +191,25 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     # built -- either way the pair proves nothing.
     echo "FAIL: the unvouched harness did not warn, so the marker is untested"
     fail=1
+  fi
+fi
+
+# The rewriter decides a type with free variables only to say yes; a no
+# waits for the solver stage, which has all the givens. So the plugin warns
+# about Test/RewriterShapes.hs exactly where the solver stage does: once on
+# each line marked "-- warns", and nowhere else. Same fresh-build caveat.
+if grep -q "Compiling Test.RewriterShapes" "$log" 2>/dev/null; then
+  shapes=tests/Test/RewriterShapes.hs
+  got=$(awk -v f="$shapes" '
+    index($0, f ":") == 1 && / warning/ { split($0, p, ":"); at = p[2] ":" p[3]; next_is = 1; next }
+    next_is { if ($0 ~ /^ *(not (traced|probed)|recorded as raw bits)/) print at; next_is = 0 }
+  ' "$log" | sort -u)
+  gotLines=$(printf '%s\n' "$got" | cut -d: -f1 | grep . | sort -n | tr '\n' ' ')
+  wantLines=$(grep -n -- '-- warns$' "$shapes" | cut -d: -f1 | sort -n | tr '\n' ' ')
+  if [ "$gotLines" = "$wantLines" ]; then
+    echo "ok: the rewriter decides no negative early (warnings at lines $gotLines)"
+  else
+    echo "FAIL: warnings of $shapes at lines [$gotLines], want [$wantLines]"; fail=1
   fi
 fi
 

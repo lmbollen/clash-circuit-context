@@ -143,10 +143,11 @@ import Control.Exception (
   SomeException,
   evaluate,
   fromException,
+  onException,
   throwIO,
   try,
  )
-import Control.Monad (forM, forM_)
+import Control.Monad (forM, forM_, when)
 import Data.Bits (xor, (.&.))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import qualified Data.IntMap.Strict as IntMap
@@ -155,7 +156,6 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
 import GHC.Natural (Natural)
-import System.Directory (removePathForcibly)
 import GHC.Stack (
   CallStack,
   HasCallStack,
@@ -166,6 +166,8 @@ import GHC.Stack (
   srcLocStartCol,
   srcLocStartLine,
  )
+import System.Directory (makeAbsolute)
+import System.IO (hPutStrLn, stderr)
 import System.IO.Unsafe (unsafeDupablePerformIO, unsafePerformIO)
 import System.Mem.StableName (StableName, hashStableName, makeStableName)
 
@@ -356,9 +358,10 @@ fieldLoc fields loc
 
 {- | Run a simulation action under a fresh recording context, and return
 what the action returned (or threw) with the 'Recording'. The recording's
-values go to a spill file at this path while the simulation runs, so the
-recorded history is not kept in memory. Delete the file with
-'Clash.CircuitContext.Recording.discardRecording' when done.
+values go to a spill file at this path while the simulation runs, so memory
+does not grow with the length of the run; given 'Nothing', they stay in
+memory, as compact records, and nothing is written to disk. Delete a spill
+file with 'Clash.CircuitContext.Recording.discardRecording' when done.
 
 The action must /force/ the parts of the circuit it wants recorded (sampling
 does). When it stops, every trace is finished up to the time the furthest
@@ -368,11 +371,15 @@ can be forced less far than another (a register's input, for one).
 
 What the action recorded before it threw is in the recording too: that is
 what the waveform of a failing test is made of. An asynchronous exception
-(a cancelled test) is not caught: the spill file is deleted and the
-exception goes on.
+(a cancelled test) is not caught: the recording stops where it got to and
+the exception goes on. A spill file stays, holds what was recorded, and a
+message on stderr says where it is: read it with
+'Clash.CircuitContext.Recording.recoverRecording'. The spill file of a
+process that was killed stays too, with what it recorded up to about a second
+before.
 -}
 withRecording ::
-  FilePath ->
+  Maybe FilePath ->
   ((HasCircuitContext) => IO r) ->
   IO (Either SomeException r, Recording)
 withRecording = withRecordingFrom 0
@@ -383,11 +390,11 @@ are evaluated, but nothing is written for them.
 -}
 withRecordingFrom ::
   Int ->
-  FilePath ->
+  Maybe FilePath ->
   ((HasCircuitContext) => IO r) ->
   IO (Either SomeException r, Recording)
-withRecordingFrom start path k = do
-  rec <- newRecorder path start
+withRecordingFrom start spill k = do
+  rec <- newRecorder spill start
   taps <- newIORef []
   ords <- newIORef emptyOrdinals
   r <-
@@ -397,10 +404,28 @@ withRecordingFrom start path k = do
       )
   case r of
     Left err | Just (_ :: SomeAsyncException) <- fromException err -> do
-      _ <- closeRecorder rec 0
-      removePathForcibly path
+      -- Stop now: no cycle is evaluated to finish the traces.
+      stopped rec
       throwIO err
-    _ -> (,) r <$> finishRecording rec taps
+    _ -> (,) r <$> finishRecording rec taps `onException` stopped rec
+ where
+  stopped rec = do
+    _ <- closeRecorder rec =<< recorderEnd rec
+    mapM_ stoppedMessage spill
+
+{- | Say on stderr that a run was stopped, and where its spill file is, as an
+ABSOLUTE path: the working directory differs between ways of running a suite.
+-}
+stoppedMessage :: FilePath -> IO ()
+stoppedMessage f = do
+  path <- makeAbsolute f
+  hPutStrLn
+    stderr
+    ( "clash-circuit-context: the run was stopped; what it recorded is in "
+        <> path
+        <> ". Write its waveform with spill2fst or spill2vcd (executables of"
+        <> " clash-circuit-context), or with recoverWaveform or writeSpill"
+    )
 
 {- | Finish every trace up to the end of the run, then close the recorder.
 
@@ -408,6 +433,11 @@ The end is the furthest time any signal was forced to. A trace's last forced
 cycle is still in its tap ('TraceTap'), so it counts one cycle more than it
 recorded. Finishing evaluates cycles the run did not force; a cycle that
 throws ends that trace there (its later cycles show as not evaluated).
+
+Finishing a trace can evaluate a trace that the run did not reach, which then
+registers. Such a trace is finished too, up to the same end: the taps are read
+again until no new trace registers. The list only grows at its head, so the
+new taps are the first ones.
 -}
 finishRecording :: Recorder -> IORef [(Sig, IORef TraceTap)] -> IO Recording
 finishRecording rec tapsRef = do
@@ -416,15 +446,25 @@ finishRecording rec tapsRef = do
     TraceTap touched next _ <- readIORef ref
     pure (if touched then (next + 1) * sigPeriod sig else 0)
   recorded <- recorderEnd rec
-  let end = maximum (recorded : forced)
-  forM_ taps $ \(sig, ref) -> do
-    TraceTap _ next rest <- readIORef ref
-    let upto = (end + sigPeriod sig - 1) `div` sigPeriod sig
-    finished <- try (forM_ (zip [next .. upto - 1] rest) (\(c, v) -> evaluate v >>= recordCycle rec sig c))
-    case finished of
-      -- A cancellation is not a cycle that throws: it goes on.
-      Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
-      _ -> pure ()
+  let
+    end = maximum (recorded : forced)
+    finishFrom done = do
+      now <- readIORef tapsRef
+      let new = length now - done
+      when (new > 0) $ do
+        forM_ (take new now) finish
+        finishFrom (done + new)
+    finish (sig, ref) = do
+      TraceTap _ next rest <- readIORef ref
+      let upto = (end + sigPeriod sig - 1) `div` sigPeriod sig
+      finished <-
+        try
+          (forM_ (zip [next .. upto - 1] rest) (\(c, v) -> evaluate v >>= recordCycle rec sig c))
+      case finished of
+        -- A cancellation is not a cycle that throws: it goes on.
+        Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
+        _ -> pure ()
+  finishFrom 0
   closeRecorder rec end
 
 {- | Declarations of intent the plugin reads from an @ANN@ pragma.

@@ -86,6 +86,8 @@ asInts = map bitsToInteger
 model :: [Unsigned 8] -> [Maybe Integer]
 model = map (Just . toInteger)
 
--- | How many cycles a VCD contains (one @#@ timestamp per cycle).
+{- | How many cycles a VCD contains: one @#@ timestamp per cycle, and the
+last one is the end of the last cycle.
+-}
 cycleCount :: String -> Int
-cycleCount vcd = length [() | '#' : _ <- lines vcd]
+cycleCount vcd = length [() | '#' : _ <- lines vcd] - 1

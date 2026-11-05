@@ -43,7 +43,13 @@ import qualified Hedgehog.Range as Range
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext (HasCircuitContext, traceSignalC)
-import Clash.CircuitContext.Waveform.Hedgehog (Capture (..), simulateWaveform)
+import Clash.CircuitContext.Waveform.Hedgehog (
+  Capture (..),
+  Format (VCD),
+  WaveformOptions (..),
+  defaultOptions,
+  simulateWaveform,
+ )
 
 --------------------------------------------------------------------------------
 -- The designs
@@ -90,12 +96,18 @@ offByOne inp = traceSignalC "wrong" (inp + 1)
 -- Where the examples write
 --------------------------------------------------------------------------------
 
+{- | The options of these examples. 'defaultOptions' writes an FST, recorded in
+memory; these write a VCD, because "Test.ExampleOutput" reads it back as text.
+-}
+options :: WaveformOptions
+options = defaultOptions{format = VCD}
+
 vcdOf :: String -> FilePath
 vcdOf name = "waveforms" </> name <.> "vcd"
 
 largestVcd, sizedVcd, counterexampleVcd :: FilePath
-largestVcd = vcdOf "example-largest-case"
-sizedVcd = vcdOf "example-sized-case"
+largestVcd = vcdOf "example-largest-case_99"
+sizedVcd = vcdOf "example-sized-case_15"
 counterexampleVcd = vcdOf "example-counterexample"
 
 -- | Delete the files of a previous run, so the output tests can only be
@@ -120,7 +132,7 @@ prop_keepLargest :: Property
 prop_keepLargest = property $ do
   xs <- forAll genStim
   let n = P.length xs
-  out <- simulateWaveform (AtSize 99) "example-largest-case" (0, n) (accDut (stim xs))
+  out <- simulateWaveform options (AtSize 99) "example-largest-case" (0, n) (accDut (stim xs))
   out === accModel xs
 
 {- | The same, at a size the property actually reaches: this one runs
@@ -131,7 +143,7 @@ prop_keepSizedCase :: Property
 prop_keepSizedCase = withTests 20 $ property $ do
   xs <- forAll genStim
   let n = P.length xs
-  out <- simulateWaveform (AtSize 15) "example-sized-case" (0, n) (accDut (stim xs))
+  out <- simulateWaveform options (AtSize 15) "example-sized-case" (0, n) (accDut (stim xs))
   out === accModel xs
 
 {- | The failure pattern: the check is ordinary Hedgehog code after the
@@ -142,7 +154,7 @@ prop_offByOneIsCaught :: Property
 prop_offByOneIsCaught = property $ do
   xs <- forAll (Gen.list (Range.linear 1 8) (Gen.integral Range.linearBounded))
   let n = P.length xs
-  out <- simulateWaveform Counterexample "example-counterexample" (0, n) (offByOne (stim xs))
+  out <- simulateWaveform options Counterexample "example-counterexample" (0, n) (offByOne (stim xs))
   out === xs
 
 tests :: TestTree

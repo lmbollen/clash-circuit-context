@@ -16,10 +16,11 @@ stuck cases); ordinary instance resolution does the rest.
 
 Two cooperating stages — spike findings:
 
-* GHC does NOT reliably pass the enclosing implication's givens to
-  type-family REWRITER plugins (empirically @[]@), so
-  'API.tcPluginRewrite' only decides GROUND types (no free type variables);
-  everything else defers.
+* 'API.tcPluginRewrite' decides a GROUND type. A type with free variables
+  it reduces only to ''True', for a wanted, when the oracle finds the
+  evidence among the givens GHC passes (see 'rewriteFlag': those givens can
+  be partial, so a NO here would not be safe). Deciding here costs no round
+  of GHC's plugin loop; everything else defers.
 * 'API.tcPluginSolve' catches the resulting stuck wanteds
   @AutoTrace (CanTrace t) t@ / @AutoProbe (CanProbe t) t@ — the solver
   stage DOES receive givens — decides from them, and solves by emitting the
@@ -86,6 +87,8 @@ import qualified GHC.Tc.Types.CtLoc as GHC (ctLocSpan)
 import qualified GHC.Tc.Types.Constraint as GHC (ctLocSpan)
 #endif
 {- FOURMOLU_ENABLE -}
+import qualified GHC.Tc.Types as GHC (re_flavour)
+import qualified GHC.Tc.Types.Constraint as GHC (CtFlavour (Wanted))
 import qualified GHC.Tc.Utils.Monad as GHC (initIfaceTcRn)
 import qualified GHC.Tc.Utils.TcType as GHC
 import qualified GHC.TcPlugin.API as API
@@ -186,78 +189,115 @@ initEnv = do
         )
 
 --------------------------------------------------------------------------------
--- Rewriter stage: ground types only (givens are NOT available here)
+-- Rewriter stage: decide while GHC rewrites the wanted, when it can
 --------------------------------------------------------------------------------
 
 rewriters :: OracleEnv -> GHC.UniqFM API.TyCon API.TcPluginRewriter
 rewriters env =
   GHC.listToUFM
-    [ (canTraceTyCon env, rewriteGround env (canTraceTyCon env) (traceableClass env))
-    , (canProbeTyCon env, rewriteGround env (canProbeTyCon env) (probeableClass env))
+    [ (canTraceTyCon env, rewriteFlag env (canTraceTyCon env) (traceableClass env))
+    , (canProbeTyCon env, rewriteFlag env (canProbeTyCon env) (probeableClass env))
     ,
       ( canDescribeTyCon env
-      , rewriteGround env (canDescribeTyCon env) (describableClass env)
+      , rewriteFlag env (canDescribeTyCon env) (describableClass env)
       )
     ]
 
-rewriteGround ::
+{- | Reduce a flag where GHC meets it.
+
+* A ground type: decided here, either way, as it always was. Nothing about
+  the occurrence can change the answer.
+
+* A type with free variables: reduced to ''True' when the oracle says yes
+  from the givens GHC passes here, and only for a wanted. Everything else is
+  left as it was before this rule: a type that is never recordable reduces
+  to ''False' (see below), and any other answer waits for the solver stage
+  ('solveStuck').
+
+Only a YES is safe here. The givens that GHC passes to a rewriter are the
+givens of the inert set, and while GHC infers the type of a local binding
+that set can be partial: the residual implication of a generalised local
+function has the constraints GHC inferred for it as its givens, and a wanted
+@AutoTrace (CanTrace b) b@ in it is solved by GHC from the identical given
+that GHC quantified over, never by this oracle. Asking for @Traceable b@
+instead finds no instance, so a NO decided here would drop a binding the
+caller records, and warn about it. A yes is backed by evidence the oracle
+found among those givens and the instances, so the solver stage, which sees
+the same givens later, gives the same yes: the rewriter adds no negative
+decision.
+
+Deciding here, and not in the solver stage, costs no round of the solver's
+plugin loop. That matters: GHC stops after four rounds in which a plugin
+made progress (@-fconstraint-solver-iterations@), and the typelits plugins
+need rounds of their own. A component of type @Signal dom (Unsigned (n +
+1))@ under @ghc-typelits-natnormalise@ and @ghc-typelits-knownnat@ took one
+round for the normalisation, one for its @CanTrace@, one for the
+@CanDescribe@ that its @Traceable@ instance asks for, and one for the
+@KnownNat (1 + n)@ that @Waveform@ asks for: then GHC gave up, with
+@solveWanteds: too many iterations@. A binding that the oracle declines
+still takes its rounds in the solver stage.
+-}
+rewriteFlag ::
   OracleEnv ->
   API.TyCon ->
   API.Class ->
   [API.Ct] ->
   [API.Type] ->
   API.TcPluginM 'API.Rewrite API.TcPluginRewriteResult
-rewriteGround env fam cls _givens [t]
+rewriteFlag env fam cls givens [t]
   | GHC.noFreeVarsOfType t = do
-      decision <-
-        solvablePred
-          API.getInstEnvs
-          reduceFamily
-          (totalClassesOf env)
-          []
-          fuel0
-          (GHC.mkClassPred cls [t])
+      decision <- decide []
       case decision of
         Defer -> pure API.TcPluginNoRewrite
         _ -> do
           loc <- API.rewriteEnvCtLoc <$> API.askRewriteEnv
           reportDeclined env loc cls t decision
+          pure (rewriteTo (isYes decision))
+  -- Not ground, but never recordable whatever its unknowns are:
+  -- @NonTranslatable@ reduces to ''True' for the type as it stands (a list,
+  -- a function, …). Say so NOW, while GHC is still inferring the type of the
+  -- binding. Deferring would leave a @CanTrace@ constraint over the unknowns,
+  -- which GHC will not quantify over, so a closed binding such as @xs =
+  -- Nothing : xs@ would lose its generalisation, and a second use at another
+  -- type would not compile (#24). Never recordable is never reported
+  -- ('neverRecordable').
+  | otherwise = do
+      never <-
+        if cls /= describableClass env
+          then nonTranslatable env t
+          else pure False
+      if never
+        then pure (rewriteTo False)
+        else do
+          flavour <- GHC.re_flavour <$> API.askRewriteEnv
+          decision <- case flavour of
+            GHC.Wanted | not (null givens) -> decide (map API.ctPred givens)
+            _ -> pure Defer
           pure $
-            API.TcPluginRewriteTo
-              ( API.mkTyFamAppReduction
-                  "clash-circuit-context"
-                  GHC.Nominal
-                  []
-                  fam
-                  [t]
-                  (boolTy (isYes decision))
-              )
-              []
--- Not ground, but never recordable whatever its unknowns are: @NonTranslatable@
--- reduces to ''True' for the type as it stands (a list, a function, …). Say
--- so NOW, while GHC is still inferring the type of the binding. Deferring
--- would leave a @CanTrace@ constraint over the unknowns, which GHC will not
--- quantify over, so a closed binding such as @xs = Nothing : xs@ would lose
--- its generalisation, and a second use at another type would not compile
--- (#24). Never recordable is never reported ('neverRecordable').
-rewriteGround env fam cls _givens [t]
-  | cls /= describableClass env = do
-      never <- nonTranslatable env t
-      pure $
-        if never
-          then
-            API.TcPluginRewriteTo
-              ( API.mkTyFamAppReduction
-                  "clash-circuit-context"
-                  GHC.Nominal
-                  []
-                  fam
-                  [t]
-                  (boolTy False)
-              )
-              []
-          else API.TcPluginNoRewrite
-rewriteGround _ _ _ _ _ = pure API.TcPluginNoRewrite
+            if isYes decision
+              then rewriteTo True
+              else API.TcPluginNoRewrite
+ where
+  decide givenPreds =
+    solvablePred
+      API.getInstEnvs
+      reduceFamily
+      (totalClassesOf env)
+      givenPreds
+      fuel0
+      (GHC.mkClassPred cls [t])
+  rewriteTo b =
+    API.TcPluginRewriteTo
+      ( API.mkTyFamAppReduction
+          "clash-circuit-context"
+          GHC.Nominal
+          []
+          fam
+          [t]
+          (boolTy b)
+      )
+      []
+rewriteFlag _ _ _ _ _ = pure API.TcPluginNoRewrite
 
 --------------------------------------------------------------------------------
 -- Solver stage: stuck Auto{Trace,Probe} wanteds (givens available)

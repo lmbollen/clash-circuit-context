@@ -11,25 +11,38 @@ Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
 
 Write the waveform of a simulation, from any IO code or from a test.
 
-Both functions take what 'Clash.Signal.Trace.dumpVCD' takes: the 'Signal' to
-observe and a window @(start, stop)@ of cycles. The simulation runs @stop@
+Both functions take 'WaveformOptions' ('defaultOptions' writes an FST,
+recorded in memory), and what 'Clash.Signal.Trace.dumpVCD' takes: the
+'Signal' to observe and a window @(start, stop)@ of cycles. The simulation runs @stop@
 cycles, and the waveform shows cycles @start@ to @stop - 1@; use @(0, n)@ to
 see all @n@. The signal carries 'HasCircuitContext', which they supply. A
 design with outputs in one domain gives one signal with @bundle@; a
 @clash-protocols@ circuit gives one with @toSignals@. For outputs in more
 than one domain, see "Clash.CircuitContext.Recording".
 
-A waveform is a pair of files, @waveforms\/\<name\>.vcd@ and the
-@waveforms\/\<name\>.json@ sidecar a typed viewer reads, relative to the working
-directory. One name is one pair of files, so two tests must not share a name.
-While a simulation records, its values go to @waveforms\/\<name\>.spill@
-instead of memory; the file is deleted when the waveform is written.
+A waveform is a pair of files, @waveforms\/\<name\>.fst@ (or @.vcd@, see
+'Format') and the @waveforms\/\<name\>.json@ sidecar a typed viewer reads,
+relative to the working directory. One name is one pair of files, so two
+tests must not share a name. While a simulation records, its values are kept
+as compact records, in memory or in @waveforms\/\<name\>.spill@ (see
+'Spill'); a spill file is deleted when the waveform is written, and kept when
+a recording run is stopped, for 'recoverWaveform'.
+
+> opts = defaultOptions {format = VCD, spill = OnDisk}
 
 For a Hedgehog property, see "Clash.CircuitContext.Waveform.Hedgehog".
 -}
 module Clash.CircuitContext.Waveform (
+  -- * Options
+  WaveformOptions (..),
+  Format (..),
+  Spill (..),
+  defaultOptions,
+
+  -- * Writing a waveform
   writeWaveform,
   withWaveform,
+  recoverWaveform,
 ) where
 
 import Control.Exception (
@@ -40,7 +53,6 @@ import Control.Exception (
   throwIO,
   try,
  )
-import Control.Monad (unless, when)
 import System.IO (hPutStrLn, stderr)
 
 import Clash.Explicit.Signal (Signal, sampleN)
@@ -56,37 +68,32 @@ import Clash.CircuitContext.Internal.Waveform
 @[start, stop)@. Returns all @stop@ samples.
 
 > main = do
->   out <- writeWaveform "counter" (0, 100) (top clockGen resetGen enableGen)
+>   out <- writeWaveform defaultOptions "counter" (0, 100) (top clockGen resetGen enableGen)
 >   print out
 
 Cycles before @start@ are simulated, but not recorded. If nothing in the
-simulation was recorded, no file is written, and a message on stderr says
-so. If the simulation throws, the waveform up to there is written, and the
+window was recorded, no file is written, and a message on stderr says why.
+If the simulation throws, the waveform up to there is written, and the
 exception goes on.
 -}
 writeWaveform ::
   forall dom a.
   (KnownDomain dom, NFDataX a) =>
-  -- | The name of the waveform: @waveforms\/\<name\>.vcd@
+  WaveformOptions ->
+  -- | The name of the waveform: @waveforms\/\<name\>.fst@ or @.vcd@
   String ->
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
   (Int, Int) ->
   -- | The signal to observe
   (HasCircuitContext => Signal dom a) ->
   IO [a]
-writeWaveform name window@(_, stop) sig = do
+writeWaveform opts name window@(_, stop) sig = do
   checkWindow name window
-  (out, rec) <- record name (fst ps) $ do
+  (out, rec) <- record opts name (fst ps) $ do
     let xs = sampleN stop sig
     evaluate (xs `deepseqX` xs)
-  written <- save Requested name ps rec
-  unless written $
-    hPutStrLn
-      stderr
-      ( "clash-circuit-context: "
-          <> name
-          <> ": nothing was recorded, so no waveform was written."
-      )
+  written <- save Requested opts name ps rec
+  either (const (announce name written)) (const (pure ())) written
   either throwIO pure out
  where
   ps = psWindow @dom window
@@ -94,7 +101,7 @@ writeWaveform name window@(_, stop) sig = do
 {- | Run a test's check on @stop@ cycles of a design, and write the waveform
 of cycles @[start, stop)@ only when the check fails.
 
-> case_counter = withWaveform "counter" (0, 100) (top clockGen resetGen enableGen) $ \out ->
+> case_counter = withWaveform defaultOptions "counter" (0, 100) (top clockGen resetGen enableGen) $ \out ->
 >   out @?= expected
 
 The simulation runs without recording, so a passing test costs nothing extra.
@@ -122,7 +129,8 @@ needs the plugin, and hand-written recorders still record.)
 withWaveform ::
   forall dom a b.
   (KnownDomain dom, NFDataX a) =>
-  -- | The name of the waveform: @waveforms\/\<name\>.vcd@
+  WaveformOptions ->
+  -- | The name of the waveform: @waveforms\/\<name\>.fst@ or @.vcd@
   String ->
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
   (Int, Int) ->
@@ -131,7 +139,7 @@ withWaveform ::
   -- | The check
   ([a] -> IO b) ->
   IO b
-withWaveform name window@(_, stop) sig check = do
+withWaveform opts name window@(_, stop) sig check = do
   checkWindow name window
   first <- try (check (withoutCircuitContext (sampleN stop sig)))
   case first of
@@ -142,11 +150,9 @@ withWaveform name window@(_, stop) sig check = do
     Left err -> do
       -- A fresh instantiation of the signal, under a recording context: an
       -- independent simulation, recorded as far as the check forces it.
-      (again, rec) <- record name (fst ps) (check (sampleN stop sig))
+      (again, rec) <- record opts name (fst ps) (check (sampleN stop sig))
       case again of
-        Left _ -> do
-          written <- save Failure name ps rec
-          when written (announce name)
+        Left _ -> save Failure opts name ps rec >>= announce name
         Right _ -> do
           discard rec
           hPutStrLn
@@ -165,3 +171,14 @@ withWaveform name window@(_, stop) sig check = do
   isAsync err = case fromException err of
     Just (_ :: SomeAsyncException) -> True
     Nothing -> False
+
+{- | Write the waveform of a run that was stopped (a cancelled test, a killed
+process) with its values in a spill file ('OnDisk'): from
+@waveforms\/\<name\>.spill@, as the options' format, everything the run
+recorded up to where it stopped. Deletes the spill file once the waveform is
+written. Returns the waveform's absolute path, or why there is none.
+
+> recoverWaveform defaultOptions "counter" >>= print
+-}
+recoverWaveform :: WaveformOptions -> String -> IO (Either String FilePath)
+recoverWaveform = recover

@@ -48,7 +48,7 @@ memoryTest =
     before <- liveBytes
     (r, rec) <-
       withRecording
-        "waveforms/memory.spill"
+        Nothing
         (evaluate (P.sum (P.map P.toInteger (sampleN 1000000 (lazilyNamed n)))))
     assertBool "the run finished" (P.either (P.const False) (P.const True) r)
     after <- liveBytes

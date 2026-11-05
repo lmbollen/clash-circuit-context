@@ -24,6 +24,10 @@ dist-nix/
 /auto-instrumentation.json
 /auto-instrumentation-fo.vcd
 /auto-instrumentation-fo.json
+/manual-instrumentation.fst
+/auto-instrumentation.fst
+/manual-instrumentation.fst.vcd
+/auto-instrumentation.fst.vcd
 *.spill
 
 # Nix build results (nix build)
