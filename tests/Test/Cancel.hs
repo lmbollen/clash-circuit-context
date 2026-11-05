@@ -23,7 +23,7 @@ import Clash.CircuitContext
 import Clash.CircuitContext.Waveform
 
 -- | A traced counter from a run-time value, so that no run shares it.
-counter :: (HasCircuitContext) => Int -> Signal System (Unsigned 8)
+counter :: (CircuitContextOnly) => Int -> Signal System (Unsigned 8)
 counter k = traceSignalC "count" (fromList (P.map P.fromIntegral [k ..]))
 {-# OPAQUE counter #-}
 

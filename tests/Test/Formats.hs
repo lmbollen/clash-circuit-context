@@ -53,7 +53,7 @@ import Clash.CircuitContext.Recording (
 import Clash.CircuitContext.Waveform
 
 -- | A traced counter, described in the sidecar; it runs as long as it is sampled.
-counter :: (HasCircuitContext) => Signal System (Unsigned 8)
+counter :: (CircuitContextOnly) => Signal System (Unsigned 8)
 counter = traceSignalSW "count" (fromList (P.cycle [0 .. 255]))
 {-# OPAQUE counter #-}
 
@@ -62,12 +62,12 @@ seen only through its spine, so that only the recorder computes its values: a
 run that is cancelled during the wait is cancelled while the recorder packs
 that value. A run that is not cancelled ends after 4000 cycles.
 -}
-slow :: (HasCircuitContext) => Signal System (Unsigned 8)
+slow :: (CircuitContextOnly) => Signal System (Unsigned 8)
 slow = P.const 0 <$> traceSignalSW "count" (fromList [valueAt i | i <- [0 :: Int ..]])
 {-# OPAQUE slow #-}
 
 -- | A signal that changes every cycle, and one that never changes.
-busyAndQuiet :: (HasCircuitContext) => Signal System (Unsigned 8)
+busyAndQuiet :: (CircuitContextOnly) => Signal System (Unsigned 8)
 busyAndQuiet =
   (+)
     <$> traceSignalSW "busy" (fromList (P.cycle [0 .. 255]))

@@ -17,8 +17,10 @@ Instrumentation is two annotations per function:
 The plugin then wraps the function in a named *component* (a hierarchy
 level), auto-traces every named local binding of traceable type under its
 binder name, and auto-probes bindings inside `HasProbe` functions (e.g.
-mealy step functions). Remove the plugin (or use `noCircuitContext`) and
-every combinator collapses to identity.
+mealy step functions). Under `noCircuitContext` (or `withoutCircuitContext`)
+every combinator collapses to identity. A design that asks for
+`HasCircuitContext` needs the plugin: without it, a call of an instrumented
+function is an error that names `TurnOnTheCircuitContextPlugin`.
 
 ## Adding it to your project
 
@@ -125,7 +127,7 @@ main = do
 ```
 
 The waveform's scope tree mirrors the design hierarchy; the two `acc` instances
-are numbered by the call sites of their `component` calls:
+are numbered by their call sites in `top`:
 
 ```
 top
@@ -236,13 +238,23 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
   contexts to ordinary class constraints, as above — the oracle recognizes
   an instance by recursing on its written context.
 * Multiple instances of the same component under one parent are named
-  `name_0`, `name_1`, …, ordered by the call site of `component` in the
-  design. Instances with the *same* call site are numbered in the order the
-  simulation first reaches them. Two cases have one call site:
-  `fmap acc`-style replication, and every instance of one automatic
-  component, because the plugin writes `component "f"` inside `f`. To fix
-  the names, use `imapComponents` (structural position) or call
-  `component` by hand at each site.
+  `name_0`, `name_1`, …, ordered by their call sites in the design. The
+  plugin splits each function whose signature asks for `HasCircuitContext`
+  into a wrapper, which keeps the name and the signature, and a worker,
+  `$wf`, which keeps the body and the pragmas. `HasCircuitContext` asks for
+  the call sites, a `CallStack` of its own, so GHC gives the wrapper the
+  site of every call — through `$`, an operator, a partial application, or
+  from a module without the plugin — and the wrapper adds it to the
+  context's call path. A helper with a signature passes the path on, so its
+  calls order the instances it makes, and the signals it records into its
+  caller's scope come call by call. Clash names the worker's module after
+  `f` and makes one module of it. Instances with the *same* call site are
+  numbered in the order the simulation first reaches them: `map acc`- or
+  `fmap acc`-style replication over a vector, and the calls of a class
+  method, of a local function without a signature, or of a function with an
+  annotation other than `NoCircuitScope` (those are not split). To fix
+  those names, use `imapComponents` (structural position) or call
+  `component` by hand.
 
 ### When something isn't traced
 
@@ -578,7 +590,15 @@ Everything the plugin injects is ordinary user API from
 
 ## How it works
 
-* The context is one implicit parameter, `?circuitContext`. `component`
+* The context is one implicit parameter, `?circuitContext :: SimOnly
+  CircuitContext`, beside the call sites `?circuitCallSites :: CallStack`
+  that give each call its site (see the instance names above), and
+  `TurnOnTheCircuitContextPlugin`, which only the plugin solves: a design
+  compiled without the plugin does not compile, rather than giving HDL with
+  one module per call. Code instrumented by hand without the plugin asks
+  for `CircuitContextOnly`. `SimOnly` (from `Clash.Magic`) is what
+  Clash ignores: a context that differs at each call site does not make it
+  duplicate a component. `component`
   pushes a hierarchy segment; trace/probe registrations qualify their keys
   with the path at creation time. All state lives in a per-simulation
   recorder created by `withRecording` — there is no global mutable state,
@@ -617,8 +637,8 @@ bindings into a `let` inside the component wrap, so Clash's generated wire
 names and declaration order can differ, and a traced `Vec` binding can leave
 an identity generate loop. Compare the two with an equivalence checker (e.g.
 Yosys `equiv_make`/`equiv_induct`), not with `diff`. The only thing a caller
-must do is discharge the `HasCircuitContext` constraint, e.g. `let
-?circuitContext = noCircuitContext in …` at the synthesis entry point.
+must do is discharge the `HasCircuitContext` constraint, e.g. with
+`withoutCircuitContext` at the synthesis entry point.
 
 The same gate keeps **simulation cheap when you are not recording**: under
 `noCircuitContext` (i.e. not inside `withRecording`) the combinators

@@ -67,7 +67,7 @@ import Clash.Prelude (KnownDomain, NFDataX, deepseqX, snatToNum)
 import Clash.Signal.Internal (SDomainConfiguration (..), knownDomain)
 
 import Clash.CircuitContext.Core (
-  HasCircuitContext,
+  CircuitContextOnly,
   withRecordingFrom,
   withoutCircuitContext,
  )
@@ -177,7 +177,7 @@ psWindow (start, stop) = (toPs start, toPs stop)
 the identity under 'withoutCircuitContext', so nothing registers and nothing
 accumulates.
 -}
-simulate :: (NFDataX a) => Int -> ((HasCircuitContext) => Signal dom a) -> IO [a]
+simulate :: (NFDataX a) => Int -> ((CircuitContextOnly) => Signal dom a) -> IO [a]
 simulate n sig = evaluate (let xs = withoutCircuitContext (sampleN n sig) in xs `deepseqX` xs)
 
 {- | Run an action under a fresh recording context that records from this
@@ -190,7 +190,7 @@ record ::
   WaveformOptions ->
   String ->
   Int ->
-  ((HasCircuitContext) => IO r) ->
+  ((CircuitContextOnly) => IO r) ->
   IO (Either SomeException r, Recording)
 record opts name start =
   withRecordingFrom start (if spill opts == OnDisk then Just (spillPath name) else Nothing)

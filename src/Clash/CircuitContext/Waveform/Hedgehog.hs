@@ -70,7 +70,7 @@ import qualified Hedgehog.Gen as Gen
 import Clash.Explicit.Signal (Signal, sampleN)
 import Clash.Prelude (KnownDomain, NFDataX, deepseqX)
 
-import Clash.CircuitContext.Core (HasCircuitContext)
+import Clash.CircuitContext.Core (CircuitContextOnly)
 import Clash.CircuitContext.Internal.Recorder (Recording)
 import Clash.CircuitContext.Internal.Waveform
 
@@ -108,7 +108,7 @@ simulateWaveform ::
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
   (Int, Int) ->
   -- | The signal to observe
-  (HasCircuitContext => Signal dom a) ->
+  (CircuitContextOnly => Signal dom a) ->
   PropertyT IO [a]
 simulateWaveform opts capture name window@(_, stop) sig = do
   liftIO (checkWindow name window)
@@ -133,7 +133,7 @@ recordRun ::
   WaveformOptions ->
   String ->
   (Int, Int) ->
-  (HasCircuitContext => Signal dom a) ->
+  (CircuitContextOnly => Signal dom a) ->
   IO (Either SomeException [a], Recording)
 recordRun opts name window@(_, stop) sig =
   record opts name (fst (psWindow @dom window)) $ do
@@ -149,7 +149,7 @@ recordCounterexample ::
   WaveformOptions ->
   String ->
   (Int, Int) ->
-  (HasCircuitContext => Signal dom a) ->
+  (CircuitContextOnly => Signal dom a) ->
   IO String
 recordCounterexample opts name window sig = do
   result <- try $ do
