@@ -42,12 +42,20 @@ can still be read ('readSpill'). It is a header, then blocks:
   * 3, lookup-table entries, as JSON (a @clash-shockwaves@ @LUTMap@);
   * 4, the end: the time (ps) at which the simulation stopped;
   * 5, a signal's description broke after it registered: its id, and the
-    error.
+    error;
+  * 6, progress: a count, then that many signal ids, each with the cycle up
+    to which it had recorded (exclusive), its records all in earlier blocks.
 
 A signal's block comes before its chunks, and a block is written whole, so
 any prefix of the file that ends at a block's end can be read: what the
 signals had recorded up to their last chunks. A block cut off by a crash is
 ignored.
+
+A killed process leaves what it had written. So that this is close to where
+it stopped for every signal, also one that changes rarely and never fills a
+chunk, a thread writes each signal's records and its progress once every
+'tickMicros': a signal with new records as a (small) chunk, the others in
+one progress block.
 
 A finished 'Recording' reads its changes back lazily, one chunk at a time
 ('readChanges'), so rendering does not hold a history in memory either.
@@ -91,7 +99,7 @@ module Clash.CircuitContext.Internal.Recorder (
   ticks,
 ) where
 
-import Control.Concurrent (myThreadId, throwTo)
+import Control.Concurrent (ThreadId, forkIO, killThread, myThreadId, threadDelay, throwTo)
 import Control.Concurrent.MVar (
   MVar,
   modifyMVar,
@@ -112,9 +120,9 @@ import Control.Exception (
   try,
   uninterruptibleMask_,
  )
-import Control.Monad (forM, unless)
+import Control.Monad (forM, unless, when)
 import Data.Bits (shiftL, shiftR, xor, (.&.), (.|.))
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
@@ -193,6 +201,8 @@ data Recorder = Recorder
   , rLuts :: IORef [ByteString.ByteString]
   -- ^ The lookup-table entries, as JSON, newest first.
   , rNextId :: IORef Int
+  , rTicker :: IORef (Maybe ThreadId)
+  -- ^ The thread that writes the signals' progress to the spill file.
   }
 
 -- | One recorded signal, while the simulation runs.
@@ -213,6 +223,8 @@ data Sig = Sig
 data SigState = SigState
   { ssNext :: !Int
   -- ^ Cycles @[0, next)@ are recorded (or were skipped, as a gap).
+  , ssWritten :: !Int
+  -- ^ The spill file has the signal's records of cycles @[0, written)@.
   , ssLast :: !(Maybe Value)
   -- ^ The value of the newest recorded cycle; 'Nothing' in a gap.
   , ssFresh :: !Bool
@@ -242,6 +254,10 @@ data Chunk
 chunkBytes :: Int
 chunkBytes = 16 * 1024
 
+-- | How often, in microseconds, every signal's progress goes to the spill file.
+tickMicros :: Int
+tickMicros = 1000000
+
 -- | The first bytes of a spill file.
 magic :: ByteString.ByteString
 magic = ByteStringChar8.pack "CCCSPILL"
@@ -268,11 +284,52 @@ newRecorder spill start = do
               <> Builder.word64LE (fromIntegral start)
       ByteStringLazy.hPut h (Builder.toLazyByteString header)
       pure (ToFile h (ByteString.length magic + 9))
-  Recorder spill start
-    <$> newMVar store
-    <*> newIORef []
-    <*> newIORef []
-    <*> newIORef 0
+  rec <-
+    Recorder spill start
+      <$> newMVar store
+      <*> newIORef []
+      <*> newIORef []
+      <*> newIORef 0
+      <*> newIORef Nothing
+  case store of
+    ToFile{} -> forkIO (ticker rec) >>= writeIORef (rTicker rec) . Just
+    _ -> pure ()
+  pure rec
+
+{- | Write every signal's progress once every 'tickMicros', until the
+recording ends. A tick is not interrupted: stopping the thread waits for it.
+-}
+ticker :: Recorder -> IO ()
+ticker rec = do
+  threadDelay tickMicros
+  going <- uninterruptibleMask_ (tick rec)
+  when going (ticker rec)
+
+{- | Write the records of every signal that recorded cycles since the last
+time, and the progress of those without new records. 'False' when the
+recording ended.
+-}
+tick :: Recorder -> IO Bool
+tick rec = do
+  sigs <- readIORef (rSignals rec)
+  progress <- forM sigs $ \sig -> modifyMVar (sigState sig) $ \s ->
+    if ssNext s <= ssWritten s
+      then pure (s, [])
+      else
+        if ssLen s > 0
+          then (\s' -> (s', [])) <$> flush rec sig s
+          else pure (s{ssWritten = ssNext s}, [(sigId sig, ssNext s)])
+  let moved = concat progress
+  written <-
+    if null moved
+      then (\store -> case store of Closed -> Nothing; _ -> Just 0) <$> readMVar (rStore rec)
+      else
+        writeBlock
+          rec
+          6
+          (varint (length moved) <> foldMap (\(i, n) -> varint i <> varint n) moved)
+          noRaw
+  pure (isJust written)
 
 -- | The recorder's spill file, if it has one.
 recorderSpill :: Recorder -> Maybe FilePath
@@ -334,7 +391,7 @@ newSig rec key kind period width adt = do
   buf <- mallocForeignPtrBytes cap
   st <-
     newMVar
-      (SigState 0 Nothing True 0 buf cap 0 [] 14695981039346656037 Set.empty Nothing)
+      (SigState 0 0 Nothing True 0 buf cap 0 [] 14695981039346656037 Set.empty Nothing)
   let sig = Sig i key kind period width desc lut (rStart rec `div` period) st
   _ <-
     writeBlock
@@ -512,7 +569,12 @@ flush rec sig s
               (varint (sigId sig) <> varint (ssNext s))
               (ssLen s, \(Raw h) -> withForeignPtr (ssBuf s) (\p -> hPutBuf h p (ssLen s)))
           pure ((`OnFile` ssLen s) <$> at)
-      pure s{ssLen = 0, ssChunks = maybe (ssChunks s) (: ssChunks s) chunk}
+      pure
+        s
+          { ssLen = 0
+          , ssWritten = ssNext s
+          , ssChunks = maybe (ssChunks s) (: ssChunks s) chunk
+          }
 
 fnv :: Word64 -> Word8 -> Word64
 fnv h b = (h `xor` fromIntegral b) * 1099511628211
@@ -559,6 +621,7 @@ this is dropped.
 -}
 closeRecorder :: Recorder -> Int -> IO Recording
 closeRecorder rec end = do
+  readIORef (rTicker rec) >>= mapM_ killThread
   sigs <- reverse <$> readIORef (rSignals rec)
   frozen <- forM sigs $ \sig -> modifyMVar (sigState sig) $ \s0 -> do
     s <- flush rec sig s0
@@ -693,6 +756,9 @@ readSpill path = bracket (openBinaryFile path ReadMode) hClose $ \h -> do
               (_, Just (Ended e, _)) -> continue sigs luts (Just e)
               (_, Just (BrokeDown i err, _)) ->
                 continue (Map.adjust (\s -> s{signalDescription = Broken err}) i sigs) luts end
+              (_, Just (Progress moved, _)) ->
+                let reach s n = s{signalEnd = max n (signalEnd s)}
+                 in continue (List.foldl' (\m (i, n) -> Map.adjust (`reach` n) i m) sigs moved) luts end
               (_, Just (Unknown, _)) -> continue sigs luts end
       _ -> done start sigs luts end
   done start sigs luts end = do
@@ -712,6 +778,8 @@ data Block
   | Lut
   | Ended Int
   | BrokeDown Int String
+  | -- | Signals, each with the cycle up to which it had recorded.
+    Progress [(Int, Int)]
   | Unknown
 
 -- | A block's payload, by its tag.
@@ -732,6 +800,7 @@ block 2 = Chunked <$> varintP <*> varintP
 block 3 = pure Lut
 block 4 = Ended <$> varintP
 block 5 = BrokeDown <$> varintP <*> stringP
+block 6 = varintP >>= \n -> Progress <$> mapM (const ((,) <$> varintP <*> varintP)) [1 .. n]
 block _ = pure Unknown
 
 -- | A parser of bytes that fails on what it cannot read, rather than crash.

@@ -50,13 +50,11 @@ import Control.Exception (
   IOException,
   SomeException,
   evaluate,
-  onException,
   throwIO,
   try,
  )
 import Control.Monad (filterM, when)
 import System.Directory (
-  createDirectoryIfMissing,
   doesFileExist,
   makeAbsolute,
   removePathForcibly,
@@ -184,8 +182,9 @@ simulate n sig = evaluate (let xs = withoutCircuitContext (sampleN n sig) in xs 
 
 {- | Run an action under a fresh recording context that records from this
 time (ps) on, keeping its values as the options say. Returns what the action
-returned or threw, and the recording; 'save' deletes a spill file. When the
-action is cancelled with a spill file on disk, says on stderr where it is.
+returned or threw, and the recording; 'save' deletes a spill file. A
+cancelled run keeps its spill file, and says so on stderr (see
+'Clash.CircuitContext.Core.withRecording').
 -}
 record ::
   WaveformOptions ->
@@ -193,27 +192,8 @@ record ::
   Int ->
   ((HasCircuitContext) => IO r) ->
   IO (Either SomeException r, Recording)
-record opts name start k = do
-  createDirectoryIfMissing True "waveforms"
-  withRecordingFrom start spillFile k `onException` kept
- where
-  spillFile = if spill opts == OnDisk then Just (spillPath name) else Nothing
-  -- Only a cancellation gets here: what the action throws is returned.
-  kept = case spillFile of
-    Nothing -> pure ()
-    Just f -> do
-      there <- doesFileExist f
-      when there $ do
-        path <- makeAbsolute f
-        hPutStrLn
-          stderr
-          ( "clash-circuit-context: "
-              <> name
-              <> ": the run was stopped; what it recorded is in "
-              <> path
-              <> ". Write its waveform with recoverWaveform, or with spill2fst or"
-              <> " spill2vcd (executables of clash-circuit-context)"
-          )
+record opts name start =
+  withRecordingFrom start (if spill opts == OnDisk then Just (spillPath name) else Nothing)
 
 {- | Why a waveform is written. A 'Failure' waveform is marked in its
 comment (a VCD's @$comment@ line, an FST's comment), so that a later passing

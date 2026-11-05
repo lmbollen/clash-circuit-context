@@ -23,15 +23,18 @@ import Control.Concurrent (threadDelay)
 import Control.Exception (SomeException, evaluate, try)
 import Control.Monad (forM_, when)
 import Data.List (isPrefixOf)
+import Foreign.Ptr (plusPtr)
 import System.Directory (doesFileExist, getFileSize, removeFile)
 import System.Exit (ExitCode (ExitSuccess))
 import System.FilePath ((<.>), (</>))
 import System.IO.Unsafe (unsafePerformIO)
+import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, fdReadBuf, openFd)
 import System.Timeout (timeout)
 
 import SpillMain (spillWith)
 
 import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Internal as ByteString (createAndTrim)
 
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -62,11 +65,36 @@ slow :: (HasCircuitContext) => Signal System (Unsigned 8)
 slow = P.const 0 <$> traceSignalSW "count" (fromList [valueAt i | i <- [0 :: Int ..]])
 {-# OPAQUE slow #-}
 
+-- | A signal that changes every cycle, and one that never changes.
+busyAndQuiet :: (HasCircuitContext) => Signal System (Unsigned 8)
+busyAndQuiet =
+  (+)
+    <$> traceSignalSW "busy" (fromList (P.cycle [0 .. 255]))
+    <*> traceSignalSW "quiet" (pure 7)
+{-# OPAQUE busyAndQuiet #-}
+
 valueAt :: Int -> Unsigned 8
 valueAt i
   | i P.== 2000 = unsafePerformIO (threadDelay 2000000 >> pure 0)
   | P.otherwise = P.fromIntegral i
 {-# NOINLINE valueAt #-}
+
+{- | The bytes of a file this process has open for writing, which GHC's own
+file functions refuse to open.
+-}
+unlockedRead :: FilePath -> IO ByteString.ByteString
+unlockedRead path = do
+  size <- P.fromIntegral <$> getFileSize path
+  fd <- openFd path ReadOnly defaultFileFlags
+  bytes <- ByteString.createAndTrim size $ \p ->
+    let go n
+          | n P.>= size = pure n
+          | P.otherwise = do
+              got <- P.fromIntegral <$> fdReadBuf fd (p `plusPtr` n) (P.fromIntegral (size P.- n))
+              if got P.== 0 then pure n else go (n P.+ got)
+     in go 0
+  closeFd fd
+  pure bytes
 
 -- | A file of a waveform name.
 file :: String -> String -> FilePath
@@ -178,6 +206,34 @@ tests =
         -- A file that is not a spill file is refused.
         code'' <- spillWith VCD "spill2vcd" [file "formats-cli" "json"]
         assertBool "refused" (code'' P./= ExitSuccess)
+    , -- A killed process writes nothing more: what it leaves must have every
+      -- signal, also one whose records never filled a chunk.
+      testCase "a killed run's spill file has every signal, up to about a second before" $ do
+        let
+          spillFile = file "formats-killed" "spill"
+          snapshot = file "formats-killed-snapshot" "spill"
+        scrub ["formats-killed", "formats-killed-snapshot"]
+        (r, rec) <- withRecording (Just spillFile) $ do
+          _ <- evaluate (P.sum (P.map P.toInteger (sampleN 3000 busyAndQuiet)))
+          threadDelay 1500000
+          -- What the process would leave if it were killed now. Through a
+          -- descriptor: GHC refuses to open a file this process writes.
+          unlockedRead spillFile >>= ByteString.writeFile snapshot
+        P.either (assertFailure . P.show) (P.const (pure ())) r
+        discardRecording rec
+        killed <- recoverRecording snapshot
+        case killed of
+          Left err -> assertFailure err
+          Right rec' -> do
+            -- The last forced cycle of a trace is recorded with the next one.
+            assertBool "every cycle but the last" (recordingEnd rec' P.>= 2999)
+            written <- writeVCD (0, recordingEnd rec') rec' (file "formats-killed-snapshot" "vcd")
+            written @?= Right ()
+            body <- vcdBody (file "formats-killed-snapshot" "vcd")
+            let values = [l | l <- body, P.take 1 l P.== "b"]
+            assertBool "both signals have values" (P.length values P.> 2)
+            assertBool "no signal is z" (P.not (P.any ('z' `P.elem`) values))
+        removeFile snapshot
     , testCase "a spill file cut off in a block is read up to its last whole block" $ do
         let
           spillFile = file "formats-cut" "spill"
