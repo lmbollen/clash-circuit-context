@@ -208,11 +208,19 @@ failureComment = "clash-circuit-context: the run of a failing test"
 
 {- | Write a recording as the options' waveform, @waveforms\/\<name\>.vcd@ or
 @.fst@ and its @.json@ sidecar, over the window @[start, stop)@ in ps, and
-delete its spill file. 'False', and nothing written, when the run recorded
-nothing or the files could not be written; an earlier file is then left
-alone.
+delete its spill file. Returns the waveform's ABSOLUTE path: the directory is
+relative to the working directory, which differs between ways of running a
+suite. 'Left', with the reason, and nothing written, when the run recorded
+nothing in the window or the files could not be written; an earlier file is
+then left alone.
 -}
-save :: Origin -> WaveformOptions -> String -> (Int, Int) -> Recording -> IO Bool
+save ::
+  Origin ->
+  WaveformOptions ->
+  String ->
+  (Int, Int) ->
+  Recording ->
+  IO (Either String FilePath)
 save origin opts name window rec = do
   written <- writeWaveformFiles origin opts name window rec
   discard rec
@@ -220,20 +228,15 @@ save origin opts name window rec = do
 
 -- | 'save', but keep the spill file.
 writeWaveformFiles ::
-  Origin -> WaveformOptions -> String -> (Int, Int) -> Recording -> IO Bool
+  Origin ->
+  WaveformOptions ->
+  String ->
+  (Int, Int) ->
+  Recording ->
+  IO (Either String FilePath)
 writeWaveformFiles origin opts name (start, stop) rec = do
-  written <-
-    if recordingEndPs rec == 0
-      then pure (Right (Left "nothing was evaluated"))
-      else try (writer comment window rec (waveformPath (format opts) name))
-  case written of
-    Right (Right ()) -> pure True
-    Right (Left _) -> pure False
-    Left (err :: IOException) -> do
-      hPutStrLn
-        stderr
-        ("clash-circuit-context: " <> name <> ": no waveform written: " <> show err)
-      pure False
+  written <- writer comment window rec (waveformPath (format opts) name)
+  traverse (const (makeAbsolute (waveformPath (format opts) name))) written
  where
   comment = if origin == Failure then failureComment else "No comment"
   window = (start `div` timescale rec, ticks rec stop)
@@ -276,34 +279,35 @@ removeFailureWaveform name = do
       then (== Just True) <$> Fst.hasComment (waveformPath FST name) failureComment
       else pure False
 
-{- | Say on stderr where a failure's waveform landed, as an ABSOLUTE path: the
-directory is relative to the working directory, which differs between ways of
-running a suite.
+{- | Say on stderr what became of a waveform: where it landed (as the
+absolute path 'save' gives), or why there is none.
 -}
-announce :: Format -> String -> IO ()
-announce fmt name = do
-  path <- makeAbsolute (waveformPath fmt name)
-  hPutStrLn stderr ("clash-circuit-context: wrote " <> path)
+announce :: String -> Either String FilePath -> IO ()
+announce name written =
+  hPutStrLn stderr $ case written of
+    Right path -> "clash-circuit-context: wrote " <> path
+    Left err -> "clash-circuit-context: " <> name <> ": no waveform written: " <> err
 
 {- | Write the waveform of a run that was stopped, from its spill file
 @waveforms\/\<name\>.spill@, in the options' format: everything it recorded.
-Deletes the spill file once the waveform is written, and keeps it otherwise. Returns the waveform's
-path, or why there is none.
+Deletes the spill file once the waveform is written, and keeps it otherwise.
+Returns the waveform's absolute path, or why there is none.
 -}
 recover :: WaveformOptions -> String -> IO (Either String FilePath)
 recover opts name = do
-  there <- doesFileExist (spillPath name)
+  spillFile <- makeAbsolute (spillPath name)
+  there <- doesFileExist spillFile
   if not there
-    then pure (Left (spillPath name <> " does not exist"))
+    then pure (Left (spillFile <> " does not exist"))
     else do
-      read' <- readSpill (spillPath name)
+      read' <- readSpill spillFile
       case read' of
         Left err -> pure (Left err)
-        Right rec -> do
-          written <-
-            writeWaveformFiles Requested opts name (recordingStartPs rec, recordingEndPs rec) rec
-          when written (discard rec)
-          pure $
-            if written
-              then Right (waveformPath (format opts) name)
-              else Left (spillPath name <> " holds no recorded cycle")
+        Right rec
+          | recordingEndPs rec <= recordingStartPs rec ->
+              pure (Left (spillFile <> " holds no recorded cycle"))
+          | otherwise -> do
+              written <-
+                writeWaveformFiles Requested opts name (recordingStartPs rec, recordingEndPs rec) rec
+              mapM_ (const (discard rec)) written
+              pure written

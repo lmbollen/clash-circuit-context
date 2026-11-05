@@ -53,7 +53,6 @@ import Control.Exception (
   throwIO,
   try,
  )
-import Control.Monad (unless, when)
 import System.IO (hPutStrLn, stderr)
 
 import Clash.Explicit.Signal (Signal, sampleN)
@@ -73,8 +72,8 @@ import Clash.CircuitContext.Internal.Waveform
 >   print out
 
 Cycles before @start@ are simulated, but not recorded. If nothing in the
-simulation was recorded, no file is written, and a message on stderr says
-so. If the simulation throws, the waveform up to there is written, and the
+window was recorded, no file is written, and a message on stderr says why.
+If the simulation throws, the waveform up to there is written, and the
 exception goes on.
 -}
 writeWaveform ::
@@ -94,13 +93,7 @@ writeWaveform opts name window@(_, stop) sig = do
     let xs = sampleN stop sig
     evaluate (xs `deepseqX` xs)
   written <- save Requested opts name ps rec
-  unless written $
-    hPutStrLn
-      stderr
-      ( "clash-circuit-context: "
-          <> name
-          <> ": nothing was recorded, so no waveform was written."
-      )
+  either (const (announce name written)) (const (pure ())) written
   either throwIO pure out
  where
   ps = psWindow @dom window
@@ -159,9 +152,7 @@ withWaveform opts name window@(_, stop) sig check = do
       -- independent simulation, recorded as far as the check forces it.
       (again, rec) <- record opts name (fst ps) (check (sampleN stop sig))
       case again of
-        Left _ -> do
-          written <- save Failure opts name ps rec
-          when written (announce (format opts) name)
+        Left _ -> save Failure opts name ps rec >>= announce name
         Right _ -> do
           discard rec
           hPutStrLn
@@ -185,7 +176,7 @@ withWaveform opts name window@(_, stop) sig check = do
 process) with its values in a spill file ('OnDisk'): from
 @waveforms\/\<name\>.spill@, as the options' format, everything the run
 recorded up to where it stopped. Deletes the spill file once the waveform is
-written. Returns the waveform's path, or why there is none.
+written. Returns the waveform's absolute path, or why there is none.
 
 > recoverWaveform defaultOptions "counter" >>= print
 -}
