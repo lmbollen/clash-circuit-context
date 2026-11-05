@@ -13,16 +13,14 @@ module Clash.CircuitContext.Internal.FstOut (
   writeFst,
 ) where
 
+import Control.Exception (onException)
 import Control.Monad (foldM, forM_, when)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import System.Directory (createDirectoryIfMissing, renameFile)
-import System.FilePath (takeDirectory, takeFileName, (-<.>), (<.>))
-import System.IO (hClose, openBinaryTempFileWithDefaultPermissions, openTempFile)
-
-import qualified Data.Aeson as Json
-import qualified Data.ByteString.Lazy as ByteStringLazy
+import System.Directory (createDirectoryIfMissing, removePathForcibly, renameFile)
+import System.FilePath (takeDirectory, takeFileName, (<.>))
+import System.IO (hClose, openTempFile)
 
 import Clash.CircuitContext.Internal.Bits (bits)
 import qualified Clash.CircuitContext.Internal.Fst as Fst
@@ -32,18 +30,19 @@ import Clash.CircuitContext.Internal.Recorder (
   RecordedSignal (..),
   Recording (..),
   readChanges,
-  ticks,
   timescale,
   withReader,
  )
-import Clash.CircuitContext.Internal.Sidecar (sidecar)
 import Clash.CircuitContext.Internal.Vcd (
   aliasMap,
+  ioLeft,
   namedSignals,
   naturalKey,
+  shownWindow,
   sourceOrder,
   splitPath,
   vcdPath,
+  writeSidecar,
  )
 
 {- | Write a recording's waveform over the window @[start, stop)@, in units
@@ -53,17 +52,25 @@ this comment, and its typed-waveform sidecar beside it, with extension
 
 As 'Clash.CircuitContext.Internal.Vcd.writeFiles' does: both files go
 through a temporary file and a rename, the sidecar lands first, and on
-'Left' (nothing was recorded) neither is written.
+'Left' (see 'shownWindow'; also when a file cannot be written) neither is
+written. The FST ends at @stop@, as the VCD does.
 -}
 writeFst :: String -> (Int, Int) -> Recording -> FilePath -> IO (Either String ())
-writeFst comment (start, stop0) rec path
-  | null named = pure (Left "nothing was traced or probed in this run")
-  | otherwise = withReader rec $ \records -> do
-      createDirectoryIfMissing True dir
-      aliasOf <- aliasMap records [(n, s) | (n, s) <- named, signalKind s == TraceKind]
-      -- libfst writes to a path, so the temporary file only reserves a name.
-      (fTmp, fH) <- openTempFile dir (takeFileName path <.> "tmp")
-      hClose fH
+writeFst comment window rec path = case shownWindow rec window of
+  Left err -> pure (Left err)
+  Right shown -> ioLeft (Right () <$ writeShown shown)
+ where
+  named = namedSignals rec
+  dir = takeDirectory path
+  scale = timescale rec
+
+  writeShown (start, stop) = withReader rec $ \records -> do
+    createDirectoryIfMissing True dir
+    aliasOf <- aliasMap records [(n, s) | (n, s) <- named, signalKind s == TraceKind]
+    -- libfst writes to a path, so the temporary file only reserves a name.
+    (fTmp, fH) <- openTempFile dir (takeFileName path <.> "tmp")
+    hClose fH
+    flip onException (removePathForcibly fTmp) $ do
       let
         order = sourceOrder named
         tree =
@@ -73,63 +80,53 @@ writeFst comment (start, stop0) rec path
             (List.sortOn (order . fst) named)
         groupOf n = Map.findWithDefault n n aliasOf
       w <- Fst.create fTmp Fst.Zlib comment
-      handles <- declareTree w groupOf tree
-      let reps = [(h, s) | (n, s) <- named, Map.notMember n aliasOf, Just h <- [Map.lookup n handles]]
-      streams <- mapM (\(h, s) -> (,) (h, s) <$> readChanges records s) reps
-      let starts = [(h, s, startAt Nothing (events s cs)) | ((h, s), cs) <- streams]
-      Fst.timeChange w (start * scale)
-      forM_ starts $ \(h, s, (v, _)) -> Fst.valueChange w h (bits (signalWidth s) v)
-      merge
-        w
-        ( Map.fromList
-            [ ((t, h), (v, s, mv, rest))
-            | (h, s, (v, (t, mv) : rest)) <- starts
-            , t < stop
-            ]
-        )
-      -- The end of the window, so that a viewer shows its last cycle whole.
-      when (stop > start) (Fst.timeChange w (stop * scale))
+      flip onException (Fst.close w) $ do
+        handles <- declareTree w groupOf tree
+        let reps = [(h, s) | (n, s) <- named, Map.notMember n aliasOf, Just h <- [Map.lookup n handles]]
+        streams <- mapM (\(h, s) -> (,) (h, s) <$> readChanges records s) reps
+        let starts = [(h, s, startAt Nothing (events s cs)) | ((h, s), cs) <- streams]
+        Fst.timeChange w (start * scale)
+        forM_ starts $ \(h, s, (v, _)) -> Fst.valueChange w h (bits (signalWidth s) v)
+        merge
+          w
+          ( Map.fromList
+              [ ((t, h), (v, s, mv, rest))
+              | (h, s, (v, (t, mv) : rest)) <- starts
+              , t < stop
+              ]
+          )
+        -- The end of the window, so that a viewer shows its last cycle whole.
+        Fst.timeChange w (stop * scale)
       Fst.close w
-      meta <- sidecar [(vcdPath n, s) | (n, s) <- named] (recordingLuts rec)
-      (jTmp, jH) <- openBinaryTempFileWithDefaultPermissions dir (takeFileName sidecarPath <.> "tmp")
-      ByteStringLazy.hPut jH (Json.encode meta)
-      hClose jH
-      renameFile jTmp sidecarPath
+      writeSidecar rec path
       renameFile fTmp path
-      pure (Right ())
- where
-  named = namedSignals rec
-  dir = takeDirectory path
-  sidecarPath = path -<.> "json"
-  stop = min stop0 (ticks rec (recordingEndPs rec))
-  scale = timescale rec
-
-  -- A signal's records as (time, value), then 'Nothing' where it ends.
-  events s cs =
-    [(c * k, mv) | Change c mv <- cs] ++ [(signalEnd s * k, Nothing)]
    where
-    k = signalPeriod s `div` scale
+    -- A signal's records as (time, value), then 'Nothing' where it ends.
+    events s cs =
+      [(c * k, mv) | Change c mv <- cs] ++ [(signalEnd s * k, Nothing)]
+     where
+      k = signalPeriod s `div` scale
 
-  -- The value at @start@, and what comes after it.
-  startAt _ ((t, mv) : rest) | t <= start = startAt mv rest
-  startAt v rest = (v, rest)
+    -- The value at @start@, and what comes after it.
+    startAt _ ((t, mv) : rest) | t <= start = startAt mv rest
+    startAt v rest = (v, rest)
 
-  -- The changes of all signals, by time, then by var: a k-way merge of
-  -- their streams, each read as it goes.
-  merge w = go Nothing
-   where
-    go lastT q = case Map.minViewWithKey q of
-      Nothing -> pure ()
-      Just (((t, h), (cur, s, mv, rest)), q') -> do
-        let next = case rest of
-              (t2, mv2) : rest2 | t2 < stop -> Map.insert (t2, h) (mv, s, mv2, rest2) q'
-              _ -> q'
-        if mv == cur
-          then go lastT next
-          else do
-            when (lastT /= Just t) (Fst.timeChange w (t * scale))
-            Fst.valueChange w h (bits (signalWidth s) mv)
-            go (Just t) next
+    -- The changes of all signals, by time, then by var: a k-way merge of
+    -- their streams, each read as it goes.
+    merge w = go Nothing
+     where
+      go lastT q = case Map.minViewWithKey q of
+        Nothing -> pure ()
+        Just (((t, h), (cur, s, mv, rest)), q') -> do
+          let next = case rest of
+                (t2, mv2) : rest2 | t2 < stop -> Map.insert (t2, h) (mv, s, mv2, rest2) q'
+                _ -> q'
+          if mv == cur
+            then go lastT next
+            else do
+              when (lastT /= Just t) (Fst.timeChange w (t * scale))
+              Fst.valueChange w h (bits (signalWidth s) mv)
+              go (Just t) next
 
 -- | Scopes by name, and the vars declared directly in a scope, in order.
 data Tree = Tree (Map.Map String Tree) [(String, (String, RecordedSignal))]

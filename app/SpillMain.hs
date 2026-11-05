@@ -12,6 +12,7 @@ module SpillMain (spillMain, spillWith) where
 
 import Control.Monad (foldM, when)
 import Data.Char (isDigit)
+import GHC.Natural (Natural)
 import System.Console.GetOpt (
   ArgDescr (NoArg, ReqArg),
   ArgOrder (Permute),
@@ -23,13 +24,13 @@ import System.Directory (removeFile)
 import System.Environment (getArgs, getProgName)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitWith)
 import System.FilePath ((-<.>))
-import System.IO (hPutStr, hPutStrLn, stderr)
+import System.IO (hPutStrLn, stderr)
 
 import Clash.CircuitContext.Recording (Format (..), writeSpill)
 
 data Options = Options
   { optOutput :: Maybe FilePath
-  , optWindow :: Maybe (Int, Int)
+  , optWindow :: Maybe (Natural, Natural)
   , optDelete :: Bool
   , optHelp :: Bool
   }
@@ -45,7 +46,7 @@ options =
       "w"
       ["window"]
       (ReqArg (\w o -> (\win -> o{optWindow = Just win}) <$> window w) "START,STOP")
-      "the cycles to show, [START, STOP), in\nthe waveform's time unit (for a design\nin one domain: cycles); by default all\nthe run recorded"
+      "the window to show, [START, STOP), in\nunits of the VCD timescale: the\ngreatest common divisor of the clock\nperiods (for a design in one domain:\ncycles), for FST too; by default all\nthe run recorded"
   , Option
       ""
       ["delete"]
@@ -55,8 +56,8 @@ options =
   ]
  where
   window w = case break (== ',') w of
-    (a, ',' : b) | number a, number b, read a <= (read b :: Int) -> Right (read a, read b)
-    _ -> Left ("the window " <> w <> " is not START,STOP with 0 <= START <= STOP")
+    (a, ',' : b) | number a, number b, read a < (read b :: Natural) -> Right (read a, read b)
+    _ -> Left ("the window " <> w <> " is not START,STOP with 0 <= START < STOP")
   number x = not (null x) && all isDigit x
 
 -- | Run the command line, writing waveforms of this format, and exit.
@@ -83,7 +84,7 @@ spillWith fmt prog args = do
     usage = usageInfo header options
     failWith msg = do
       hPutStrLn stderr (prog <> ": " <> msg)
-      hPutStr stderr usage
+      hPutStrLn stderr ("Try '" <> prog <> " --help' for more information.")
       pure (ExitFailure 1)
   case getOpt Permute options args of
     (fs, spills, []) -> case foldM (flip ($)) (Options Nothing Nothing False False) fs of
@@ -97,16 +98,16 @@ spillWith fmt prog args = do
         | otherwise -> do
             results <- mapM (convert opts) spills
             pure (if and results then ExitSuccess else ExitFailure 1)
-    (_, _, errs) -> failWith (concat errs)
+    (_, _, errs) -> failWith (concatMap (takeWhile (/= '\n')) errs)
  where
   convert opts spill = do
     let out = maybe (spill -<.> extension) id (optOutput opts)
     written <- writeSpill fmt (optWindow opts) spill out
     case written of
       Left err -> hPutStrLn stderr (prog <> ": " <> spill <> ": " <> err) >> pure False
-      Right () -> do
+      Right (start, stop) -> do
         when (optDelete opts) (removeFile spill)
-        putStrLn (prog <> ": wrote " <> out)
+        putStrLn (prog <> ": wrote " <> out <> ", window " <> show start <> "," <> show stop)
         pure True
   extension = case fmt of
     VCD -> "vcd"

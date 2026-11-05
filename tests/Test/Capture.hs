@@ -112,11 +112,13 @@ withName name body = do
   spilled <- doesFileExist (vcd -<.> "spill")
   assertBool "the spill file is deleted" (P.not spilled)
 
--- | How many cycles a VCD has (one @#@ timestamp per cycle).
+{- | How many cycles a VCD has: one @#@ timestamp per cycle, and the last one
+is the end of the last cycle.
+-}
 cyclesOf :: String -> IO Int
 cyclesOf name = do
   vcd <- P.readFile (vcdOf name)
-  pure (P.length [l | l <- P.lines vcd, P.take 1 l P.== "#"])
+  pure (P.length [l | l <- P.lines vcd, P.take 1 l P.== "#"] P.- 1)
 
 {- | A property that always fails and shrinks through several cases (any
 non-empty list fails; Hedgehog shrinks it to one element). Each case leaves
