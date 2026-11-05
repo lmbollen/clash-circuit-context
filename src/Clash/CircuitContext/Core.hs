@@ -146,7 +146,7 @@ import Control.Exception (
   throwIO,
   try,
  )
-import Control.Monad (forM, forM_)
+import Control.Monad (forM, forM_, when)
 import Data.Bits (xor, (.&.))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import qualified Data.IntMap.Strict as IntMap
@@ -408,6 +408,11 @@ The end is the furthest time any signal was forced to. A trace's last forced
 cycle is still in its tap ('TraceTap'), so it counts one cycle more than it
 recorded. Finishing evaluates cycles the run did not force; a cycle that
 throws ends that trace there (its later cycles show as not evaluated).
+
+Finishing a trace can evaluate a trace that the run did not reach, which then
+registers. Such a trace is finished too, up to the same end: the taps are read
+again until no new trace registers. The list only grows at its head, so the
+new taps are the first ones.
 -}
 finishRecording :: Recorder -> IORef [(Sig, IORef TraceTap)] -> IO Recording
 finishRecording rec tapsRef = do
@@ -416,15 +421,25 @@ finishRecording rec tapsRef = do
     TraceTap touched next _ <- readIORef ref
     pure (if touched then (next + 1) * sigPeriod sig else 0)
   recorded <- recorderEnd rec
-  let end = maximum (recorded : forced)
-  forM_ taps $ \(sig, ref) -> do
-    TraceTap _ next rest <- readIORef ref
-    let upto = (end + sigPeriod sig - 1) `div` sigPeriod sig
-    finished <- try (forM_ (zip [next .. upto - 1] rest) (\(c, v) -> evaluate v >>= recordCycle rec sig c))
-    case finished of
-      -- A cancellation is not a cycle that throws: it goes on.
-      Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
-      _ -> pure ()
+  let
+    end = maximum (recorded : forced)
+    finishFrom done = do
+      now <- readIORef tapsRef
+      let new = length now - done
+      when (new > 0) $ do
+        forM_ (take new now) finish
+        finishFrom (done + new)
+    finish (sig, ref) = do
+      TraceTap _ next rest <- readIORef ref
+      let upto = (end + sigPeriod sig - 1) `div` sigPeriod sig
+      finished <-
+        try
+          (forM_ (zip [next .. upto - 1] rest) (\(c, v) -> evaluate v >>= recordCycle rec sig c))
+      case finished of
+        -- A cancellation is not a cycle that throws: it goes on.
+        Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
+        _ -> pure ()
+  finishFrom 0
   closeRecorder rec end
 
 {- | Declarations of intent the plugin reads from an @ANN@ pragma.
