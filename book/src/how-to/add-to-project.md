@@ -73,15 +73,24 @@ gives complete files.
 
 ## If the plugin is not on
 
-If a module with an empty `Traceable` instance is compiled without the
-plugin, the build fails with an error like this one:
+Each module that defines a function whose signature has `HasCircuitContext`
+needs the plugin. A module that only calls such functions, for example a
+test suite, does not.
+
+If a module that defines such a function is compiled without the plugin, a
+call of the function stops the build, in the module of the call:
 
 ```text
-Bus.hs:10:10: error: [GHC-39999]
-    • Could not deduce ‘Clash.CircuitContext.Auto.TurnOnThePlugin
-                          "add -fplugin=Clash.CircuitContext.Plugin to the ghc-options of this package, or to the command line of clash"’
-        arising from a use of ‘Clash.CircuitContext.Auto.$dmtraceNamed’
+Main.hs:8:69: error: [GHC-39999]
+    • Could not deduce ‘Clash.CircuitContext.Core.TurnOnTheCircuitContextPlugin’
+        arising from a use of ‘counter’
 ```
+
+Turn on the plugin in the module that defines the function, here `counter`,
+not in the module of the call.
+
+A module with an empty `Traceable` instance, compiled without the plugin,
+stops with an error that names `TurnOnThePlugin` and the flag to add.
 
 The error says what to do: turn on the plugin for that module (see step 3
 or step 4). The

@@ -1,7 +1,9 @@
 # Warning categories
 
 The plugin reports in five GHC warning categories. Each category is on by
-default. Each warning names the binding and, where one exists, the fix. For
+default. Each warning names the binding and, where one exists, the fix.
+`x-circuit-context-undescribed` is reported once for each type in a
+function: for the first binding of that type. For
 how to turn a category off or make it an error, see [How to control the
 warnings of the plugin](../how-to/warnings.md).
 
@@ -148,3 +150,18 @@ Warn.hs:42:1: warning: [-Wx-circuit-context]
 
 The categories need GHC 9.8 or later. On GHC 9.6 the messages are ordinary
 warnings: `-Werror` makes them errors, but you cannot select one category.
+
+## The plugin is not on
+
+A module that defines a function whose signature has `HasCircuitContext`
+must be compiled with the plugin. Without it, a call of that function stops
+the build, in the module of the call:
+
+```text
+Could not deduce ‘Clash.CircuitContext.Core.TurnOnTheCircuitContextPlugin’
+  arising from a use of ‘f’
+```
+
+Add `-fplugin=Clash.CircuitContext.Plugin` to the `ghc-options` of the
+package that defines `f`, or to the command line of `clash`. See [If the plugin
+is not on](../how-to/add-to-project.md#if-the-plugin-is-not-on).

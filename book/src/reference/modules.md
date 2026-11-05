@@ -26,7 +26,9 @@ From `Clash.CircuitContext`.
 
 | Name | Use |
 |---|---|
-| `HasCircuitContext` | the constraint of an instrumented function |
+| `HasCircuitContext` | the constraint of an instrumented function. It asks for the context, for the site of each call, and for the plugin to be on |
+| `CircuitContextOnly` | the context, without the call sites: what the functions of the package ask for, and give their arguments. Write it in code that you instrument by hand and compile without the plugin |
+| `TurnOnTheCircuitContextPlugin` | a constraint that only the plugin solves. A function defined in a module without the plugin keeps it, and a call of that function is an error that names it |
 | `HasProbe` | the constraint of a step function whose values are probed |
 | `NoCircuitScope` | an annotation, `{-# ANN f NoCircuitScope #-}`: this function deliberately has no `OPAQUE` |
 
@@ -34,15 +36,15 @@ From `Clash.CircuitContext`.
 
 ```haskell
 -- Give an expression its own scope, with a name that you choose.
-component :: (HasCallStack, HasCircuitContext) => String -> ((HasCircuitContext) => r) -> r
+component :: (HasCallStack, CircuitContextOnly) => String -> ((CircuitContextOnly) => r) -> r
 
 -- Make element i of a vector a component with the name <name>_<i>.
 imapComponents ::
-  (HasCircuitContext, KnownNat n) =>
-  String -> ((HasCircuitContext) => Index n -> a -> b) -> Vec n a -> Vec n b
+  (CircuitContextOnly, KnownNat n) =>
+  String -> ((CircuitContextOnly) => Index n -> a -> b) -> Vec n a -> Vec n b
 
 -- Supply a context that records nothing.
-withoutCircuitContext :: ((HasCircuitContext) => r) -> r
+withoutCircuitContext :: ((CircuitContextOnly) => r) -> r
 ```
 
 ### Traces
@@ -50,18 +52,18 @@ withoutCircuitContext :: ((HasCircuitContext) => r) -> r
 ```haskell
 -- Record a signal by hand, as bits.
 traceSignalC ::
-  (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) =>
+  (HasCallStack, CircuitContextOnly, KnownDomain dom, BitPack a, NFDataX a) =>
   String -> Signal dom a -> Signal dom a
 
 -- The same, and describe it in the sidecar.
 traceSignalSW ::
-  (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a, Waveform a) =>
+  (HasCallStack, CircuitContextOnly, KnownDomain dom, BitPack a, NFDataX a, Waveform a) =>
   String -> Signal dom a -> Signal dom a
 
 -- The method of Traceable: record any traceable value by hand (a signal, a
 -- record of signals, a vector, a tuple). This is what the plugin applies to
 -- a binding.
-traceNamed :: (Traceable t, HasCallStack, HasCircuitContext) => String -> t -> t
+traceNamed :: (Traceable t, HasCallStack, CircuitContextOnly) => String -> t -> t
 ```
 
 `traceSignalC` and `traceNamed` take their requirements as real
@@ -79,12 +81,12 @@ probeSW :: (HasProbe, BitPack a, NFDataX a, Waveform a) => String -> a -> a
 -- mealy and Moore machines whose step function is probed. Only the function
 -- with HasProbe is probed: the output function of a Moore machine is not.
 mealyProbed ::
-  (HasCallStack, HasCircuitContext, KnownDomain dom, NFDataX s) =>
+  (HasCallStack, CircuitContextOnly, KnownDomain dom, NFDataX s) =>
   Clock dom -> Reset dom -> Enable dom ->
   ((HasProbe) => s -> i -> (s, o)) -> s -> Signal dom i -> Signal dom o
 
 mooreProbed ::
-  (HasCallStack, HasCircuitContext, KnownDomain dom, NFDataX s) =>
+  (HasCallStack, CircuitContextOnly, KnownDomain dom, NFDataX s) =>
   Clock dom -> Reset dom -> Enable dom ->
   ((HasProbe) => s -> i -> s) -> (s -> o) -> s -> Signal dom i -> Signal dom o
 ```
@@ -98,7 +100,7 @@ mooreProbed ::
 
 ```haskell
 data WaveformOptions = WaveformOptions {format :: Format, spill :: Spill}
-data Format = VCD | FST
+data Format = VCD | FST   -- also exported by Clash.CircuitContext.Recording
 data Spill = InMemory | OnDisk
 
 -- FST, recorded in memory.
@@ -108,13 +110,13 @@ defaultOptions :: WaveformOptions
 -- return the stop samples.
 writeWaveform ::
   (KnownDomain dom, NFDataX a) =>
-  WaveformOptions -> String -> (Int, Int) -> ((HasCircuitContext) => Signal dom a) -> IO [a]
+  WaveformOptions -> String -> (Int, Int) -> ((CircuitContextOnly) => Signal dom a) -> IO [a]
 
 -- Run the check without recording. If it throws, run it again with
 -- recording, write the waveform, and throw the same exception.
 withWaveform ::
   (KnownDomain dom, NFDataX a) =>
-  WaveformOptions -> String -> (Int, Int) -> ((HasCircuitContext) => Signal dom a) ->
+  WaveformOptions -> String -> (Int, Int) -> ((CircuitContextOnly) => Signal dom a) ->
   ([a] -> IO b) -> IO b
 
 -- Write the waveform of a run that was stopped, from waveforms/<name>.spill.
@@ -122,9 +124,10 @@ withWaveform ::
 recoverWaveform :: WaveformOptions -> String -> IO (Either String FilePath)
 ```
 
-The design argument has the type `(HasCircuitContext) => Signal dom a`: the
-function supplies the context. You give it the instrumented design, and you
-do not need `HasCircuitContext` yourself.
+The design argument has the type `(CircuitContextOnly) => Signal dom a`:
+the function supplies the context. You give it the instrumented design, and
+you do not need `HasCircuitContext` yourself, or the plugin in the module of
+the call.
 
 The window `(start, stop)` is in cycles. The simulation runs `stop` cycles,
 and the waveform has the cycles `start` to `stop - 1`.
@@ -143,7 +146,7 @@ data Capture = Counterexample | AtSize Size
 simulateWaveform ::
   (KnownDomain dom, NFDataX a) =>
   WaveformOptions -> Capture -> String -> (Int, Int) ->
-  ((HasCircuitContext) => Signal dom a) -> PropertyT IO [a]
+  ((CircuitContextOnly) => Signal dom a) -> PropertyT IO [a]
 ```
 
 ### `Clash.CircuitContext.Recording`
@@ -153,7 +156,7 @@ simulateWaveform ::
 -- Nothing, in memory. Returns what the action returned or threw, and the
 -- recording.
 withRecording ::
-  Maybe FilePath -> ((HasCircuitContext) => IO r) -> IO (Either SomeException r, Recording)
+  Maybe FilePath -> ((CircuitContextOnly) => IO r) -> IO (Either SomeException r, Recording)
 
 -- Write the waveform at the path, and the sidecar beside it. Left: nothing
 -- was written, and why.

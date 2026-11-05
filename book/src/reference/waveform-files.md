@@ -66,11 +66,14 @@ These rows are true for both formats.
 | A component with no recorded signal under it | no scope: an empty scope is not written |
 | Order in a scope | First the signals, in the order of the position of their recorder in the source file (see below). Then the child scopes, by name, with numbers compared as numbers (`lane_2` before `lane_10`) |
 | Signals | one wire for each recorded signal, with the name of its binding |
-| Sibling instances | `name_0`, `name_1`, … in the order of their calls in the source: the call of the function, for a component that the plugin makes, and the call of `component` otherwise. The instances made by one call, for example by `map` over a vector, are in the order in which the simulation first reaches them; use `imapComponents` to name them by their index |
-| Elements of a `Vec` | `name_0`, `name_1`, … |
+| Sibling instances | `name_0`, `name_1`, … in the order of their calls in the source, numbered among the instances that the run evaluated: a test that evaluates fewer instances numbers them from 0 too. A single evaluated instance has no number: `name`. The instances made by one call, for example by `map` over a vector, are in the order in which the simulation first reaches them; use `imapComponents` to name them by their index. See [About the design hierarchy](../explanation/hierarchy.md#how-instances-are-named) |
+| An operator that is a component | its name: `<+>_0`, `<+>_1`, … |
+| Elements of a `Vec` | `name_0`, `name_1`, …; a `Vec` in a `Vec`: `name_0_3` |
+| Components of a tuple | `name_0`, `name_1`, … |
 | Fields of a record | `name_field` |
+| The bindings of a local function without a scope, for each call | `v_0`, `v_1`, … in the scope of the caller |
 | A name outside all components | in the scope `logic` |
-| A signal that the simulation never evaluated, for example a binding that nothing uses | not in the waveform at all |
+| A signal that the simulation never evaluated, for example a binding that nothing uses | not in the waveform at all. When a run ends, the recorder evaluates each trace up to the last cycle of the run (see [The cost of recording](../explanation/cost.md)), so a trace that the run evaluated once is in the waveform |
 | A cycle that was not evaluated | the value `z`, for example the cycles after the last cycle that a check read |
 | A value that is undefined | the value `x`, with the bits that are defined kept |
 | Traces with the same history | one set of values for all of them: one VCD identifier, or FST aliases |
@@ -104,8 +107,9 @@ file: for a binding that the plugin records, the position of the binding.
   in the order of their declaration, also inside a nested record.
 - The elements of a `Vec` have the position of their binding, and come in
   the order of their index: `outs_2` before `outs_10`. A `Vec` of records
-  comes element by element, each with its fields in the order of their
-  declaration: `regs_0_valid`, `regs_0_data`, `regs_1_valid`, ….
+  comes field by field, in the order of their declaration, and each field
+  element by element: `regs_0_valid`, `regs_1_valid`, `regs_0_data`,
+  `regs_1_data`.
 - The probes of a mealy or Moore machine have the position of its
   `mealyProbed` or `mooreProbed` call, and come in the order of their names.
 - Signals without a position come last, by name.
@@ -176,7 +180,7 @@ waveform of a stopped run](../how-to/recover.md).
 
 | Function | Does |
 |---|---|
-| `withRecording spill action` | runs `action` with recording, and returns what the action returned or threw, with the `Recording`. `spill` is `Just path` for a spill file at `path` (its directory is made), or `Nothing` to keep the values in memory. When the action is cancelled, the spill file stays, and a message on stderr gives its absolute path |
+| `withRecording spill action` | runs `action` with recording, and returns what the action returned or threw, with the `Recording`. A cancellation (an asynchronous exception, such as Ctrl-C or a test's timeout) is not returned: it goes on, after the recording stops. `spill` is `Just path` for a spill file at `path` (its directory is made), or `Nothing` to keep the values in memory. When the action is cancelled, the spill file stays, and a message on stderr gives its absolute path |
 | `writeFST (start, stop) rec path` | writes the FST file at `path` and the sidecar beside it. Returns `Left` with the reason when it writes nothing: nothing was recorded, the window shows nothing, or a file cannot be written |
 | `writeVCD (start, stop) rec path` | the same, as a VCD file |
 | `recordingStart rec`, `recordingEnd rec` | the time from which the recording has cycles, and the time at which the simulation stopped, in units of the timescale |

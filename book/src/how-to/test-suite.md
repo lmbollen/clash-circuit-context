@@ -20,6 +20,34 @@ The signal must be one `Signal`:
 - If the outputs are in more than one domain, see [How to record a design
   with more than one domain](multi-domain.md).
 
+## Set up the test suite
+
+For example, with tasty and HUnit, where the library `counters` holds the
+instrumented design:
+
+```cabal
+test-suite tests
+  type:             exitcode-stdio-1.0
+  hs-source-dirs:   tests
+  main-is:          Main.hs
+  default-language: Haskell2010
+  build-depends:
+    base,
+    clash-prelude,
+    clash-circuit-context,
+    counters,
+    tasty,
+    tasty-hunit,
+```
+
+The test suite needs the plugin only if it defines functions with
+`HasCircuitContext` itself. Give it the `default-extensions` and type-checker
+plugins that your test code uses.
+
+Give the design to a function of this guide directly, as its argument. If
+you bind it with `let` first, give the binding a signature with
+`HasCircuitContext`: without one, the error names `CircuitContextOnly`.
+
 ## Always write the waveform
 
 Use `writeWaveform defaultOptions "<name>"`. It simulates the design, writes
@@ -198,9 +226,8 @@ fails. To simulate an instrumented design without recording, call it under
 `withoutCircuitContext` and sample it as usual (see [How to leave a binding
 or a function out](opt-out.md#one-call-and-everything-under-it)).
 
-To build a project without the plugin is not a general solution. A design
-with an empty `Traceable` instance does not compile without it, and the
-recorders that you wrote yourself still record.
+To build a project without the plugin is not a solution: an instrumented
+design does not compile without it.
 
 For property tests, see [How to keep the waveform of a failing
 property](hedgehog.md). For the names and the place of the files, see
