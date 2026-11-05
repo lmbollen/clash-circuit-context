@@ -7,7 +7,8 @@ new project, the [tutorial](../tutorials/first-waveform.md#make-the-project)
 gives complete files.
 
 1. The package is not on Hackage. Add it to `cabal.project` as a
-   source-repository package. Use a commit hash as the tag:
+   source-repository package. Use the full commit hash, of 40 characters, as
+   the tag (Cabal does not accept a short hash):
 
    ```cabal
    source-repository-package

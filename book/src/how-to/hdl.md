@@ -80,6 +80,10 @@ cabal exec -- clash -package <your-package> <Module> --verilog
 
 - `-package <your-package>` is necessary: `cabal exec` does not expose the
   packages of the project itself.
+- If you build with another GHC than the default one, for example with
+  `cabal build -w ghc-9.10.3`, give `cabal exec` the same `-w`:
+  `cabal exec -w ghc-9.10.3 -- clash …`. Otherwise it uses the environment
+  of the default GHC.
 - Clash reads the code of a module of a package from its interface file.
   Build the package with `-fexpose-all-unfoldings -fno-worker-wrapper` in
   its `ghc-options`, as the Clash starter projects do.

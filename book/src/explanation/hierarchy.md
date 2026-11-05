@@ -48,24 +48,28 @@ Two calls of the same component under one parent need two names. The
 package identifies an instance by the identity of its data on the heap, not
 by its name, and then gives the siblings numbers: `name_0`, `name_1`, … .
 
-The numbers come from the call site of each `component`, in the order of the
-source, where the call sites differ. A lazy simulation can evaluate the
+The numbers come from the calls, in the order of the source: the call of
+the function, for a component that the plugin makes, and the call of
+`component` otherwise. A lazy simulation can evaluate the
 second instance first. If the numbers followed evaluation, a small change to
 a test could swap the names of two instances. With the order of the source,
 the same design gives the same names in each simulation.
 
-Some instances have one call site:
+The plugin writes `component "f"` inside `f`, so all instances of `f` reach
+one `component` call. To tell them apart, the plugin marks each call of a
+function that needs `HasCircuitContext` with its place in the source, and
+`component` uses that mark.
 
-- Instances made at one call site, for example by `map` over a vector.
-- All instances of a component that the plugin makes. The plugin writes
-  `component "f"` inside `f`, so each call of `f` reaches that one call
-  site.
+Some instances come from one call, for example those that `map` makes over
+a vector. The source cannot order these instances, so they are numbered in
+the order in which the simulation first reaches them. The position in the
+vector is the information that is missing. `imapComponents` gives it, and
+names element `i` as `name_i`.
 
-The source cannot order these instances, so they are numbered in the order
-in which the simulation first reaches them. For a vector, the position is
-the information that is missing. `imapComponents` gives it, and names
-element `i` as `name_i`. For the calls of a plugin-made component, the
-plugin does not yet use the call site of each call.
+The plugin does not mark some calls, and their instances are also numbered
+in the order in which the simulation reaches them: a call of an operator
+written between its arguments, a call of a local function, and a call of a
+function whose type is polymorphic outside of its arguments.
 
 ## Scopes are components, and nothing else
 

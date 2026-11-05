@@ -35,7 +35,7 @@ printWaveform n design = do
   flip finally (mapM_ removePathForcibly files) $ do
     (result, rec) <- withRecording Nothing (let xs = sampleN n design in evaluate (deepseqX xs xs))
     _ <- either throwIO pure result
-    written <- writeVCD (0, n) rec path
+    written <- writeVCD (0, fromIntegral n) rec path
     either fail (const (TextIO.readFile path >>= mapM_ putStrLn . outline)) written
 
 -- | The declarations of a VCD as an indented tree.

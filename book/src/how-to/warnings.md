@@ -32,6 +32,17 @@ ghc-options: -Werror=x-circuit-context-undecided
 If your project already builds with `-Werror`, each warning of the plugin is
 an error. Check this before you turn the plugin on in such a project.
 
+## See the warnings of modules that were built before
+
+GHC writes the warnings of a module only when it compiles the module. When
+only warning flags change, GHC does not compile the module again, so a new
+`-Werror=` or `-Wno-` has no effect on a module that was built before. To
+see all warnings again, compile all modules again:
+
+```bash
+cabal build --ghc-options=-fforce-recomp
+```
+
 ## Mark a function without `OPAQUE` as deliberate
 
 A function with `HasCircuitContext` and without `OPAQUE` gets a warning in

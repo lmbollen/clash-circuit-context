@@ -37,8 +37,9 @@ pair inp = both
 
 Each named local binding is a signal in the scope of its function. Two calls
 of the same function are two scopes, `lag_0` and `lag_1`. They are numbered
-in the order in which the simulation first reaches them (see [About the
-design hierarchy](../explanation/hierarchy.md#how-instances-are-named)).
+in the order of the calls in the source: `lag_0` is `lag inp`, the first
+call (see [About the design
+hierarchy](../explanation/hierarchy.md#how-instances-are-named)).
 `printWaveform` is a helper of this book, not of the package: it prints the
 scopes and signals of the waveform (see [the
 introduction](../introduction.md#the-examples-are-checked)):

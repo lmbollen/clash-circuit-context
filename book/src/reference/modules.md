@@ -157,13 +157,13 @@ withRecording ::
 
 -- Write the waveform at the path, and the sidecar beside it. Left: nothing
 -- was written, and why.
-writeFST :: (Int, Int) -> Recording -> FilePath -> IO (Either String ())
-writeVCD :: (Int, Int) -> Recording -> FilePath -> IO (Either String ())
+writeFST :: (Natural, Natural) -> Recording -> FilePath -> IO (Either String ())
+writeVCD :: (Natural, Natural) -> Recording -> FilePath -> IO (Either String ())
 
 -- The time from which the recording has cycles, and the time at which the
 -- simulation stopped, in units of the timescale.
-recordingStart :: Recording -> Int
-recordingEnd :: Recording -> Int
+recordingStart :: Recording -> Natural
+recordingEnd :: Recording -> Natural
 
 -- Delete the spill file, if the recording has one.
 discardRecording :: Recording -> IO ()
@@ -173,7 +173,9 @@ recoverRecording :: FilePath -> IO (Either String Recording)
 
 -- Write the waveform of a spill file, in this format, at the second path,
 -- over the window, or everything with Nothing. The spill file is kept.
-writeSpill :: Format -> Maybe (Int, Int) -> FilePath -> FilePath -> IO (Either String ())
+-- Right: the window that the waveform shows.
+writeSpill ::
+  Format -> Maybe (Natural, Natural) -> FilePath -> FilePath -> IO (Either String (Natural, Natural))
 ```
 
 `withRecording` is also exported by `Clash.CircuitContext`. The window of

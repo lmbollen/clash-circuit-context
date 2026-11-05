@@ -79,8 +79,9 @@ Keep these rules in mind:
 - Give each property its own name. One name is one pair of files.
 - The second simulation must give the same result as the first. This is
   true when the property supplies all inputs of the design.
-- The waveform is written when Hedgehog prints the report. A runner that
-  does not print the report of a failure writes no waveform.
+- The waveform is written when Hedgehog prints the report. tasty-hedgehog
+  prints it. A runner that does not print the report of a failure writes no
+  waveform.
 - The waveform of a counterexample stays when the property passes again
   later. `simulateWaveform` does not delete files, as `withWaveform` does.
   Delete `waveforms/<name>.fst` yourself when you do not need it.
@@ -96,10 +97,13 @@ short waveform that is easy to read:
 out <- simulateWaveform defaultOptions (AtSize 10) "prop" (0, n) (accumulate (fromList xs))
 ```
 
+The waveform of this case has the size in its name:
+`waveforms/prop_10.fst`. The waveform of a counterexample is
+`waveforms/prop.fst`, so the two do not replace each other.
+
 Hedgehog gives the tests of a property the sizes `0`, `1`, `2`, … up to
 `99`, and then starts at `0` again. So choose a size below the number of
-tests, and below 100. If the property fails later, the waveform of the
-counterexample replaces the waveform of the passing case.
+tests, and below 100.
 
 ## Record a failed case again
 
