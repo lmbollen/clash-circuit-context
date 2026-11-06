@@ -35,7 +35,7 @@ lazyName n s = if n P.> 1000 then P.show (P.take 1 (sample s)) else "lazy"
 {-# NOINLINE lazyName #-}
 
 -- | A trace named by 'lazyName', of a signal that starts at a run-time value.
-lazilyNamed :: (HasCircuitContext) => Int -> Signal System (Unsigned 8)
+lazilyNamed :: (CircuitContextOnly) => Int -> Signal System (Unsigned 8)
 lazilyNamed n = traceSignalC (lazyName n s) s
  where
   s = fromList (P.map P.fromIntegral [n ..])
@@ -48,7 +48,7 @@ memoryTest =
     before <- liveBytes
     (r, rec) <-
       withRecording
-        "waveforms/memory.spill"
+        Nothing
         (evaluate (P.sum (P.map P.toInteger (sampleN 1000000 (lazilyNamed n)))))
     assertBool "the run finished" (P.either (P.const False) (P.const True) r)
     after <- liveBytes

@@ -41,7 +41,7 @@ import qualified Hedgehog.Range as Range
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext (
-  HasCircuitContext,
+  CircuitContextOnly,
   component,
   traceSignalC,
   withRecordingFrom,
@@ -67,18 +67,18 @@ VCD (empty if none was written). Every file goes in a fresh name, as the
 properties run in parallel.
 -}
 recorded ::
-  Int -> Int -> ((HasCircuitContext) => IO a) -> PropertyT IO (a, Int, String)
+  Int -> Int -> ((CircuitContextOnly) => IO a) -> PropertyT IO (a, Int, String)
 recorded start stop k = liftIO $ do
   createDirectoryIfMissing True dir
   (path, h) <- openTempFile dir "recorder.vcd"
   hClose h
-  (r, rec) <- withRecordingFrom (start P.* period) (path -<.> "spill") k
+  (r, rec) <- withRecordingFrom (start P.* period) (Just (path -<.> "spill")) k
   a <- P.either throwIO pure r
-  written <- writeVCD (start, stop) rec path
+  written <- writeVCD (P.fromIntegral start, P.fromIntegral stop) rec path
   discardRecording rec
   vcd <- P.either (P.const (pure Text.empty)) (P.const (TextIO.readFile path)) written
   P.mapM_ removePathForcibly [path, path -<.> "json"]
-  pure (a, recordingEnd rec, Text.unpack vcd)
+  pure (a, P.fromIntegral (recordingEnd rec), Text.unpack vcd)
  where
   dir = "waveforms/test-recorder"
   period = snatToNum (clockPeriod @System)
@@ -200,7 +200,7 @@ prop_siblingsFollowSourceOrder = property $ do
   asInts wave0 === model [0, 0, 1]
   asInts wave1 === model [0, 0, 100]
  where
-  writtenFirst, writtenSecond :: (HasCircuitContext) => Signal System (Unsigned 8)
+  writtenFirst, writtenSecond :: (CircuitContextOnly) => Signal System (Unsigned 8)
   writtenFirst = component "acc" (counting 1)
   writtenSecond = component "acc" (counting 100)
   counting step =
@@ -244,7 +244,7 @@ prop_declarationsAreSorted = property $ do
         , "up"
         ]
  where
-  written :: (HasCircuitContext) => [[Unsigned 8]]
+  written :: (CircuitContextOnly) => [[Unsigned 8]]
   written =
     [ sampleN 2 (traceSignalC "sig" (stim @System [1, 2]))
     , sampleN 2 (traceSignalC "b_10" (stim @System [1, 2]))

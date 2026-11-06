@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# The `clash` of book/cabal.project, for mdbook-clash. It runs from any
+# directory and passes every argument through, after the flags that every
+# example of the book needs: clash-circuit-context and its plugin's
+# dependencies exposed, book/examples (BookSupport) on the search path, and
+# the plugin. `clash --verilog` ignores the OPTIONS_GHC pragma of an example,
+# so without -fplugin the HDL of the book would be built without the plugin.
+# In `clash --interactive` the pragma and the flag both apply, which is
+# harmless: the renamer pass is idempotent.
+set -euo pipefail
+book=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+exec cabal --project-file="$book/cabal.project" exec -v0 -- clash \
+  -package clash-circuit-context -package clash-shockwaves -package containers -package text \
+  -package directory -package filepath \
+  -i"$book/examples" -fplugin=Clash.CircuitContext.Plugin "$@"

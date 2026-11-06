@@ -6,9 +6,8 @@ Copyright  :  (C) 2026, QBayLogic B.V.
 License    :  BSD2 (see the file LICENSE)
 Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
 
-The VCD writer: a 'Recording' as a hierarchical VCD, written as it is read
-from the spill file, so neither the history nor the text is ever in memory as
-a whole.
+The VCD writer: a 'Recording' as a hierarchical VCD, written as its records
+are read, so neither the history nor the text is ever in memory as a whole.
 
 The output is the one 'Clash.Signal.Trace.dumpVCD' gives for the same
 signals, with three differences: dotted names are nested @$scope@s, signals
@@ -23,9 +22,20 @@ module Clash.CircuitContext.Internal.Vcd (
   disambiguate,
   vcdPath,
   renderVCD,
+
+  -- * Shared with the FST writer
+  shownWindow,
+  writeSidecar,
+  ioLeft,
+  aliasMap,
+  sourceOrder,
+  parseSeg,
+  parseLoc,
+  splitPath,
+  naturalKey,
 ) where
 
-import Data.Bits (shiftR, testBit)
+import Control.Exception (IOException, displayException, onException, try)
 import Data.Char (isDigit, ord)
 import Data.List (intercalate, sortOn)
 import qualified Data.List as List
@@ -34,10 +44,12 @@ import Data.Maybe (fromMaybe, isNothing)
 import Data.Ord (Down (..))
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
-import Data.Word (Word64, Word8)
-import Foreign.Marshal.Utils (fillBytes)
-import Foreign.Storable (pokeByteOff)
-import System.Directory (createDirectoryIfMissing, removeFile, renameFile)
+import System.Directory (
+  createDirectoryIfMissing,
+  removeFile,
+  removePathForcibly,
+  renameFile,
+ )
 import System.FilePath (takeDirectory, takeFileName, (-<.>), (<.>))
 import System.IO (
   BufferMode (BlockBuffering),
@@ -48,16 +60,16 @@ import System.IO (
  )
 
 import qualified Data.Aeson as Json
-import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Internal as ByteString (unsafeCreate)
 import qualified Data.ByteString.Lazy as ByteStringLazy
 
+import Clash.CircuitContext.Internal.Bits (bits)
 import Clash.CircuitContext.Internal.Sidecar (sidecar)
 
 import Clash.CircuitContext.Internal.Recorder (
   Change (..),
   Kind (..),
+  Reader,
   RecordedSignal (..),
   Recording (..),
   Value,
@@ -76,28 +88,71 @@ FIRST. The temporary files get the default permissions (the umask), not the
 owner-only ones of 'openTempFile', so a waveform is as readable as any other
 file the process writes: if the @.vcd@ is there, its @.json@ is there and complete. (Not that
 the two are from the same run: a crash between the renames leaves a new
-@.json@ beside the previous run's @.vcd@.) On 'Left' neither is written.
+@.json@ beside the previous run's @.vcd@.) On 'Left' (see 'shownWindow';
+also when a file cannot be written) neither is written.
 -}
 writeFiles :: String -> (Int, Int) -> Recording -> FilePath -> IO (Either String ())
-writeFiles comment window rec path = withReader rec $ \spill -> do
-  createDirectoryIfMissing True dir
-  (vTmp, vH) <- openBinaryTempFileWithDefaultPermissions dir (takeFileName path <.> "tmp")
-  hSetBuffering vH (BlockBuffering Nothing)
-  rendered <- renderVCD spill comment window rec vH
-  hClose vH
-  case rendered of
-    Left err -> removeFile vTmp >> pure (Left err)
-    Right () -> do
-      meta <- sidecar spill [(vcdPath n, s) | (n, s) <- namedSignals rec]
-      (jTmp, jH) <- openBinaryTempFileWithDefaultPermissions dir (takeFileName sidecarPath <.> "tmp")
-      ByteStringLazy.hPut jH (Json.encode meta)
-      hClose jH
-      renameFile jTmp sidecarPath
-      renameFile vTmp path
-      pure (Right ())
+writeFiles comment window0 rec path = case shownWindow rec window0 of
+  Left err -> pure (Left err)
+  Right window -> ioLeft $ withReader rec $ \records -> do
+    createDirectoryIfMissing True dir
+    (vTmp, vH) <- openBinaryTempFileWithDefaultPermissions dir (takeFileName path <.> "tmp")
+    flip onException (hClose vH >> removePathForcibly vTmp) $ do
+      hSetBuffering vH (BlockBuffering Nothing)
+      rendered <- renderVCD records comment window rec vH
+      hClose vH
+      case rendered of
+        Left err -> removeFile vTmp >> pure (Left err)
+        Right () -> do
+          writeSidecar rec path
+          renameFile vTmp path
+          pure (Right ())
+ where
+  dir = takeDirectory path
+
+{- | Write the typed-waveform sidecar of the waveform at this path: beside
+it, with extension @.json@, through a temporary file and a rename.
+-}
+writeSidecar :: Recording -> FilePath -> IO ()
+writeSidecar rec path = do
+  meta <- sidecar [(vcdPath n, s) | (n, s) <- namedSignals rec] (recordingLuts rec)
+  (jTmp, jH) <-
+    openBinaryTempFileWithDefaultPermissions dir (takeFileName sidecarPath <.> "tmp")
+  flip onException (hClose jH >> removePathForcibly jTmp) $ do
+    ByteStringLazy.hPut jH (Json.encode meta)
+    hClose jH
+    renameFile jTmp sidecarPath
  where
   dir = takeDirectory path
   sidecarPath = path -<.> "json"
+
+{- | The part of a window @[start, stop)@, in units of the recording's
+'timescale', that a waveform shows: it ends where the simulation stopped, at
+the latest. 'Left', with the reason, when it shows nothing.
+-}
+shownWindow :: Recording -> (Int, Int) -> Either String (Int, Int)
+shownWindow rec (start, stop)
+  | null (recordingSignals rec) = Left "nothing was traced or probed in this run"
+  | end <= 0 = Left "the run evaluated no cycle"
+  | start < 0 || stop <= start = Left ("the window " <> shown <> " is empty")
+  | start >= end =
+      Left
+        ( "the window "
+            <> shown
+            <> " starts after the end of the run, at "
+            <> show end
+            <> " (in units of the timescale, "
+            <> show (timescale rec)
+            <> " ps)"
+        )
+  | otherwise = Right (start, min stop end)
+ where
+  end = ticks rec (recordingEndPs rec)
+  shown = "[" <> show start <> ", " <> show stop <> ")"
+
+-- | An action's 'IOException' as a 'Left'.
+ioLeft :: IO (Either String a) -> IO (Either String a)
+ioLeft act = either (\(e :: IOException) -> Left (displayException e)) id <$> try act
 
 {- | Every signal of a recording with its name in the VCD: its key with the
 instance tags resolved by 'disambiguate'. In name order.
@@ -107,17 +162,18 @@ namedSignals rec =
   Map.toList (disambiguate (Map.fromList [(signalKey s, s) | s <- recordingSignals rec]))
 
 {- | Write the VCD of a recording over the window @[start, stop)@, in units
-of its timescale (for a single domain: cycles), to the handle. The spill
-file is read through the first handle (see
-"Clash.CircuitContext.Internal.Recorder"). The window ends at the end of the
-recording at the latest. The comment goes in the @$comment@ line.
+of its timescale (for a single domain: cycles), to the handle. The records
+are read through the 'Reader' (see "Clash.CircuitContext.Internal.Recorder").
+The window must be one 'shownWindow' gives. The comment goes in the
+@$comment@ line. The last timestamp is @stop@, so that a viewer shows the
+last cycle whole, as in the FST.
 
 'Left', and nothing written, when there is no signal, or when a name has a
 character VCD does not allow (only printable ASCII is).
 -}
 renderVCD ::
-  Handle -> String -> (Int, Int) -> Recording -> Handle -> IO (Either String ())
-renderVCD spill comment (start, stop0) rec out
+  Reader -> String -> (Int, Int) -> Recording -> Handle -> IO (Either String ())
+renderVCD records comment (start, stop) rec out
   | null named = pure (Left "nothing was traced or probed in this run")
   | nm : _ <- filter (any (not . printable)) (map fst named) =
       pure
@@ -128,7 +184,7 @@ renderVCD spill comment (start, stop0) rec out
             )
         )
   | otherwise = do
-      aliasOf <- aliasMap spill [(n, s) | (n, s) <- named, signalKind s == TraceKind]
+      aliasOf <- aliasMap records [(n, s) | (n, s) <- named, signalKind s == TraceKind]
       now <- getCurrentTime
       let
         emitted =
@@ -140,13 +196,13 @@ renderVCD spill comment (start, stop0) rec out
         aliasesFor = Map.fromListWith (++) [(r, [a]) | (a, r) <- Map.toList aliasOf]
         vars =
           sortOn
-            sourceOrder
+            sourceOrder'
             ( concat
                 [ (n, signalWidth s, l) : [(a, signalWidth s, l) | a <- Map.findWithDefault [] n aliasesFor]
                 | (l, (n, s)) <- labelled
                 ]
             )
-      streams <- mapM (\(l, (_, s)) -> (,,) l s <$> readChanges spill s) labelled
+      streams <- mapM (\(l, (_, s)) -> (,,) l s <$> readChanges records s) labelled
       let
         starts = [(l, s, startAt Nothing (events s cs)) | (l, s, cs) <- streams]
       Builder.hPutBuilder out $
@@ -164,24 +220,15 @@ renderVCD spill comment (start, stop0) rec out
                 , t < stop
                 ]
             )
+          <> "#"
+          <> Builder.intDec stop
+          <> "\n"
       pure (Right ())
  where
   named = namedSignals rec
 
-  -- A scope declares its signals in the order they are written in the
-  -- design: by the call site of their recorder (for a plugin-made trace or
-  -- probe, where the binding is written). The fields of a record share the
-  -- call site of the record, and follow in declaration order (their 'P'
-  -- positions, see 'parseLoc'). Signals with one call site and no position
-  -- (the elements of a @Vec@) or with none follow in 'naturalKey' order of
-  -- their names. 'insertVar' appends, so sorting all
-  -- vars first sorts every scope.
-  sites = Map.fromList [(n, siteOf (signalKey s)) | (n, s) <- named]
-  siteOf raw = let (_, _, loc) = parseSeg (last (splitPath raw)) in parseLoc loc
-  sourceOrder (n, _, _) =
-    let site = Map.findWithDefault Nothing n sites
-     in (isNothing site, site, naturalKey (last (splitPath n)))
-  stop = min stop0 (ticks rec (recordingEndPs rec))
+  -- 'insertVar' appends, so sorting all vars first sorts every scope.
+  sourceOrder' (n, _, _) = sourceOrder named n
   scale = timescale rec
 
   header date =
@@ -204,7 +251,7 @@ renderVCD spill comment (start, stop0) rec out
   startAt v rest = (v, rest)
 
   -- The changes of all signals, by time, then by identifier code: a k-way
-  -- merge of their streams, each read from the spill file as it goes.
+  -- merge of their streams, each read as it goes.
   merge = go Nothing
    where
     go lastT q = case Map.minViewWithKey q of
@@ -222,34 +269,30 @@ renderVCD spill comment (start, stop0) rec out
                 <> valueLine s l mv
                 <> go (Just t) next
 
+{- | The order a scope declares its signals in, as a sort key for a name of
+'namedSignals': the order they are written in the design, by the call site
+of their recorder (for a plugin-made trace or probe, where the binding is
+written). The fields of a record share the call site of the record, and
+follow in declaration order (their 'P' positions, see 'parseLoc'). Signals
+with one call site and no position (the elements of a @Vec@) or with none
+follow in 'naturalKey' order of their names.
+-}
+sourceOrder ::
+  [(String, RecordedSignal)] ->
+  String ->
+  (Bool, Maybe ([(Word, Int, Int, Int)], [Int]), ([Either Integer String], String))
+sourceOrder named = \n ->
+  let site = Map.findWithDefault Nothing n sites
+   in (isNothing site, site, naturalKey (last (splitPath n)))
+ where
+  sites = Map.fromList [(n, siteOf (signalKey s)) | (n, s) <- named]
+  siteOf raw = let (_, _, loc) = parseSeg (last (splitPath raw)) in parseLoc loc
+
 -- | One value line: @0!@ for one bit, @b0x1 !@ for more.
 valueLine :: RecordedSignal -> String -> Maybe Value -> Builder.Builder
 valueLine s l mv = case signalWidth s of
   1 -> Builder.byteString (bits 1 mv) <> Builder.string7 l <> "\n"
   w -> "b" <> Builder.byteString (bits w mv) <> " " <> Builder.string7 l <> "\n"
-
-{- | A value's bits, most significant first: 0/1 defined, @x@ evaluated but
-undefined, @z@ not evaluated. Filled 64 bits at a time from machine words:
-this is most of the work of writing a VCD.
--}
-bits :: Int -> Maybe Value -> ByteString.ByteString
-bits w mv = ByteString.unsafeCreate w $ \p -> case mv of
-  Nothing -> fillBytes p (c2w 'z') w
-  Just (mask, val) -> mapM_ (word p mask val) [0 .. (w - 1) `div` 64]
- where
-  word p mask val k = do
-    let
-      m = fromIntegral (mask `shiftR` (64 * k)) :: Word64
-      v = fromIntegral (val `shiftR` (64 * k)) :: Word64
-      digit d
-        | testBit m d = c2w 'x'
-        | testBit v d = c2w '1'
-        | otherwise = c2w '0'
-    mapM_
-      (\d -> pokeByteOff p (w - 1 - (64 * k + d)) (digit d))
-      [0 .. min 63 (w - 1 - 64 * k)]
-  c2w :: Char -> Word8
-  c2w = fromIntegral . ord
 
 -- | Identifier codes, as stock @dumpVCD@ makes them: @!@ to @~@, then @!!@, @!"@, …
 labels :: [String]
@@ -276,8 +319,8 @@ share a hash, which are nearly always real copies. The representative is the
 signal with the smallest key, so the result does not depend on the order of
 registration. Probes are not aliased.
 -}
-aliasMap :: Handle -> [(String, RecordedSignal)] -> IO (Map.Map String String)
-aliasMap spill traces = do
+aliasMap :: Reader -> [(String, RecordedSignal)] -> IO (Map.Map String String)
+aliasMap records traces = do
   groups <- concat <$> mapM classes (Map.elems buckets)
   pure (Map.fromList [(a, r) | (r, _) : as <- groups, (a, _) <- as])
  where
@@ -292,8 +335,8 @@ aliasMap spill traces = do
     same <- mapM (\y -> (,) y <$> sameHistory (snd x) (snd y)) rest
     ((x : [y | (y, True) <- same]) :) <$> classes [y | (y, False) <- same]
   sameHistory a b = do
-    as <- readChanges spill a
-    bs <- readChanges spill b
+    as <- readChanges records a
+    bs <- readChanges records b
     pure $! as == bs
 
 --------------------------------------------------------------------------------
@@ -316,24 +359,33 @@ parseSeg s = case splitOn '@' s of
  where
   isOrd ds = not (null ds) && all isDigit ds
 
-{- | Parse an encoded call site @L\<line\>C\<col\>F\<hash\>@, optionally
-followed by record field positions @P\<i\>@ (see
-'Clash.CircuitContext.Core.fieldLoc'), into a sort key (file hash, line,
-col, field positions).
+{- | Parse an encoded call site into a sort key: one or more call sites
+@L\<line\>C\<col\>F\<hash\>@, each maybe followed by @R\<n\>@ when it was
+reached @n@ times in a row (the calls that led to the recorder, see
+'Clash.CircuitContext.Core.callPath', then the recorder's own), each as
+(file hash, line, col, times), then the record field positions @P\<i\>@
+(see 'Clash.CircuitContext.Core.fieldLoc').
 -}
-parseLoc :: String -> Maybe (Word, Int, Int, [Int])
-parseLoc ('L' : s0)
-  | (l@(_ : _), 'C' : s1) <- span isDigit s0
-  , (c@(_ : _), 'F' : s2) <- span isDigit s1
-  , (f@(_ : _), s3) <- span isDigit s2
-  , Just ps <- fields s3 =
-      Just (read f, read l, read c, ps)
+parseLoc :: String -> Maybe ([(Word, Int, Int, Int)], [Int])
+parseLoc s0 = case sites s0 of
+  Just (ss@(_ : _), rest) -> (,) ss <$> fields rest
+  _ -> Nothing
  where
+  sites ('L' : s1)
+    | (l@(_ : _), 'C' : s2) <- span isDigit s1
+    , (c@(_ : _), 'F' : s3) <- span isDigit s2
+    , (f@(_ : _), s4) <- span isDigit s3 = do
+        let (n, s5) = case s4 of
+              'R' : s6 | (r@(_ : _), s7) <- span isDigit s6 -> (read r, s7)
+              _ -> (1, s4)
+        (ss, rest) <- sites s5
+        Just ((read f, read l, read c, n) : ss, rest)
+    | otherwise = Nothing
+  sites s = Just ([], s)
   fields "" = Just []
   fields ('P' : s)
     | (p@(_ : _), rest) <- span isDigit s = (read p :) <$> fields rest
   fields _ = Nothing
-parseLoc _ = Nothing
 
 {- | Strip instance tags from all keys. Groups siblings by (parent, name): a
 name with a single instance keeps its clean name; a name with several gets

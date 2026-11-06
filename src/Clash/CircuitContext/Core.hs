@@ -1,9 +1,13 @@
 {-# LANGUAGE BangPatterns #-}
 {-# LANGUAGE ConstraintKinds #-}
+{-# LANGUAGE DataKinds #-}
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE KindSignatures #-}
+{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE MagicHash #-}
+{-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE RankNTypes #-}
@@ -52,12 +56,19 @@ resolved to a small ordinal at registration time via its 'StableName' — no
 global state and no id minting in pure code. Map keys carry
 @name\@ordinal\@loc@ tags (the @\'\@\'@ character is reserved — don't use it
 in names); the VCD writer strips them and, where siblings genuinely collide,
-renames them @name_0@, @name_1@, …, ordered by the design call site of
-'component' (see 'callLoc'). Instances born at the same call site are
-numbered in the order the simulation first reaches them: bare 'fmap'
-replication, and every instance of one plugin-made component (the plugin
-writes @component "f"@ inside @f@). Name those by structural position with
+renames them @name_0@, @name_1@, …, ordered by their call sites in the
+design: the calls that led to the instance ('ccCallPath'), then the call
+of 'component' (see 'callLoc'). Instances born at the same call site are
+numbered in the order the simulation first reaches them: a 'fmap' or
+'Clash.Prelude.map' over a vector. Name those by structural position with
 'imapComponents', or call 'component' by hand at each site.
+
+The context is @'SimOnly' 'CircuitContext'@, and 'HasCircuitContext' also
+asks for the call sites @?circuitCallSites@, a 'CallStack' of its own: GHC
+adds the site of each call of a function that needs a context to it, and
+the plugin turns that call into a step of the context's call path (see
+'callContext'). Clash ignores a 'SimOnly' value, so a context that differs
+at each call site does not make Clash duplicate a component.
 -}
 module Clash.CircuitContext.Core (
   -- * Context
@@ -73,6 +84,15 @@ module Clash.CircuitContext.Core (
   CircuitContextAnnotation (..),
   component,
   imapComponents,
+
+  -- * What the plugin writes
+  CircuitContextOnly,
+  CallSitesOnly,
+  TurnOnThePlugin,
+  TurnOnTheCircuitContextPlugin,
+  circuitContext,
+  callContext,
+  rootCallStack,
   qualifyName,
 
   -- * Scoped signal tracing
@@ -97,7 +117,7 @@ import Clash.Annotations.Primitive (Primitive (InlineYamlPrimitive), hasBlackBox
 import Clash.Explicit.Mealy (mealy)
 import Clash.Explicit.Moore (moore)
 import Clash.Explicit.Signal (delay, register)
-import Clash.Magic (clashSimulation)
+import Clash.Magic (SimOnly (..), clashSimulation)
 import Clash.Prelude (
   BitPack (..),
   Bundle (Unbundled, bundle),
@@ -143,10 +163,11 @@ import Control.Exception (
   SomeException,
   evaluate,
   fromException,
+  onException,
   throwIO,
   try,
  )
-import Control.Monad (forM, forM_)
+import Control.Monad (forM, forM_, when)
 import Data.Bits (xor, (.&.))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import qualified Data.IntMap.Strict as IntMap
@@ -155,17 +176,21 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (isNothing)
 import GHC.Natural (Natural)
-import System.Directory (removePathForcibly)
 import GHC.Stack (
   CallStack,
   HasCallStack,
+  SrcLoc,
   callStack,
+  emptyCallStack,
   getCallStack,
   srcLocFile,
   srcLocModule,
   srcLocStartCol,
   srcLocStartLine,
  )
+import GHC.TypeLits (Symbol)
+import System.Directory (makeAbsolute)
+import System.IO (hPutStrLn, stderr)
 import System.IO.Unsafe (unsafeDupablePerformIO, unsafePerformIO)
 import System.Mem.StableName (StableName, hashStableName, makeStableName)
 
@@ -223,13 +248,93 @@ data CircuitContext = CircuitContext
   call site, so this is what puts them in DECLARATION order in the VCD (see
   'fieldLoc'). Empty outside a record trace.
   -}
+  , ccCallPath :: [(String, Int)]
+  {- ^ The call sites that led here from the nearest scope, encoded as in
+  'callLoc', INNERMOST first, each with the number of times it was reached
+  in a row. Each call of a function that the plugin split adds one (see
+  'callContext'); the next 'component' takes the path (see 'callPath') and
+  starts a new one. This is what gives each call of a plugin-made
+  component, whose own 'component' call is the same for every instance,
+  its own call site.
+
+  The count keeps the path short in a recursive helper that is not a scope:
+  each level reaches the same recursive call again, and adds one to its
+  count instead of a site.
+  -}
   }
 
-type HasCircuitContext = ?circuitContext :: CircuitContext
+{- | What an instrumented function asks for: the context, which exists only
+in simulation, and its call sites, a 'CallStack' to which GHC adds the site
+of every call ('CallSitesOnly'). It is not the 'HasCallStack' of the
+function: 'error' and 'GHC.Stack.withFrozenCallStack' do not see it, and do
+not change it.
+
+The third constraint, 'TurnOnTheCircuitContextPlugin', only the plugin
+solves. The plugin gives each function it instruments a signature without it
+(see 'callContext'); a call of a function compiled without the plugin is an
+error that says to turn it on. Without the plugin the call sites would reach
+the components that Clash makes, and Clash would make one per call.
+
+Code that is instrumented by hand and compiled without the plugin asks for
+'CircuitContextOnly' instead: it records, without call sites.
+-}
+type HasCircuitContext =
+  (CallSitesOnly, CircuitContextOnly, TurnOnTheCircuitContextPlugin)
+
+{- | Proof that "Clash.CircuitContext.Plugin" is on in the module of a call of
+a function that asks for 'HasCircuitContext'. It has no instances: only the
+plugin solves it. Without the plugin the error is
+
+> No instance for ‘TurnOnTheCircuitContextPlugin’ arising from a use of ‘f’
+
+Add @-fplugin=Clash.CircuitContext.Plugin@ to the @ghc-options@ of the
+package, or to the command line of @clash@ (which does not read an
+@OPTIONS_GHC@ pragma's plugin). It has no argument, so that it asks for no
+language extension where it is used.
+-}
+class TurnOnTheCircuitContextPlugin
+
+{- | Proof that "Clash.CircuitContext.Plugin" is on in the module of a call.
+The class has no instances: only the plugin solves it, and its argument is
+the message of the error when the plugin is off.
+
+> No instance for ‘TurnOnThePlugin
+>                    "add -fplugin=Clash.CircuitContext.Plugin to the ghc-options of this package, or to the command line of clash"’
+-}
+class TurnOnThePlugin (fix :: Symbol)
+
+{- | 'HasCircuitContext' without the call stack: what the plugin gives the
+worker of a function it splits (see 'callContext'), and what the arguments
+of 'component', 'imapComponents' and 'withoutCircuitContext' are given.
+
+A call stack is a constant that Clash specialises a function on: a
+different one at each call makes one HDL module per call.
+-}
+type CircuitContextOnly = (?circuitContext :: SimOnly CircuitContext)
+
+{- | The call sites of 'HasCircuitContext': GHC adds the site of each call to
+an implicit parameter of type 'CallStack', as to that of 'HasCallStack'.
+
+The plugin writes 'HasCircuitContext' out as @(CallSitesOnly,
+CircuitContextOnly)@ in the signature of each function it splits. GHC 9.8
+gives two calls in one expression one call stack when the callee's type asks
+for a constraint tuple (a synonym such as 'HasCircuitContext' is one): both
+calls had the site of the first.
+-}
+type CallSitesOnly = (?circuitCallSites :: CallStack)
+
+-- | The context of 'HasCircuitContext'. Read it only in simulation.
+circuitContext :: (?circuitContext :: SimOnly CircuitContext) => CircuitContext
+circuitContext = case ?circuitContext of SimOnly ctx -> ctx
+{-# INLINE circuitContext #-}
 
 -- | Tracing and probing disabled; hierarchy still works.
-noCircuitContext :: CircuitContext
-noCircuitContext = CircuitContext [] Nothing Nothing []
+noCircuitContext :: SimOnly CircuitContext
+noCircuitContext = SimOnly disabledContext
+
+-- | The context of 'noCircuitContext'.
+disabledContext :: CircuitContext
+disabledContext = CircuitContext [] Nothing Nothing [] []
 
 {- | Run an instrumented ('HasCircuitContext'-constrained) computation with a
 disabled context, /without/ the caller having to acquire the constraint itself.
@@ -249,7 +354,7 @@ drop the constraint. Because instrumentation is HDL-transparent, the wrapped
 call is identical — in both simulation and synthesis — to calling the
 uninstrumented function directly.
 -}
-withoutCircuitContext :: ((HasCircuitContext) => r) -> r
+withoutCircuitContext :: ((CircuitContextOnly) => r) -> r
 withoutCircuitContext k = let ?circuitContext = noCircuitContext in k
 {-# INLINE withoutCircuitContext #-}
 
@@ -332,19 +437,34 @@ not where the record is traced.
 -}
 callLoc :: CallStack -> String
 callLoc cs = case dropWhile skipped (getCallStack cs) of
-  (_, l) : _ ->
-    "L"
-      <> show (srcLocStartLine l)
-      <> "C"
-      <> show (srcLocStartCol l)
-      <> "F"
-      <> show (fileHash (srcLocFile l))
+  (_, l) : _ -> encodeSite l
   [] -> ""
  where
   skipped (fn, l) =
     "$dm" `isPrefixOf` fn || "Clash.CircuitContext." `isPrefixOf` srcLocModule l
+
+-- | A source location as a sort key: @L\<line\>C\<col\>F\<file-hash\>@.
+encodeSite :: SrcLoc -> String
+encodeSite l =
+  "L"
+    <> show (srcLocStartLine l)
+    <> "C"
+    <> show (srcLocStartCol l)
+    <> "F"
+    <> show (fileHash (srcLocFile l))
+ where
   fileHash :: String -> Word
   fileHash = List.foldl' (\h c -> h * 31 + fromIntegral (fromEnum c)) 5381
+
+{- | The call path of a context ('ccCallPath') as a key, outermost site
+first: a site reached @n > 1@ times in a row is followed by @R\<n\>@. Every
+recorder puts it BEFORE its own call site, so the instances and the signals
+that the calls of one helper make come in the order of those calls.
+-}
+callPath :: CircuitContext -> String
+callPath = concatMap site . reverse . ccCallPath
+ where
+  site (loc, n) = if n > 1 then loc <> "R" <> show n else loc
 
 {- | A call site with the position of a record field added, as @P\<i\>@ per
 level (see 'ccFields'). A call site without a location stays empty.
@@ -356,9 +476,10 @@ fieldLoc fields loc
 
 {- | Run a simulation action under a fresh recording context, and return
 what the action returned (or threw) with the 'Recording'. The recording's
-values go to a spill file at this path while the simulation runs, so the
-recorded history is not kept in memory. Delete the file with
-'Clash.CircuitContext.Recording.discardRecording' when done.
+values go to a spill file at this path while the simulation runs, so memory
+does not grow with the length of the run; given 'Nothing', they stay in
+memory, as compact records, and nothing is written to disk. Delete a spill
+file with 'Clash.CircuitContext.Recording.discardRecording' when done.
 
 The action must /force/ the parts of the circuit it wants recorded (sampling
 does). When it stops, every trace is finished up to the time the furthest
@@ -368,12 +489,16 @@ can be forced less far than another (a register's input, for one).
 
 What the action recorded before it threw is in the recording too: that is
 what the waveform of a failing test is made of. An asynchronous exception
-(a cancelled test) is not caught: the spill file is deleted and the
-exception goes on.
+(a cancelled test) is not caught: the recording stops where it got to and
+the exception goes on. A spill file stays, holds what was recorded, and a
+message on stderr says where it is: read it with
+'Clash.CircuitContext.Recording.recoverRecording'. The spill file of a
+process that was killed stays too, with what it recorded up to about a second
+before.
 -}
 withRecording ::
-  FilePath ->
-  ((HasCircuitContext) => IO r) ->
+  Maybe FilePath ->
+  ((CircuitContextOnly) => IO r) ->
   IO (Either SomeException r, Recording)
 withRecording = withRecordingFrom 0
 
@@ -383,24 +508,42 @@ are evaluated, but nothing is written for them.
 -}
 withRecordingFrom ::
   Int ->
-  FilePath ->
-  ((HasCircuitContext) => IO r) ->
+  Maybe FilePath ->
+  ((CircuitContextOnly) => IO r) ->
   IO (Either SomeException r, Recording)
-withRecordingFrom start path k = do
-  rec <- newRecorder path start
+withRecordingFrom start spill k = do
+  rec <- newRecorder spill start
   taps <- newIORef []
   ords <- newIORef emptyOrdinals
   r <-
     try
-      ( let ?circuitContext = CircuitContext [] (Just (Live rec taps)) (Just ords) []
+      ( let ?circuitContext = SimOnly (CircuitContext [] (Just (Live rec taps)) (Just ords) [] [])
          in k
       )
   case r of
     Left err | Just (_ :: SomeAsyncException) <- fromException err -> do
-      _ <- closeRecorder rec 0
-      removePathForcibly path
+      -- Stop now: no cycle is evaluated to finish the traces.
+      stopped rec
       throwIO err
-    _ -> (,) r <$> finishRecording rec taps
+    _ -> (,) r <$> finishRecording rec taps `onException` stopped rec
+ where
+  stopped rec = do
+    _ <- closeRecorder rec =<< recorderEnd rec
+    mapM_ stoppedMessage spill
+
+{- | Say on stderr that a run was stopped, and where its spill file is, as an
+ABSOLUTE path: the working directory differs between ways of running a suite.
+-}
+stoppedMessage :: FilePath -> IO ()
+stoppedMessage f = do
+  path <- makeAbsolute f
+  hPutStrLn
+    stderr
+    ( "clash-circuit-context: the run was stopped; what it recorded is in "
+        <> path
+        <> ". Write its waveform with spill2fst or spill2vcd (executables of"
+        <> " clash-circuit-context), or with recoverWaveform or writeSpill"
+    )
 
 {- | Finish every trace up to the end of the run, then close the recorder.
 
@@ -408,6 +551,11 @@ The end is the furthest time any signal was forced to. A trace's last forced
 cycle is still in its tap ('TraceTap'), so it counts one cycle more than it
 recorded. Finishing evaluates cycles the run did not force; a cycle that
 throws ends that trace there (its later cycles show as not evaluated).
+
+Finishing a trace can evaluate a trace that the run did not reach, which then
+registers. Such a trace is finished too, up to the same end: the taps are read
+again until no new trace registers. The list only grows at its head, so the
+new taps are the first ones.
 -}
 finishRecording :: Recorder -> IORef [(Sig, IORef TraceTap)] -> IO Recording
 finishRecording rec tapsRef = do
@@ -416,15 +564,25 @@ finishRecording rec tapsRef = do
     TraceTap touched next _ <- readIORef ref
     pure (if touched then (next + 1) * sigPeriod sig else 0)
   recorded <- recorderEnd rec
-  let end = maximum (recorded : forced)
-  forM_ taps $ \(sig, ref) -> do
-    TraceTap _ next rest <- readIORef ref
-    let upto = (end + sigPeriod sig - 1) `div` sigPeriod sig
-    finished <- try (forM_ (zip [next .. upto - 1] rest) (\(c, v) -> evaluate v >>= recordCycle rec sig c))
-    case finished of
-      -- A cancellation is not a cycle that throws: it goes on.
-      Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
-      _ -> pure ()
+  let
+    end = maximum (recorded : forced)
+    finishFrom done = do
+      now <- readIORef tapsRef
+      let new = length now - done
+      when (new > 0) $ do
+        forM_ (take new now) finish
+        finishFrom (done + new)
+    finish (sig, ref) = do
+      TraceTap _ next rest <- readIORef ref
+      let upto = (end + sigPeriod sig - 1) `div` sigPeriod sig
+      finished <-
+        try
+          (forM_ (zip [next .. upto - 1] rest) (\(c, v) -> evaluate v >>= recordCycle rec sig c))
+      case finished of
+        -- A cancellation is not a cycle that throws: it goes on.
+        Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
+        _ -> pure ()
+  finishFrom 0
   closeRecorder rec end
 
 {- | Declarations of intent the plugin reads from an @ANN@ pragma.
@@ -471,7 +629,7 @@ synthesizable with 'component' calls left in. In simulation it delegates to
 happens.
 -}
 component ::
-  (HasCallStack, HasCircuitContext) => String -> ((HasCircuitContext) => r) -> r
+  (HasCallStack, CircuitContextOnly) => String -> ((CircuitContextOnly) => r) -> r
 component nm k
   | clashSimulation = simComponent nm k
   | otherwise = k
@@ -483,13 +641,17 @@ rather than being floated and shared. Skips the push entirely when the
 context is disabled, so uninstrumented-in-effect simulation is free.
 -}
 simComponent ::
-  (HasCallStack, HasCircuitContext) => String -> ((HasCircuitContext) => r) -> r
+  (HasCallStack, CircuitContextOnly) => String -> ((CircuitContextOnly) => r) -> r
 simComponent nm k
   | ccDisabled ctx0 = k
-  | otherwise = let ?circuitContext = ctx' in k
+  | otherwise = let ?circuitContext = SimOnly ctx' in k
  where
-  ctx0 = ?circuitContext
-  ctx' = ctx0{ccHier = HierSeg nm (callLoc callStack) : ccHier ctx0}
+  ctx0 = circuitContext
+  ctx' =
+    ctx0
+      { ccHier = HierSeg nm (callPath ctx0 <> callLoc callStack) : ccHier ctx0
+      , ccCallPath = []
+      }
 {-# OPAQUE simComponent #-}
 
 {- | Replicate a named instance by structural position: element @i@ of the
@@ -500,12 +662,65 @@ functorial APIs cannot carry, so it has to be threaded explicitly.
 -}
 imapComponents ::
   forall n a b.
-  (HasCircuitContext, KnownNat n) =>
+  (HasCallStack, CircuitContextOnly, KnownNat n) =>
   String ->
-  ((HasCircuitContext) => Index n -> a -> b) ->
+  ((CircuitContextOnly) => Index n -> a -> b) ->
   Vec n a ->
   Vec n b
 imapComponents nm f = imap (\i x -> component (nm <> "_" <> show i) (f i x))
+
+{- | The context of a call, with the call's site added to its call path
+('ccCallPath'). The plugin splits each function @f@ whose signature needs a
+context into a wrapper, which keeps the name and the signature, and a
+worker, which keeps the body:
+
+> f :: <f's signature, HasCircuitContext written out as CallSitesOnly and CircuitContextOnly>
+> f = let ?circuitContext = callContext ?circuitCallSites
+>         ?circuitCallSites = rootCallStack
+>      in $wf
+> $wf :: <f's signature, with CircuitContextOnly for HasCircuitContext>
+
+GHC adds the site of each call of @f@ to the wrapper's call sites, and this
+reads it from there. The next 'component', the one that @f@ makes when it is
+a component or one further down, takes the path as the call site of its
+instance. The calls of one helper then also order the signals that the
+helper records into its caller's scope: all those of its first call, then
+all those of its second.
+
+During HDL generation this is the context unchanged.
+-}
+callContext :: (CircuitContextOnly) => CallStack -> SimOnly CircuitContext
+callContext sites
+  | clashSimulation = simCallContext (getCallStack sites)
+  | otherwise = ?circuitContext
+{-# INLINE callContext #-}
+
+{- | Simulation worker for 'callContext', given the call sites: the first is
+the call of the wrapper.
+-}
+simCallContext ::
+  (?circuitContext :: SimOnly CircuitContext) =>
+  [(String, SrcLoc)] ->
+  SimOnly CircuitContext
+simCallContext frames
+  | ccDisabled ctx = ?circuitContext
+  | (_, site) : _ <- frames =
+      SimOnly ctx{ccCallPath = push (encodeSite site) (ccCallPath ctx)}
+  | otherwise = ?circuitContext
+ where
+  ctx = circuitContext
+  push here = \case
+    (prev, n) : outer | prev == here -> (prev, n + 1) : outer
+    path -> (here, 1) : path
+{-# NOINLINE simCallContext #-}
+
+{- | The call sites a worker starts from (see 'callContext'), when its
+signature asks for them anyway (through a synonym of the designer's): the
+same for every call, so that Clash makes one HDL module of a worker, not one
+per call.
+-}
+rootCallStack :: CallStack
+rootCallStack = emptyCallStack
 
 -- | The fully qualified name for @nm@ at the current hierarchy.
 qualifyName :: CircuitContext -> String -> String
@@ -527,7 +742,7 @@ say) from tracing inside polymorphic components.
 -}
 traceSignalC ::
   forall dom a.
-  (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) =>
+  (HasCallStack, CircuitContextOnly, KnownDomain dom, BitPack a, NFDataX a) =>
   String ->
   Signal dom a ->
   Signal dom a
@@ -541,7 +756,7 @@ traceSignalC nm sig
   , "  name: Clash.CircuitContext.Core.traceSignalC"
   , "  kind: Expression"
   , "  type: |-"
-  , "      (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) => String -> Signal dom a -> Signal dom a"
+  , "      (HasCallStack, CircuitContextOnly, KnownDomain dom, BitPack a, NFDataX a) => String -> Signal dom a -> Signal dom a"
   , "  template: ~ARG[6]"
   , "  workInfo: Never"
   ])) #-}
@@ -561,7 +776,7 @@ see @Clash.CircuitContext.Auto.Describable@.
 traceSignalSW ::
   forall dom a.
   ( HasCallStack
-  , HasCircuitContext
+  , CircuitContextOnly
   , KnownDomain dom
   , BitPack a
   , NFDataX a
@@ -580,7 +795,7 @@ traceSignalSW nm sig
   , "  name: Clash.CircuitContext.Core.traceSignalSW"
   , "  kind: Expression"
   , "  type: |-"
-  , "      (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a, Waveform a) => String -> Signal dom a -> Signal dom a"
+  , "      (HasCallStack, CircuitContextOnly, KnownDomain dom, BitPack a, NFDataX a, Waveform a) => String -> Signal dom a -> Signal dom a"
   , "  template: ~ARG[7]"
   , "  workInfo: Never"
   ])) #-}
@@ -591,7 +806,7 @@ stock 'Clash.Signal.Trace.traceSignal1'); identity when tracing is off.
 -}
 simTraceSignalC ::
   forall dom a.
-  (HasCallStack, HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a) =>
+  (HasCallStack, CircuitContextOnly, KnownDomain dom, BitPack a, NFDataX a) =>
   -- | The payload's @clash-shockwaves@ descriptor, if the caller has one
   Maybe (TypeName, Translator) ->
   String ->
@@ -610,8 +825,8 @@ simTraceSignalC adt nm sig = case (ccRecorder ctx, ccOrdinals ctx) of
       registerTrace live period adt key sig
   _ -> sig
  where
-  ctx = ?circuitContext
-  loc = fieldLoc (ccFields ctx) (callLoc callStack)
+  ctx = circuitContext
+  loc = fieldLoc (ccFields ctx) (callPath ctx <> callLoc callStack)
   period :: Int
   period = case knownDomain @dom of
     SDomainConfiguration{sPeriod} -> snatToNum sPeriod
@@ -796,7 +1011,7 @@ probing does nothing (HDL generation, and probe-free simulation), so
 paths — 'probe' is identity there — so its fields are irrelevant.
 -}
 noProbe :: ProbeCtx
-noProbe = ProbeCtx noCircuitContext 0 [] 0 (unsafePerformIO (newIORef Map.empty))
+noProbe = ProbeCtx disabledContext 0 [] 0 (unsafePerformIO (newIORef Map.empty))
 {-# NOINLINE noProbe #-}
 
 {- | Record the value of any expression inside a probed step function:
@@ -936,7 +1151,7 @@ appear only when a live context is actually recording (see 'simMealyProbed').
 -}
 mealyProbed ::
   forall dom s i o.
-  (HasCallStack, HasCircuitContext, KnownDomain dom, NFDataX s) =>
+  (HasCallStack, CircuitContextOnly, KnownDomain dom, NFDataX s) =>
   Clock dom ->
   Reset dom ->
   Enable dom ->
@@ -955,7 +1170,7 @@ Falls back to a plain 'mealy' — no counter — when the context is disabled.
 -}
 simMealyProbed ::
   forall dom s i o.
-  (HasCallStack, HasCircuitContext, KnownDomain dom, NFDataX s) =>
+  (HasCallStack, CircuitContextOnly, KnownDomain dom, NFDataX s) =>
   Clock dom ->
   Reset dom ->
   Enable dom ->
@@ -967,10 +1182,10 @@ simMealyProbed clk rst ena f s0 inp
   | ccDisabled ctx = mealy clk rst ena (\st i -> let ?probe = noProbe in f st i) s0 inp
   | otherwise = o
  where
-  ctx = ?circuitContext
+  ctx = circuitContext
   -- A fresh cell per application: this heap object identifies the mealy
   -- INSTANCE (see 'ordinalFor'); OPAQUE keeps it per-application.
-  path = HierSeg "mealyProbed" (callLoc callStack) : ccHier ctx
+  path = HierSeg "mealyProbed" (callPath ctx <> callLoc callStack) : ccHier ctx
   -- One name-resolution cache per INSTANCE (see 'pcCache' and
   -- 'newProbeCache'); like @path@, allocated once per application by the
   -- enclosing OPAQUE worker.
@@ -1002,7 +1217,7 @@ generation, and in probe-free simulation, this reduces to a plain
 -}
 mooreProbed ::
   forall dom s i o.
-  (HasCallStack, HasCircuitContext, KnownDomain dom, NFDataX s) =>
+  (HasCallStack, CircuitContextOnly, KnownDomain dom, NFDataX s) =>
   Clock dom ->
   Reset dom ->
   Enable dom ->
@@ -1024,7 +1239,7 @@ back to a plain 'moore' — no counter — when the context is disabled.
 -}
 simMooreProbed ::
   forall dom s i o.
-  (HasCallStack, HasCircuitContext, KnownDomain dom, NFDataX s) =>
+  (HasCallStack, CircuitContextOnly, KnownDomain dom, NFDataX s) =>
   Clock dom ->
   Reset dom ->
   Enable dom ->
@@ -1037,8 +1252,8 @@ simMooreProbed clk rst ena t out s0 inp
   | ccDisabled ctx = moore clk rst ena (\st i -> let ?probe = noProbe in t st i) out s0 inp
   | otherwise = out <$> s
  where
-  ctx = ?circuitContext
-  path = HierSeg "mooreProbed" (callLoc callStack) : ccHier ctx
+  ctx = circuitContext
+  path = HierSeg "mooreProbed" (callPath ctx <> callLoc callStack) : ccHier ctx
   cache = newProbeCache path
   period :: Int
   period = case knownDomain @dom of
@@ -1057,7 +1272,7 @@ probes the step function's internals. Use for the common
 -}
 mealyBProbed ::
   forall dom s i o.
-  (HasCallStack, HasCircuitContext, KnownDomain dom, NFDataX s, Bundle i, Bundle o) =>
+  (HasCallStack, CircuitContextOnly, KnownDomain dom, NFDataX s, Bundle i, Bundle o) =>
   Clock dom ->
   Reset dom ->
   Enable dom ->
@@ -1073,7 +1288,7 @@ mealyBProbed clk rst ena f s0 = unbundle . mealyProbed clk rst ena f s0 . bundle
 -}
 mooreBProbed ::
   forall dom s i o.
-  (HasCallStack, HasCircuitContext, KnownDomain dom, NFDataX s, Bundle i, Bundle o) =>
+  (HasCallStack, CircuitContextOnly, KnownDomain dom, NFDataX s, Bundle i, Bundle o) =>
   Clock dom ->
   Reset dom ->
   Enable dom ->
@@ -1108,7 +1323,7 @@ disabled probe context (no counter, no @?probe@ plumbing, no extra hardware).
 -}
 probeFmap ::
   forall dom a b.
-  (HasCallStack, HasCircuitContext, KnownDomain dom) =>
+  (HasCallStack, CircuitContextOnly, KnownDomain dom) =>
   Clock dom ->
   ((HasProbe) => a -> b) ->
   Signal dom a ->
@@ -1124,7 +1339,7 @@ Falls back to a plain 'fmap' — no counter — when the context is disabled.
 -}
 simProbeFmap ::
   forall dom a b.
-  (HasCallStack, HasCircuitContext, KnownDomain dom) =>
+  (HasCallStack, CircuitContextOnly, KnownDomain dom) =>
   Clock dom ->
   ((HasProbe) => a -> b) ->
   Signal dom a ->
@@ -1133,8 +1348,8 @@ simProbeFmap clk f inp
   | ccDisabled ctx = (\a -> let ?probe = noProbe in f a) <$> inp
   | otherwise = step <$> cnt <*> inp
  where
-  ctx = ?circuitContext
-  path = HierSeg "probeFmap" (callLoc callStack) : ccHier ctx
+  ctx = circuitContext
+  path = HierSeg "probeFmap" (callPath ctx <> callLoc callStack) : ccHier ctx
   cache = newProbeCache path
   period :: Int
   period = case knownDomain @dom of

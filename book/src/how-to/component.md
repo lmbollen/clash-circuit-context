@@ -1,0 +1,144 @@
+# How to make a function a component
+
+This guide shows how to give a function its own scope in the waveform, and
+how to name the instances when a component is used more than once. For all
+the rules, see [What the plugin instruments](../reference/instrumentation.md).
+
+## Make a function a component
+
+Give the function both annotations:
+
+- `HasCircuitContext` in its signature
+- an `{-# OPAQUE #-}` pragma
+
+```haskell,clash group=component hidden
+{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
+module Component where
+
+import Clash.Explicit.Prelude
+import Clash.CircuitContext
+import BookSupport
+```
+
+```haskell,clash group=component
+lag :: (HasCircuitContext) => Signal System Int -> Signal System Int
+lag inp = late
+ where
+  early = register clockGen resetGen enableGen 0 inp
+  late = register clockGen resetGen enableGen 0 early
+{-# OPAQUE lag #-}
+
+pair :: (HasCircuitContext) => Signal System Int -> Signal System Int
+pair inp = both
+ where
+  both = lag inp + lag (inp + 1)
+{-# OPAQUE pair #-}
+```
+
+Each named local binding is a signal in the scope of its function. Two calls
+of the same function are two scopes, `lag_0` and `lag_1`. They are numbered
+in the order of the calls in the source: `lag_0` is `lag inp`, the first
+call (see [About the design
+hierarchy](../explanation/hierarchy.md#how-instances-are-named)).
+`printWaveform` is a helper of this book, not of the package: it prints the
+scopes and signals of the waveform (see [the
+introduction](../introduction.md#the-examples-are-checked)):
+
+```haskell,clash group=component
+>>> printWaveform 4 (pair (pure 1))
+pair
+  both
+  lag_0
+    early
+    late
+  lag_1
+    early
+    late
+```
+
+## Use a component with hidden clocks
+
+A component can use the hidden clock, reset and enable of
+`Clash.Prelude`: give it `HiddenClockResetEnable dom` next to
+`HasCircuitContext`, and call it under `withClockResetEnable` or
+`exposeClockResetEnable`, as usual:
+
+```haskell
+syncFF :: (HasCircuitContext, HiddenClockResetEnable dom) => Signal dom Bool -> Signal dom Bool
+syncFF = register False . register False
+{-# OPAQUE syncFF #-}
+
+pair :: (HasCircuitContext) => Clock Fast -> Reset Fast -> Signal Fast Bool -> Signal Fast Bool
+pair clk rst inp = withClockResetEnable clk rst enableGen $ syncFF inp .&&. syncFF (not <$> inp)
+```
+
+Each call has its own instance, numbered in the order of the calls, also
+through `$`.
+
+## Put a helper in the scope of its caller
+
+If a small helper does not need a scope of its own, keep `HasCircuitContext`
+and remove the `OPAQUE` pragma. Its named signals are then recorded in the
+scope of the caller. The plugin warns about such a function, in the category
+`x-circuit-context-uninstrumented`. If this is what you want for all such
+helpers, see [How to control the warnings of the plugin](warnings.md).
+
+## Name instances that come from one call site
+
+Instances made by `fmap` or `map` over a vector all come from one call site,
+so they are numbered in the order in which the simulation reaches them. To
+name them by their position, use `imapComponents`. It makes element `i` of
+the vector a component with the name `<name>_<i>`:
+
+```haskell
+imapComponents ::
+  (HasCircuitContext, KnownNat n) =>
+  String -> ((HasCircuitContext) => Index n -> a -> b) -> Vec n a -> Vec n b
+```
+
+The elements can be of each type, not only signals. Here, each element is
+the signal of one lane:
+
+```haskell,clash group=lanes hidden
+{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
+module Lanes where
+
+import Clash.Explicit.Prelude
+import Clash.CircuitContext
+import BookSupport
+```
+
+```haskell,clash group=lanes
+-- | One lane: a register. No OPAQUE, so it is recorded in the scope that
+-- imapComponents makes for it.
+lane :: (HasCircuitContext) => Index 2 -> Signal System Int -> Signal System Int
+lane _ s = held
+ where
+  held = register clockGen resetGen enableGen 0 s
+{-# ANN lane NoCircuitScope #-}
+
+lanes :: (HasCircuitContext) => Signal System (Vec 2 Int) -> Signal System (Vec 2 Int)
+lanes inp = bundle outs
+ where
+  outs = imapComponents "lane" lane (unbundle inp)
+{-# OPAQUE lanes #-}
+
+>>> printWaveform 3 (lanes (pure (1 :> 2 :> Nil)))
+lanes
+  outs_0
+  outs_1
+  lane_0
+    held
+  lane_1
+    held
+```
+
+The function you give `imapComponents` gets the index of its element, and
+its named signals go in the scope of that element. `lane` has no `OPAQUE`
+pragma, or each lane would have a second scope, `lane_0.lane`. The
+`NoCircuitScope` annotation says that this is deliberate, so the plugin does
+not warn about it (see [How to control the warnings of the
+plugin](warnings.md)).
+
+`outs` is a vector, so it is recorded element by element: `outs_0` and
+`outs_1`.

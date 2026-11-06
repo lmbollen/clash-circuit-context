@@ -43,7 +43,7 @@ ena = enableGen
 {- | Accumulator whose step function probes an internal expression: the
 pre-registration sum, invisible at any Signal.
 -}
-acc :: (HasCircuitContext) => Signal System Int -> Signal System Int
+acc :: (CircuitContextOnly) => Signal System Int -> Signal System Int
 acc = mealyProbed clk rst ena step 0
  where
   step :: (HasProbe) => Int -> Int -> (Int, Int)
@@ -51,16 +51,16 @@ acc = mealyProbed clk rst ena step 0
 
 -- NOTE: the traced expression must be composed INLINE under 'component'. A
 -- @where@-bound signal solves @?circuitContext@ from the enclosing scope before
--- 'component' can rebind it (its HasCircuitContext constraint is discharged at the
+-- 'component' can rebind it (its CircuitContextOnly constraint is discharged at the
 -- binding, not the use) and the pushed segment is silently lost. If you want
--- a @where@ binding, give it an explicit @HasCircuitContext =>@ signature to keep it
+-- a @where@ binding, give it an explicit @CircuitContextOnly =>@ signature to keep it
 -- polymorphic in the context.
 -- Two instances of the same sub-circuit under the same component: both named
 -- "acc", both tracing "sum" and probing "step". Neither collides — the VCD writer
 -- renders them as acc_0 and acc_1, ordered by call site (design order).
 -- A further two instances are replicated over a Vec and named by structural
 -- position (vacc_0, vacc_1) via imapComponents.
-top :: (HasCircuitContext) => Signal System Int -> Signal System Int
+top :: (CircuitContextOnly) => Signal System Int -> Signal System Int
 top inp =
   component
     "top"
@@ -79,7 +79,7 @@ top inp =
 
 main :: IO ()
 main = do
-  (result, rec) <- withRecording "manual-instrumentation.spill" $ do
+  (result, rec) <- withRecording (Just "manual-instrumentation.spill") $ do
     let out = top (fromList [1, 1 ..])
         xs = sampleN 8 out
     evaluate (deepseqX xs xs)
@@ -97,6 +97,8 @@ main = do
       ]
   putStrLn ("probe changes: " <> show (sort probes))
   vcd <- writeVCD (0, 8) rec "manual-instrumentation.vcd"
+  -- The same recording as an FST, which check.sh compares with the VCD.
+  _ <- writeFST (0, 8) rec "manual-instrumentation.fst"
   discardRecording rec
   case vcd of
     Left err -> putStrLn ("VCD error: " <> err)
