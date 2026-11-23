@@ -82,11 +82,16 @@ reaches them:
   GHC adds a call site only for a function whose type asks for it, so two
   calls of such a helper are told apart only by the calls inside it. Give
   the helper a signature with `HasCircuitContext`.
-- The instances made by a class method, and by a function with an
-  annotation other than `NoCircuitScope`. The plugin does not split these
-  functions. They keep the call sites as an argument, and Clash makes a
-  variant of a function for each constant argument: in HDL, such a
-  function with `OPAQUE` becomes one module for each call site (see [How to generate HDL](../how-to/hdl.md)).
+- The instances made through a shared partial application, for example
+  `where a = acc`, then `a 1` and `a 100`: `acc` is called at one place.
+
+The plugin does not split a class method, or a function with an annotation
+other than `NoCircuitScope`. Their instances are still numbered by call
+site: the call stack that the next split function receives holds their
+call sites too. In HDL, these functions keep the call sites as an
+argument, and Clash makes a variant of a function for each constant
+argument: such a function with `OPAQUE` becomes one module for each call
+site (see [How to generate HDL](../how-to/hdl.md)).
 
 For how signals and scopes are ordered and named in a waveform, see
 [Waveform files](../reference/waveform-files.md#the-waveform).
