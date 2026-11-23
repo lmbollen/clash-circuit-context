@@ -41,7 +41,8 @@ Two halves, both exercised by this one module:
   translate but nobody declared; its plain values, its signal of lists and
   its signal of the declared 'Names' must NOT warn),
   @x-circuit-context-undecided@ (@held@, whose 'Awkward' payload has a
-  'BitPack' instance the oracle cannot recurse into) and
+  'BitPack' instance the oracle cannot recurse into, and @wider@, whose width
+  only @ghc-typelits-knownnat@ knows) and
   @x-circuit-context-undescribed@ (@bare@, recorded as raw bits for want of
   a @Waveform@ instance). @check.sh@ greps the build log for all of them,
   because a diagnostic that stops firing is exactly as silent as the bug it
@@ -107,6 +108,20 @@ instance (KnownNat n, 1 <= n) => BitPack (Awkward n) where
 
 unAwkward :: (KnownNat n) => Awkward n -> Int
 unAwkward (Awkward u) = fromIntegral u
+
+{- | A width that only @ghc-typelits-knownnat@ knows from @KnownNat n@, in a
+suite that does not load it: nothing gives @KnownNat (n + 1)@, so @wider@
+is not recorded, and the oracle says it could not decide. It used to say yes
+because the operands are known, and the module did not compile.
+-}
+widerByOne ::
+  (HasCircuitContext, KnownNat n) =>
+  Signal System (BitVector n) ->
+  Signal System (BitVector (n + 1))
+widerByOne inp = wider
+ where
+  wider = (++# (0 :: BitVector 1)) <$> inp
+{-# OPAQUE widerByOne #-}
 
 -- | Component via a LOCAL constraint synonym.
 viaLocalSyn :: (LocalCtx dom) => Signal dom Int -> Signal dom Int
@@ -369,6 +384,7 @@ top inp =
     + DeclGroups.beforeSplice inp
     + DeclGroups.etaReduced resetGen inp
     + generalised inp
+    + (unpack . resize <$> widerByOne (pack <$> inp))
 {-# OPAQUE top #-}
 
 -- | Both local functions of an unknown width, from a signal of @top@'s.
@@ -467,6 +483,10 @@ main = do
               , ["top", "generalised", "widenedAmbiguous", "zs"]
               ]
           , p `P.notElem` paths
+          ]
+        , [ "a width nothing knows was recorded: " <> show p
+          | p <- paths
+          , P.last p == "wider"
           ]
         , [ "a synonym from an earlier declaration group not seen: expected "
               <> show p

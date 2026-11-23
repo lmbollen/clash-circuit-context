@@ -33,9 +33,10 @@ Two cooperating stages — spike findings:
 
 Solvability approximation (constraints-emerge style, no re-entrant solver):
 direct given hit → yes; built-in classes (KnownNat\/KnownSymbol literals,
-ground Typeable) decided directly; otherwise unique instance-environment
-match → recurse on the instantiated context; conservative no (or defer, per
-the rule above) when nothing applies.
+ground Typeable) decided directly; @KnownNat@ of type-level arithmetic by
+the instance @ghc-typelits-knownnat@ would use, when it is loaded; otherwise
+unique instance-environment match → recurse on the instantiated context;
+conservative no (or defer, per the rule above) when nothing applies.
 
 A conservative no is the mechanism that lets an untraceable payload degrade
 to identity instead of failing the build — and also the reason a wire can go
@@ -59,7 +60,6 @@ import Data.Maybe (isJust)
 
 import qualified GHC.Builtin.Names as GHC
 import qualified GHC.Builtin.Types as GHC
-import qualified GHC.Builtin.Types.Literals as GHC (typeNatTyCons)
 import qualified GHC.Core.DataCon as GHC
 import qualified GHC.Core.FamInstEnv as GHC (normaliseType)
 import qualified GHC.Core.InstEnv as GHC
@@ -69,7 +69,10 @@ import qualified GHC.Core.TyCo.FVs as GHC
 import qualified GHC.Core.TyCo.Rep as GHC (scaledThing)
 import qualified GHC.Core.TyCon as GHC
 import qualified GHC.Core.Type as GHC
+import qualified GHC.Data.FastString as GHC (fsLit)
 import qualified GHC.Data.Strict as Strict
+import qualified GHC.Driver.Env.Types as GHC (hsc_plugins)
+import qualified GHC.Driver.Plugins as GHC (loadedPlugins, lpModule)
 import qualified GHC.Iface.Load as GHC (loadSysInterface)
 import qualified GHC.Plugins as GHC (
   getOccString,
@@ -89,13 +92,15 @@ import qualified GHC.Tc.Types.Constraint as GHC (ctLocSpan)
 {- FOURMOLU_ENABLE -}
 import qualified GHC.Tc.Types as GHC (re_flavour)
 import qualified GHC.Tc.Types.Constraint as GHC (CtFlavour (Wanted))
-import qualified GHC.Tc.Utils.Monad as GHC (initIfaceTcRn)
+import qualified GHC.Tc.Utils.Monad as GHC (getTopEnv, initIfaceTcRn)
 import qualified GHC.Tc.Utils.TcType as GHC
 import qualified GHC.TcPlugin.API as API
 import qualified GHC.TcPlugin.API.Internal as APIInternal (unsafeLiftTcM)
 import qualified GHC.Types.Name as GHC (getName)
 import qualified GHC.Types.SrcLoc as GHC (SrcSpan (RealSrcSpan))
 import qualified GHC.Types.Unique.FM as GHC
+import qualified GHC.Unit.Module.ModIface as GHC (mi_module)
+import qualified GHC.Unit.Types as GHC (mkModule, moduleUnit)
 
 import qualified Clash.CircuitContext.Plugin.Diagnostics as Diag
 
@@ -111,6 +116,10 @@ data OracleEnv = OracleEnv
   , describableClass :: API.Class
   , nonTranslatableTyCon :: API.TyCon
   , turnOnThePluginClass :: API.Class
+  , knownNatClasses :: [(Int, API.Class)]
+  {- ^ @KnownNat1@, @KnownNat2@ and @KnownNat3@ of @ghc-typelits-knownnat@, by
+  arity, when its solver plugin is loaded for this module; otherwise none.
+  -}
   }
 
 {- FOURMOLU_DISABLE -}
@@ -157,6 +166,7 @@ initEnv = do
           <*> cl "Describable"
           <*> tc "NonTranslatable"
           <*> cl "TurnOnThePlugin"
+          <*> knownNatSolver
       -- Same hazard one package over: CanDescribe asks for clash-shockwaves'
       -- Waveform per payload, and a module that never mentions
       -- clash-shockwaves never loads its instances, so every stock payload
@@ -181,6 +191,27 @@ initEnv = do
       error
         "Clash.CircuitContext.Plugin: Clash.CircuitContext.Auto not found (missing clash-circuit-context dependency?)"
  where
+  -- The plugin decides @KnownNat (f a b)@ the way ghc-typelits-knownnat's
+  -- solver does: by the @KnownNat2 "M.f" a b@ instance, which holds the
+  -- requirements for @f a b@ to be known. Only when that solver is loaded:
+  -- without it, nothing solves @KnownNat (n + 1)@ at all.
+  knownNatSolver :: API.TcPluginM 'API.Init [(Int, API.Class)]
+  knownNatSolver = do
+    plugins <-
+      APIInternal.unsafeLiftTcM
+        (GHC.loadedPlugins . GHC.hsc_plugins <$> GHC.getTopEnv)
+    case [ GHC.moduleUnit md
+         | p <- plugins
+         , let md = GHC.mi_module (GHC.lpModule p)
+         , GHC.moduleNameString (GHC.moduleName md) == "GHC.TypeLits.KnownNat.Solver"
+         ] of
+      unit : _ -> do
+        let md = GHC.mkModule unit (API.mkModuleName "GHC.TypeLits.KnownNat")
+        forceInterface md
+        traverse
+          (\(k, nm) -> (,) k <$> (API.tcLookupClass =<< API.lookupOrig md (API.mkTcOcc nm)))
+          [(1, "KnownNat1"), (2, "KnownNat2"), (3, "KnownNat3")]
+      [] -> pure []
   forceInterface md =
     ()
       <$ APIInternal.unsafeLiftTcM
@@ -294,6 +325,7 @@ rewriteFlag env fam cls givens [t]
       API.getInstEnvs
       reduceFamily
       (totalClassesOf env)
+      (knownNatClasses env)
       givenPreds
       fuel0
       (GHC.mkClassPred cls [t])
@@ -362,6 +394,7 @@ solveStuck env givens wanteds = do
                 API.getInstEnvs
                 reduceFamily
                 (totalClassesOf env)
+                (knownNatClasses env)
                 givenPreds
                 fuel0
                 (GHC.mkClassPred target [t])
@@ -795,11 +828,15 @@ solvablePred ::
   see the note at the guard that uses this.
   -}
   [API.Class] ->
+  {- | @KnownNat1@\/@2@\/@3@ by arity, when @ghc-typelits-knownnat@ is
+  loaded: see 'knownNat'.
+  -}
+  [(Int, API.Class)] ->
   [API.PredType] ->
   Int ->
   API.PredType ->
   m Decision
-solvablePred getEnvs reduceFam totalClasses givenPreds = go
+solvablePred getEnvs reduceFam totalClasses knownNatN givenPreds = go
  where
   go fuel pred0
     | fuel <= 0 = pure (gaveUp pred0)
@@ -847,36 +884,48 @@ solvablePred getEnvs reduceFam totalClasses givenPreds = go
   litOr True _ = Yes
   litOr False pred0 = gaveUp pred0
 
-  -- @KnownNat n@: a literal is known; a given is known (caught by the
-  -- eqType check above on recursion); and an application of a type-level
-  -- arithmetic function is known iff all its operands are — mirroring what
-  -- ghc-typelits-knownnat/-extra solve in the instrumented module. (Code
-  -- whose types CONTAIN such arithmetic constraints requires those solver
-  -- plugins to typecheck at all, so predicting their success adds no new
-  -- requirement.) This is what lets a @Signal dom (WishboneM2S (30 - CLog 2
-  -- (n + 1)) 4)@ port trace inside a bus-width-polymorphic component.
+  -- @KnownNat n@: a literal is known, and a given is known (caught by the
+  -- eqType check above on recursion). A type family that reduces is asked
+  -- again about what it reduces to (@BitSize SomeRecord@). One that does not
+  -- reduce (@n + 1@, @CLog 2 n@) is known only through a solver plugin, so
+  -- the oracle asks what ghc-typelits-knownnat asks: the instance
+  -- @KnownNat2 "GHC.TypeLits.Extra.CLog" 2 n@ (by the family's arity), whose
+  -- context holds every requirement, side conditions included (@1 <= n@ for
+  -- @CLog 2 n@, @m <= n@ for @n - m@). That is a yes only when all of them
+  -- hold, and never when the solver is not loaded or the family has no such
+  -- instance (@Log2@): GHC alone solves none of these. A yes is a promise
+  -- that GHC will then find the instance, so it must not guess.
   knownNat fuel cls n0
     | Just _ <- GHC.isNumLitTy n = pure Yes
-    | Just (tc, tcArgs) <- GHC.splitTyConApp_maybe n
-    , isNatArithTyCon tc
-    , not (null tcArgs) =
-        conj <$> traverse (go (fuel - 1) . mkKN) tcArgs
     -- A bare type variable with no matching given: there is genuinely no
     -- evidence for it, and no solver plugin can conjure one. THIS is the
     -- proof.
     | isJust (GHC.getTyVar_maybe n) = pure (noInstance (mkKN n))
-    -- Anything else — @BitSize SomeRecord@, a family this oracle has never
-    -- heard of — gets reduced and re-asked. If it still will not budge, the
-    -- honest answer is that we do not know: @KnownNat@ is exactly the class
-    -- the typelits solver plugins discharge, and they run in the real
-    -- compile while this walk does not. Calling that "no instance" was
-    -- reporting a guess as a fact (Helios F1: @KnownNat (BitSize
-    -- ManticoreStatus)@ is satisfiable, and was declined as proved-absent).
     | otherwise = do
         reduced <- normalise fuel n
-        if GHC.eqType reduced n
-          then pure (gaveUp (mkKN n))
-          else reblame (mkKN n) <$> knownNat (fuel - 1) cls reduced
+        if not (GHC.eqType reduced n)
+          then reblame (mkKN n) <$> knownNat (fuel - 1) cls reduced
+          else case GHC.splitTyConApp_maybe n of
+            Just (tc, tcArgs)
+              | GHC.isTypeFamilyTyCon tc
+              , Just knCls <- lookup (length tcArgs) knownNatN
+              , Just md <- GHC.nameModule_maybe (GHC.getName tc) -> do
+                  let
+                    fn =
+                      GHC.moduleNameString (GHC.moduleName md)
+                        <> "."
+                        <> GHC.getOccString tc
+                  found <- lookupInstance knCls (GHC.mkStrLitTy (GHC.fsLit fn) : tcArgs)
+                  case found of
+                    Picked theta -> conj <$> traverse (go (fuel - 1)) theta
+                    _ -> pure (gaveUp (mkKN n))
+            -- Anything else: the honest answer is that we do not know.
+            -- @KnownNat@ is exactly the class the typelits solver plugins
+            -- discharge, and they run in the real compile while this walk
+            -- does not. Calling that "no instance" was reporting a guess as
+            -- a fact (Helios F1: @KnownNat (BitSize ManticoreStatus)@ is
+            -- satisfiable, and was declined as proved-absent).
+            _ -> pure (gaveUp (mkKN n))
    where
     n = GHC.expandTypeSynonyms n0
     mkKN t = GHC.mkClassPred cls [t]
@@ -914,20 +963,25 @@ solvablePred getEnvs reduceFam totalClasses givenPreds = go
     _ -> False
 
   byInstance fuel cls args pred0 = do
+    found <- lookupInstance cls args
+    case found of
+      Picked theta -> conj <$> traverse (go (fuel - 1)) theta
+      NoMatch -> pure (noInstance pred0)
+      -- Instances exist; the oracle could not pick one. Reporting this as
+      -- "no instance" would be a lie the reader cannot check.
+      NoPick -> pure (gaveUp pred0)
+
+  lookupInstance cls args = do
     ienvs <- getEnvs
-    case GHC.lookupInstEnv False ienvs cls args of
-      (matches, _, _)
-        | [(inst, dfunTys)] <- matches
-        , Just tys <- sequence dfunTys -> do
+    pure $ case GHC.lookupInstEnv False ienvs cls args of
+      ([(inst, dfunTys)], _, _)
+        | Just tys <- sequence dfunTys ->
             let
               (tvs, theta, _, _) = GHC.instanceSig inst
-              subst = GHC.zipTvSubst tvs tys
-              theta' = GHC.substTheta subst theta
-            conj <$> traverse (go (fuel - 1)) theta'
-        | [] <- matches -> pure (noInstance pred0)
-        -- Instances exist; the oracle could not pick one. Reporting this as
-        -- "no instance" would be a lie the reader cannot check.
-        | otherwise -> pure (gaveUp pred0)
+             in
+              Picked (GHC.substTheta (GHC.zipTvSubst tvs tys) theta)
+      ([], _, _) -> NoMatch
+      _ -> NoPick
 
   -- All must hold. A proof of failure outranks a give-up (the conjunction
   -- definitely fails, and the proof is the better blame), and both outrank a
@@ -949,25 +1003,14 @@ solvablePred getEnvs reduceFam totalClasses givenPreds = go
     | hasSkolems pred0, null givenPreds = Defer
     | otherwise = mk pred0
 
-{- | Type-level Nat arithmetic whose result is 'GHC.TypeNats.KnownNat' when
-its operands are: GHC's built-in @+ - * ^ Div Mod Log2@ families (compared
-by 'TyCon' identity) plus the @ghc-typelits-extra@ families (by name — they
-live in a user package). The corresponding solver plugins
-(@ghc-typelits-knownnat@ with the @-extra@ instances) construct the actual
-evidence during real constraint solving; the oracle only predicts them.
--}
-isNatArithTyCon :: API.TyCon -> Bool
-isNatArithTyCon tc =
-  tc `elem` GHC.typeNatTyCons
-    || (inMod "GHC.TypeLits.Extra" && occ `elem` extraFams)
- where
-  occ = GHC.getOccString tc
-  inMod m =
-    case GHC.nameModule_maybe (GHC.getName tc) of
-      Just md -> GHC.moduleNameString (GHC.moduleName md) == m
-      Nothing -> False
-  extraFams =
-    ["Div", "Mod", "DivRU", "DivMod", "CLog", "FLog", "Log", "GCD", "LCM", "Max", "Min"]
+-- | What instance resolution makes of a class constraint.
+data Lookup
+  = -- | One instance applies: its context, instantiated.
+    Picked [API.PredType]
+  | -- | No instance matches.
+    NoMatch
+  | -- | Instances match, but none is the one.
+    NoPick
 
 hasMetas :: API.PredType -> Bool
 hasMetas = GHC.anyFreeVarsOfType (\v -> GHC.isTyVar v && GHC.isMetaTyVar v)

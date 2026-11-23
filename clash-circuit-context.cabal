@@ -248,7 +248,10 @@ test-suite typelits-plugins
   import: common-options
   type: exitcode-stdio-1.0
   main-is: Test/TypelitsPlugins.hs
-  other-modules: Test.RewriterShapes
+  other-modules:
+    Test.RewriterShapes
+    Test.SideConditions
+
   hs-source-dirs: tests
   build-depends:
     base,

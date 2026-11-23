@@ -106,6 +106,7 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     "recorded as raw bits, not described: Bare" \
     "no instance for: Waveform Bare" \
     "the oracle could not decide: 1 <= n" \
+    "the oracle could not decide: KnownNat (n + 1)" \
     "Name the binding with traceNamed, which takes Traceable"
   do
     if grep -qF "$want" "$log"; then

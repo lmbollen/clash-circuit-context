@@ -40,6 +40,7 @@ import Clash.CircuitContext.Recording (
  )
 
 import Test.RewriterShapes (stepped)
+import qualified Test.SideConditions as SideConditions
 
 -- | A pointer one bit wider than its address: the width is @aw + 1@.
 ptr ::
@@ -92,6 +93,26 @@ main = do
     "a generalised local function's binding is traced"
     (P.any ((P.== "next") . leaf . signalKey) (recordedSignals rec2))
   discardRecording rec2
+
+  -- A width known only under a side condition is recorded where the
+  -- signature gives the side condition, and only there.
+  (r3, rec3) <-
+    withRecording
+      "waveforms/typelits-plugins-side-conditions.spill"
+      ( evaluate
+          ( P.length (sampleN 2 (SideConditions.unchecked (SNat @4)))
+              P.+ P.length (sampleN 2 (SideConditions.checked (SNat @4)))
+              P.+ P.length (sampleN 2 (SideConditions.logarithm (SNat @4)))
+          )
+      )
+  check "the side-condition run finished" (P.either (P.const False) (P.const True) r3)
+  let
+    scopes = [P.takeWhile (P./= '@') (signalKey s) | s <- recordedSignals rec3]
+  putStrLn ("side-condition signals: " <> P.show (P.map signalKey (recordedSignals rec3)))
+  check "addr is recorded under 1 <= n" ("checked" `P.elem` scopes)
+  check "addr is not recorded without 1 <= n" ("unchecked" `P.notElem` scopes)
+  check "a Log2 width is not recorded" ("logarithm" `P.notElem` scopes)
+  discardRecording rec3
  where
   -- A key is @scope\@ordinal\@callsite.name\@ordinal\@callsite@.
   leaf = P.takeWhile (P./= '@') . P.reverse . P.takeWhile (P./= '.') . P.reverse
