@@ -38,10 +38,10 @@ import Control.Exception (
   try,
  )
 import Control.Monad (forM, forM_, when)
-import Data.List (isInfixOf, isPrefixOf)
-import Foreign.Ptr (plusPtr)
+import Data.List (isInfixOf, isPrefixOf, isSuffixOf)
 import GHC.Stats (gc, gcdetails_live_bytes, getRTSStats)
 import System.Directory (
+  canonicalizePath,
   createDirectoryIfMissing,
   doesFileExist,
   getFileSize,
@@ -51,12 +51,13 @@ import System.Directory (
   removeFile,
   removePathForcibly,
  )
+import System.Environment (setEnv)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath ((<.>), (</>))
+import System.IO (hFlush, hGetLine, stdout)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Mem (performMajorGC)
 import System.Posix.Files (readSymbolicLink)
-import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, fdReadBuf, openFd)
 import System.Posix.Resource (
   Resource (ResourceFileSize),
   ResourceLimit (ResourceLimit),
@@ -64,15 +65,21 @@ import System.Posix.Resource (
   getResourceLimit,
   setResourceLimit,
  )
-import System.Posix.Signals (Handler (Ignore), installHandler, sigXFSZ)
+import System.Posix.Signals (
+  Handler (Ignore),
+  installHandler,
+  sigKILL,
+  sigXFSZ,
+  signalProcess,
+ )
+import System.Process (getPid, waitForProcess)
 import System.Timeout (timeout)
 
 import SpillMain (spillWith)
-import Test.Child (Child, assertChild, inChild)
+import Test.Child (Child, assertChild, inChild, startChild)
 
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Builder as Builder
-import qualified Data.ByteString.Internal as ByteString (createAndTrim)
 import qualified Data.ByteString.Lazy as ByteStringLazy
 
 import Test.Tasty (TestTree, testGroup)
@@ -83,6 +90,8 @@ import Clash.Explicit.Prelude
 import Clash.CircuitContext
 import Clash.CircuitContext.Recording (
   discardRecording,
+  recordedChanges,
+  recordedSignals,
   recordingEnd,
   recordingStart,
   recoverRecording,
@@ -115,6 +124,18 @@ noise =
     (fromList (P.iterate (\x -> x P.* 6364136223846793005 P.+ 1442695040888963407) 1))
 {-# OPAQUE noise #-}
 
+-- | 300 traced signals that each change every 64 cycles.
+quietMany :: (HasCircuitContext) => Signal System (Unsigned 16)
+quietMany =
+  P.foldr1
+    (liftA2 (+))
+    [ traceSignalSW ("q" <> P.show i) ((`shiftR` 6) . (+ P.fromIntegral i) <$> count)
+    | i <- [1 .. 300 :: Int]
+    ]
+ where
+  count = fromList [0 :: Unsigned 16 ..]
+{-# OPAQUE quietMany #-}
+
 -- | A signal that changes every cycle, and one that never changes.
 busyAndQuiet :: (HasCircuitContext) => Signal System (Unsigned 8)
 busyAndQuiet =
@@ -128,23 +149,6 @@ valueAt i
   | i P.== 2000 = unsafePerformIO (threadDelay 2000000 >> pure 0)
   | P.otherwise = P.fromIntegral i
 {-# NOINLINE valueAt #-}
-
-{- | The bytes of a file this process has open for writing, which GHC's own
-file functions refuse to open.
--}
-unlockedRead :: FilePath -> IO ByteString.ByteString
-unlockedRead path = do
-  size <- P.fromIntegral <$> getFileSize path
-  fd <- openFd path ReadOnly defaultFileFlags
-  bytes <- ByteString.createAndTrim size $ \p ->
-    let go n
-          | n P.>= size = pure n
-          | P.otherwise = do
-              got <- P.fromIntegral <$> fdReadBuf fd (p `plusPtr` n) (P.fromIntegral (size P.- n))
-              if got P.== 0 then pure n else go (n P.+ got)
-     in go 0
-  closeFd fd
-  pure bytes
 
 -- | The path of a waveform name: in @waveforms@, as every test's.
 pathOf :: String -> FilePath
@@ -231,36 +235,58 @@ children =
         -- the live heap stays far below the file's 64 MiB. It measures the
         -- heap of the whole process.
         let spillFile = file "formats-read-big-spill" "spill"
-            chunks = 4096 :: Int
-            chunk = ByteString.replicate 16384 0
+            regions = 1024 :: Int
+            -- Records of 0 at every cycle: 3 bytes each, as many as fit.
+            used = (65536 P.- 32) `P.div` 3 P.* 3
+            perRegion = used `P.div` 3
             varint :: Int -> Builder.Builder
             varint x
               | x P.< 0x80 = Builder.word8 (P.fromIntegral x)
               | P.otherwise =
                   Builder.word8 (P.fromIntegral (x `P.mod` 0x80) P.+ 0x80) <> varint (x `P.div` 0x80)
-            block tag payload =
-              Builder.word8 tag
-                <> Builder.word32LE (P.fromIntegral (ByteStringLazy.length payload))
-                <> Builder.lazyByteString payload
+            word = Builder.word64LE . P.fromIntegral
             -- Signal 0: a trace of 8 bits, at 10000 ps, named "big", undescribed.
             declared =
-              varint 0
+              Builder.toLazyByteString
+                $ varint 0
                 <> Builder.word8 0
                 <> varint 10000
                 <> varint 8
                 <> varint 3
                 <> Builder.string7 "big"
                 <> Builder.word8 0
-            -- Records of 0 at every cycle: 3 bytes each.
-            chunked i = varint 0 <> varint (i P.* 16384 `P.div` 3) <> Builder.byteString chunk
+            block =
+              Builder.word8 1
+                <> Builder.word32LE (P.fromIntegral (ByteStringLazy.length declared))
+                <> Builder.lazyByteString declared
+            padded n b =
+              Builder.toLazyByteString b
+                <> ByteStringLazy.replicate (n P.- ByteStringLazy.length (Builder.toLazyByteString b)) 0
+            records i =
+              word 65536
+                <> word 1
+                <> word used
+                <> word (i P.* perRegion)
+                <> Builder.byteString (ByteString.replicate used 0)
         createDirectoryIfMissing True "waveforms"
         ByteStringLazy.writeFile spillFile
-          . Builder.toLazyByteString
-          $ Builder.string7 "CCCSPILL"
-          <> Builder.word8 1
-          <> Builder.word64LE 0
-          <> block 1 (Builder.toLazyByteString declared)
-          <> foldMap (block 2 . Builder.toLazyByteString . chunked) [1 .. chunks]
+          $ padded
+            4096
+            ( Builder.string7 "CCCSPILL"
+                <> Builder.word8 2
+                <> Builder.byteString (ByteString.replicate 7 0)
+                <> word 0
+                <> word 4096
+            )
+          <> padded
+            4096
+            ( word 4096
+                <> word 0
+                <> word (P.fromIntegral (ByteStringLazy.length (Builder.toLazyByteString block)))
+                <> word 0
+                <> block
+            )
+          <> P.foldMap (padded 65536 . records) [1 .. regions]
         flip finally (removeFile spillFile) $ do
           read' <- recoverRecording spillFile
           rec <- P.either assertFailure pure read'
@@ -268,7 +294,157 @@ children =
           live <- gcdetails_live_bytes . gc <$> getRTSStats
           assertBool ("the live heap is " <> P.show live <> " bytes") (live P.< 16000000)
           -- The recording is alive until here.
-          recordingEnd rec @?= P.fromIntegral (chunks P.* 16384 `P.div` 3)
+          recordingEnd rec @?= P.fromIntegral (regions P.* perRegion)
+    )
+  ,
+    ( "formats-killed"
+    , do
+        -- Records, says how far, and waits to be killed (see the test).
+        let name = "formats-killed"
+        _ <- withRecording (Just (file name "spill")) $ do
+          _ <- evaluate (P.sum (P.map P.toInteger (sampleN 3000 busyAndQuiet)))
+          P.putStrLn "recorded 3000 cycles"
+          hFlush stdout
+          threadDelay 60000000
+        assertFailure "the child was not killed"
+    )
+  ,
+    ( "formats-full-disk"
+    , do
+        -- A file system that takes no more than 256 KiB per file: the spill
+        -- file of a counter that changes every cycle cannot hold 200000
+        -- cycles. The recording stops where it cannot grow; the run goes on.
+        let name = "formats-full-disk"
+            cycles = 200000
+        scrub [name]
+        _ <- installHandler sigXFSZ Ignore P.Nothing
+        limits <- getResourceLimit ResourceFileSize
+        setResourceLimit ResourceFileSize limits{softLimit = ResourceLimit 262144}
+        (r, rec) <-
+          withRecording
+            (Just (file name "spill"))
+            (evaluate (P.sum (P.map P.toInteger (sampleN cycles counter))))
+        setResourceLimit ResourceFileSize limits
+        P.either (Left . P.show) Right r
+          @?= Right (P.sum (P.map P.toInteger (P.take cycles (P.cycle [0 .. 255 :: Int]))))
+        let end = recordingEnd rec
+        assertBool
+          ("recorded " <> P.show end <> " cycles")
+          (end P.> 1000 P.&& end P.< P.fromIntegral cycles)
+        -- The spill file holds the same: every cycle up to where it stopped.
+        recovered <- recoverRecording (file name "spill")
+        P.fmap recordingEnd recovered @?= Right end
+        written <- writeVCD (0, end) rec (file name "vcd")
+        written @?= Right ()
+        body <- vcdBody (file name "vcd")
+        assertBool
+          "no cycle is z"
+          (P.not (P.any ('z' `P.elem`) [l | l <- body, P.take 1 l P.== "b"]))
+        discardRecording rec
+    )
+  ,
+    ( "formats-full-disk-unmapped"
+    , do
+        -- The same, written without mappings: a full region that cannot be
+        -- written is lost, and the recording ends where it began, in the
+        -- spill file and in the recording alike.
+        setEnv "CCC_SPILL_NO_MMAP" "1"
+        let name = "formats-full-disk-unmapped"
+            cycles = 200000
+        scrub [name, "formats-full-disk-unmapped-read"]
+        _ <- installHandler sigXFSZ Ignore P.Nothing
+        limits <- getResourceLimit ResourceFileSize
+        setResourceLimit ResourceFileSize limits{softLimit = ResourceLimit 262144}
+        (r, rec) <-
+          withRecording
+            (Just (file name "spill"))
+            (evaluate (P.sum (P.map P.toInteger (sampleN cycles counter))))
+        setResourceLimit ResourceFileSize limits
+        P.either (Left . P.show) Right r
+          @?= Right (P.sum (P.map P.toInteger (P.take cycles (P.cycle [0 .. 255 :: Int]))))
+        let end = recordingEnd rec
+        assertBool
+          ("recorded " <> P.show end <> " cycles")
+          (end P.> 1000 P.&& end P.< P.fromIntegral cycles)
+        recovered <- recoverRecording (file name "spill")
+        rec' <- P.either assertFailure pure recovered
+        recordingEnd rec' @?= end
+        _ <- writeVCD (0, end) rec (file name "vcd")
+        _ <- writeVCD (0, end) rec' (file "formats-full-disk-unmapped-read" "vcd")
+        body <- vcdBody (file name "vcd")
+        body' <- vcdBody (file "formats-full-disk-unmapped-read" "vcd")
+        body @?= body'
+        assertBool
+          "no cycle is z"
+          (P.not (P.any ('z' `P.elem`) [l | l <- body, P.take 1 l P.== "b"]))
+        discardRecording rec
+    )
+  ,
+    ( "formats-unmapped"
+    , do
+        -- Every region a buffer: no mapping, and the waveform a recording
+        -- in memory gives, also read back from the spill file.
+        setEnv "CCC_SPILL_NO_MMAP" "1"
+        let name = "formats-unmapped"
+        scrub [name, "formats-unmapped-memory", "formats-unmapped-read"]
+        createDirectoryIfMissing True "waveforms"
+        spillFile <- (</> (name <.> "spill")) <$> canonicalizePath "waveforms"
+        (r, rec) <- withRecording (Just spillFile) $ do
+          _ <- evaluate (P.sum (P.map P.toInteger (sampleN 50000 busyAndQuiet)))
+          P.readFile "/proc/self/maps"
+            >>= evaluate
+            . P.length
+            . P.filter (spillFile `isSuffixOf`)
+            . P.lines
+        P.either (Left . P.show) Right r @?= Right 0
+        (_, inMemory) <-
+          withRecording Nothing (evaluate (P.sum (P.map P.toInteger (sampleN 50000 busyAndQuiet))))
+        _ <- writeVCD (0, recordingEnd inMemory) inMemory (file "formats-unmapped-memory" "vcd")
+        _ <- writeVCD (0, recordingEnd rec) rec (file name "vcd")
+        recovered <- recoverRecording spillFile
+        rec' <- P.either assertFailure pure recovered
+        _ <- writeVCD (0, recordingEnd rec') rec' (file "formats-unmapped-read" "vcd")
+        a <- vcdBody (file "formats-unmapped-memory" "vcd")
+        b <- vcdBody (file name "vcd")
+        c <- vcdBody (file "formats-unmapped-read" "vcd")
+        a @?= b
+        a @?= c
+        discardRecording rec
+    )
+  ,
+    ( "formats-flat-memory"
+    , do
+        -- 300 signals that each change every 64 cycles, recorded for some
+        -- seconds: the live heap at the end of the run is what it was a
+        -- quarter of the way in. It measures the heap of the whole process.
+        let name = "formats-flat-memory"
+            cycles = 40000
+        scrub [name]
+        (r, rec) <- withRecording (Just (file name "spill")) $ do
+          let go :: Int -> [Unsigned 16] -> [Integer] -> IO [Integer]
+              go i xs acc
+                | i P.== cycles = pure (P.reverse acc)
+                | P.otherwise = case xs of
+                    x : rest -> do
+                      _ <- evaluate x
+                      acc' <-
+                        if i P.== cycles `P.div` 4 P.|| i P.== cycles P.- 1
+                          then do
+                            performMajorGC
+                            live <- gcdetails_live_bytes . gc <$> getRTSStats
+                            pure (P.toInteger live : acc)
+                          else pure acc
+                      go (i P.+ 1) rest acc'
+                    [] -> pure (P.reverse acc)
+          go 0 (sample quietMany) []
+        lives <- P.either (assertFailure . P.show) pure r
+        case lives of
+          [quarter, whole] ->
+            assertBool
+              ("the live heap grew from " <> P.show quarter <> " to " <> P.show whole <> " bytes")
+              (whole P.- quarter P.< 32768)
+          _ -> assertFailure ("measured " <> P.show lives)
+        discardRecording rec
     )
   ,
     ( "formats-fst-too-large"
@@ -435,46 +611,36 @@ tests =
         code'' <- spillWith VCD "spill2vcd" [file "formats-cli" "json"]
         assertBool "refused" (code'' P./= ExitSuccess)
     , -- A killed process writes nothing more: what it leaves must have every
-      -- signal, also one whose records never filled a chunk.
-      testCase "a killed run's spill file has every signal, up to about a second before" $ do
-        let
-          spillFile = file "formats-killed" "spill"
-          snapshot = file "formats-killed-snapshot" "spill"
-        scrub ["formats-killed", "formats-killed-snapshot"]
-        (r, rec) <- withRecording (Just spillFile) $ do
-          _ <- evaluate (P.sum (P.map P.toInteger (sampleN 3000 busyAndQuiet)))
-          threadDelay 1500000
-          -- What the process would leave if it were killed now. Through a
-          -- descriptor: GHC refuses to open a file this process writes.
-          unlockedRead spillFile >>= ByteString.writeFile snapshot
-        P.either (assertFailure . P.show) (P.const (pure ())) r
-        discardRecording rec
-        killed <- recoverRecording snapshot
+      -- signal, up to the cycle it got to, also one that never changes.
+      testCase "a killed run's spill file has every signal, up to the cycle it got to" $ do
+        let name = "formats-killed"
+        scrub [name]
+        (out, process) <- startChild "formats-killed"
+        line <- hGetLine out
+        line @?= "recorded 3000 cycles"
+        getPid process >>= P.maybe (assertFailure "the child has no pid") (signalProcess sigKILL)
+        code <- waitForProcess process
+        code @?= ExitFailure (-9)
+        killed <- recoverRecording (file name "spill")
         case killed of
           Left err -> assertFailure err
-          Right rec' -> do
+          Right rec -> do
             -- The last forced cycle of a trace is recorded with the next one.
-            assertBool "every cycle but the last" (recordingEnd rec' P.>= 2999)
-            written <- writeVCD (0, recordingEnd rec') rec' (file "formats-killed-snapshot" "vcd")
+            recordingEnd rec @?= 2999
+            written <- writeVCD (0, recordingEnd rec) rec (file name "vcd")
             written @?= Right ()
-            body <- vcdBody (file "formats-killed-snapshot" "vcd")
+            body <- vcdBody (file name "vcd")
             let values = [l | l <- body, P.take 1 l P.== "b"]
             assertBool "both signals have values" (P.length values P.> 2)
             assertBool "no signal is z" (P.not (P.any ('z' `P.elem`) values))
-        removeFile snapshot
+            discardRecording rec
     , -- A cancelled run writes everything it recorded: also the progress of a
-      -- signal that has not changed since the last tick.
+      -- signal that has not changed since its first cycle.
       testCase "a cancelled run's spill file has every signal up to the end" $ do
         let spillFile = file "formats-cancelled-quiet" "spill"
         scrub ["formats-cancelled-quiet"]
         stopped <- try @AsyncException $ withRecording (Just spillFile) $ do
-          -- One instance, sampled in two steps.
-          let xs = P.map P.toInteger (sample busyAndQuiet)
-          _ <- evaluate (P.sum (P.take 3000 xs))
-          -- A tick writes "quiet" and its progress; after it, "quiet" has no
-          -- new records.
-          threadDelay 1500000
-          _ <- evaluate (P.sum (P.take 6000 xs))
+          _ <- evaluate (P.sum (P.map P.toInteger (sampleN 6000 busyAndQuiet)))
           throwIO ThreadKilled
         assertBool "the run was cancelled" (P.either (P.const True) (P.const False) stopped)
         recovered <- recoverRecording spillFile
@@ -489,6 +655,80 @@ tests =
               "no signal is z"
               (P.not (P.any ('z' `P.elem`) [l | l <- body, P.take 1 l P.== "b"]))
             discardRecording rec
+    , -- A full disk stops the recording, not the run: the recording keeps
+      -- what it has, and says so.
+      testCase "a spill file that cannot grow stops the recording, and the run goes on" $ do
+        (code, _, err) <- inChild "formats-full-disk" []
+        code @?= ExitSuccess
+        assertBool ("said: " <> err) ("The spill file cannot grow" `isInfixOf` err)
+        assertBool ("said: " <> err) ("File too large" `isInfixOf` err)
+    , testCase "a spill file written without mappings that cannot grow stops the recording too" $ do
+        (code, _, err) <- inChild "formats-full-disk-unmapped" []
+        code @?= ExitSuccess
+        assertBool ("said: " <> err) ("The spill file cannot grow" `isInfixOf` err)
+    , -- Where regions cannot be mapped, they are buffers: the same waveform.
+      testCase "a spill file written without mappings gives the same waveform"
+        $ assertChild "formats-unmapped" []
+    , -- A full region is unmapped: a signal holds one mapping, however long
+      -- it records, and a closed recording none.
+      testCase "a spill file maps one region per signal, and none once closed" $ do
+        let name = "formats-mappings"
+        scrub [name]
+        createDirectoryIfMissing True "waveforms"
+        spillFile <- (</> (name <.> "spill")) <$> canonicalizePath "waveforms"
+        let mappings =
+              P.readFile "/proc/self/maps"
+                >>= evaluate
+                . P.length
+                . P.filter (spillFile `isSuffixOf`)
+                . P.lines
+        (r, rec) <- withRecording (Just spillFile) $ do
+          -- About 600 KiB of records: regions of 4, 8, 16, 32 and then 64 KiB.
+          _ <- evaluate (P.sum (P.map P.toInteger (sampleN 200000 counter)))
+          mappings
+        -- The counter's region, and the metadata's.
+        P.either (Left . P.show) Right r @?= Right 2
+        mappings >>= (@?= 0)
+        discardRecording rec
+    , -- Between storing a signal's newest record and its progress, a killed
+      -- run's spill file has the record but not yet the progress.
+      testCase "a signal's newest record counts when its progress lags" $ do
+        let name = "formats-lagging"
+        scrub [name, "formats-lagging-whole"]
+        (_, rec) <-
+          withRecording
+            (Just (file name "spill"))
+            (evaluate (P.sum (P.map P.toInteger (sampleN 20000 counter))))
+        _ <- writeVCD (0, recordingEnd rec) rec (file "formats-lagging-whole" "vcd")
+        -- The progress of the counter's last region: back to 0.
+        contents <- ByteString.readFile (file name "spill")
+        let word o =
+              P.foldr
+                (\i acc -> acc P.* 256 P.+ P.fromIntegral (ByteString.index contents (o P.+ i)))
+                0
+                [0 .. 7] ::
+                Int
+            regions off
+              | off P.+ 32 P.> ByteString.length contents P.|| word off P.== 0 = []
+              | P.otherwise = (off, word (off P.+ 8)) : regions (off P.+ word off)
+            lastOfCounter = P.last [off | (off, owner) <- regions (word 24), owner P.== 1]
+            progressAt = lastOfCounter P.+ 24
+            lagging =
+              ByteString.take progressAt contents
+                <> ByteString.replicate 8 0
+                <> ByteString.drop (progressAt P.+ 8) contents
+        ByteString.writeFile (file name "spill") lagging
+        recovered <- recoverRecording (file name "spill")
+        case recovered of
+          Left err -> assertFailure err
+          Right rec' -> do
+            _ <- writeVCD (0, recordingEnd rec') rec' (file name "vcd")
+            a <- vcdBody (file "formats-lagging-whole" "vcd")
+            b <- vcdBody (file name "vcd")
+            a @?= b
+        discardRecording rec
+    , testCase "a long recording on disk keeps its memory flat"
+        $ assertChild "formats-flat-memory" []
     , -- A waveform that cannot be written must not cost the recording: the
       -- spill file stays, for recoverWaveform.
       testCase "a spill file stays when its waveform cannot be written" $ do
@@ -574,12 +814,12 @@ tests =
           empty @?= ExitFailure 1
           existing "formats-cli-empty" ["vcd", "json"] >>= (@?= [False, False])
           discardRecording rec
-    , testCase "a spill file cut off in a block is read up to its last whole block" $ do
+    , testCase "a spill file cut off in a region is read up to its last whole region" $ do
         let
           spillFile = file "formats-cut" "spill"
           cutFile = file "formats-cut-short" "spill"
         scrub ["formats-cut", "formats-cut-short", "formats-cut-whole", "formats-cut-read"]
-        -- Enough cycles for several chunks of records.
+        -- Enough cycles for several regions of records.
         (r, rec) <-
           withRecording
             (Just spillFile)
@@ -596,25 +836,34 @@ tests =
             a <- vcdBody (file "formats-cut-whole" "vcd")
             b <- vcdBody (file "formats-cut-read" "vcd")
             a @?= b
-        -- Cut off inside the last block: the run up to its last whole chunks.
+        -- Cut off in the middle: the counter's records of its whole regions.
         size <- getFileSize spillFile
         ByteString.readFile spillFile
           >>= ByteString.writeFile cutFile
-          . ByteString.take (P.fromIntegral size P.- 100)
+          . ByteString.take (P.fromIntegral size `P.div` 2)
         cut <- recoverRecording cutFile
         case cut of
           Left err -> assertFailure err
           Right rec' -> do
-            assertBool "fewer cycles than the whole run" (recordingEnd rec' P.< recordingEnd rec)
-            assertBool "but some" (recordingEnd rec' P.> 0)
+            let changes r' = P.concat <$> P.mapM (recordedChanges r') (recordedSignals r')
+            wholeChanges <- changes rec
+            cutChanges <- changes rec'
+            assertBool
+              "fewer changes than the whole run"
+              (P.length cutChanges P.< P.length wholeChanges)
+            assertBool "but some" (P.length cutChanges P.> 0)
+            cutChanges @?= P.take (P.length cutChanges) wholeChanges
             written <- writeVCD (0, recordingEnd rec') rec' (file "formats-cut-short" "vcd")
             written @?= Right ()
-        -- Followed by a block that claims more bytes than the file has, as
+        -- Followed by a region that claims more bytes than the file has, as
         -- one that was cut off would: read up to it, without trying to.
         let garbledFile = file "formats-cut-garbled" "spill"
         ByteString.readFile spillFile
           >>= ByteString.writeFile garbledFile
-          . (<> ByteString.pack [2, 255, 255, 255, 127, 1, 2, 3])
+          . ( <>
+                ByteStringLazy.toStrict
+                  (Builder.toLazyByteString (P.foldMap Builder.word64LE [65536, 1, 65504, 0]))
+            )
         garbled <- recoverRecording garbledFile
         P.fmap recordingEnd garbled @?= Right (recordingEnd rec)
         discardRecording rec

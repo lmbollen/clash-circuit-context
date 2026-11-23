@@ -11,13 +11,23 @@ module Test.Child (
   Child,
   childMain,
   inChild,
+  startChild,
   assertChild,
 ) where
 
 import Control.Monad (unless)
 import System.Environment (getEnvironment, getExecutablePath, lookupEnv)
 import System.Exit (ExitCode (ExitSuccess), die)
-import System.Process (env, proc, readCreateProcessWithExitCode)
+import System.IO (Handle)
+import System.Process (
+  ProcessHandle,
+  StdStream (CreatePipe),
+  createProcess,
+  env,
+  proc,
+  readCreateProcessWithExitCode,
+  std_out,
+ )
 
 import Test.Tasty.HUnit (Assertion, assertFailure)
 
@@ -50,6 +60,21 @@ inChild name rts = do
   readCreateProcessWithExitCode
     (proc exe args){env = Just ((variable, name) : filter ((/= variable) . fst) parent)}
     ""
+
+{- | Start the child of this name, without waiting for it: its stdout, to
+read while it runs, and its process (to signal, and to wait for).
+-}
+startChild :: String -> IO (Handle, ProcessHandle)
+startChild name = do
+  exe <- getExecutablePath
+  parent <- getEnvironment
+  (_, out, _, ph) <-
+    createProcess
+      (proc exe [])
+        { env = Just ((variable, name) : filter ((/= variable) . fst) parent)
+        , std_out = CreatePipe
+        }
+  maybe (die "a child without stdout") (\h -> pure (h, ph)) out
 
 -- | The child of this name, with these RTS options, passes.
 assertChild :: String -> [String] -> Assertion

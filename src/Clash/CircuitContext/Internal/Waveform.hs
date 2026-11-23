@@ -117,6 +117,11 @@ data Spill
     with @recoverWaveform@, or from the command line with the package's
     executables @spill2fst@ and @spill2vcd@. The values are written twice: to
     the spill file, and to the waveform.
+
+    A value is in the file as soon as it is recorded, also when the process is
+    killed right after. The file's disk space is reserved ahead, up to 64 KiB
+    per signal, so a full disk stops the recording (not the run) with a
+    message, and the waveform ends where the recording stopped.
     -}
     OnDisk
   deriving (Eq, Show)

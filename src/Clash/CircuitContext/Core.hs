@@ -379,8 +379,10 @@ the exception goes on. A spill file that holds recorded cycles stays, and a
 message on stderr says where it is: read it with
 'Clash.CircuitContext.Recording.recoverRecording'. One that holds none is
 deleted, without a message. The spill file of a
-process that was killed stays too, with what it recorded up to about a second
-before.
+process that was killed stays too, with everything it recorded: a value is in
+the file as soon as it is recorded. A spill file that cannot grow (a full
+disk) stops the recording, not the run: a message on stderr says so, and the
+recording ends where it stopped.
 -}
 withRecording ::
   Maybe FilePath ->

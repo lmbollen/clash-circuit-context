@@ -452,15 +452,24 @@ opts = defaultOptions {format = VCD, spill = OnDisk}
     memory as a short one (on a CPU design, 237,000 recorded cycles took a
     maximum residency of 58 MB), and the values are written to disk twice. A
     recording that is stopped leaves the spill file, holding what it recorded
-    (see below).
+    (see below). The file is mapped into memory a region per signal, and its
+    disk space is reserved a region ahead: up to 64 KiB per signal, so a
+    design of 10,000 signals reserves up to 640 MB more than it has written.
+    A full disk stops the recording, not the run: a message says so, and the
+    waveform ends where the recording stopped. Where the file cannot be mapped
+    (some network or FUSE file systems, Windows), it is written a region at a
+    time instead; `CCC_SPILL_NO_MMAP=1` asks for that everywhere.
 
 ### A run that was stopped
 
 A recording with `spill = OnDisk` that is cancelled (a test timeout, Ctrl-C)
 or killed leaves `<path>.spill`, and a cancelled one says where on
 stderr. A cancelled run that recorded no cycle leaves nothing and says
-nothing, as there is nothing to recover. A cancelled run keeps everything it recorded; a killed one,
-everything up to about a second before (a second Ctrl-C kills). Only a run that records can leave one: a run of `writeWaveform`, or
+nothing, as there is nothing to recover. A cancelled run keeps everything it recorded, and so
+does a killed one (a second Ctrl-C, SIGKILL, the out-of-memory killer, a crash): a value is in the
+file as soon as it is recorded. Only a crash of the machine itself can lose the newest values, and
+where the file cannot be mapped (see `OnDisk`), a killed run loses up to 64 KiB of each signal's
+newest values. Only a run that records can leave one: a run of `writeWaveform`, or
 the rerun of a failed check of `withWaveform` or `simulateWaveform`. Their
 first runs do not record, so a test that hangs and is cancelled in its first
 run leaves nothing; to keep the waveform of such a test, simulate it with

@@ -68,6 +68,7 @@ library
     Clash.CircuitContext.Internal.FstOut
     Clash.CircuitContext.Internal.Recorder
     Clash.CircuitContext.Internal.Sidecar
+    Clash.CircuitContext.Internal.SpillFile
     Clash.CircuitContext.Internal.Vcd
     Clash.CircuitContext.Internal.Waveform
     Clash.CircuitContext.Internal.Wide64
@@ -120,7 +121,11 @@ library
   -- writer in Clash.CircuitContext.Internal.Fst. It needs zlib. One local
   -- change, marked clash-circuit-context in fstapi.c: fstWriterClose returns
   -- whether every write succeeded, so that a cut-off FST is an error.
+  -- The system calls of the spill file (open, posix_fallocate, mmap, munmap,
+  -- pwrite, close), for Clash.CircuitContext.Internal.SpillFile. On Windows
+  -- it maps nothing: every region of a spill file is then written whole.
   c-sources:
+    cbits/ccc_spill.c
     cbits/libfst/fastlz.c
     cbits/libfst/fstapi.c
     cbits/libfst/lz4.c

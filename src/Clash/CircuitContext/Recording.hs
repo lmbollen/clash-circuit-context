@@ -93,8 +93,8 @@ discardRecording :: Recording -> IO ()
 discardRecording = mapM_ removePathForcibly . recordingSpill
 
 {- | Read the spill file at this path as a recording: also the file of a run
-that was stopped, with what its signals had recorded up to their last whole
-chunks of values. 'Left' when it is not a spill file, or cannot be read.
+that was stopped or killed, with everything its signals had recorded. 'Left'
+when it is not a spill file, or cannot be read.
 -}
 recoverRecording :: FilePath -> IO (Either String Recording)
 recoverRecording path = either (\(e :: IOException) -> Left (displayException e)) id <$> try (readSpill path)
