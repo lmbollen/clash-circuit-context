@@ -256,6 +256,12 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
   annotation other than `NoCircuitScope` (those are not split). To fix
   those names, use `imapComponents` (structural position) or call
   `component` by hand.
+* A class method, and a function with an annotation other than
+  `NoCircuitScope` (an HLint `ANN`, for example), are not split, so they
+  keep the call sites as an argument. Clash specialises a function on a
+  constant argument, so such a function that is an HDL module (`OPAQUE`)
+  becomes one module per call site: `f`, `f_0`, …, which differ only in
+  their names. This is a known limitation.
 * Every signal and scope in a scope has a name of its own. A name that is
   used once is kept as it is. The duplicates of a name (instances, or the
   signals that the calls of a helper record) are numbered `name_0`,

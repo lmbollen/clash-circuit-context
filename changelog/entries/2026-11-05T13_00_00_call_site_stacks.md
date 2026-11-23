@@ -15,7 +15,9 @@ instances of a plugin-made component were numbered in the order the
 simulation first reached them. A `map` or `fmap` over a vector, a class
 method, a local function without a signature, and a function with an
 annotation other than `NoCircuitScope` still number their instances that
-way. The numbers rank the instances that the run evaluated: a test that
+way. A class method and a function with such an annotation are not split,
+and keep the call sites as an argument: when such a function is an HDL
+module (`OPAQUE`), Clash makes one module for each call site. The numbers rank the instances that the run evaluated: a test that
 evaluates only some of them numbers those in the same order, but from 0, and
 a single evaluated instance gets no number.
 
