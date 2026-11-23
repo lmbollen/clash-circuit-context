@@ -38,7 +38,15 @@ tests =
         P.mapM_ removePathForcibly [f | k <- [1 .. 10 :: Int], f <- files k]
         runs <-
           P.mapM
-            ( \k -> timeout 100000 (writeWaveform defaultOptions ("cancel-stops-" <> P.show k) (0, 3000000) (counter k))
+            ( \k ->
+                timeout
+                  100000
+                  ( writeWaveform
+                      defaultOptions
+                      ("waveforms/cancel-stops-" <> P.show k)
+                      (0, 3000000)
+                      (counter k)
+                  )
             )
             [1 .. 10 :: Int]
         P.length (P.filter P.null runs) @?= 10

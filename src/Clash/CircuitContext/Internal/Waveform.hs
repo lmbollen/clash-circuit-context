@@ -20,8 +20,8 @@ recording.
 == Memory
 
 A recording keeps its values as compact records ('Spill'): in memory, or in
-a spill file, @waveforms\/\<name\>.spill@, which is deleted when the
-waveform is written. With a spill file, a recording needs about the same
+a spill file, @\<path\>.spill@, which is deleted when the waveform is
+written. With a spill file, a recording needs about the same
 memory for a long run as for a short one. Nothing here serializes tests
 either, so a parallel runner is free to use every core.
 -}
@@ -59,7 +59,7 @@ import System.Directory (
   makeAbsolute,
   removePathForcibly,
  )
-import System.FilePath ((<.>), (</>))
+import System.FilePath ((<.>))
 import System.IO (IOMode (ReadMode), hGetLine, hPutStrLn, stderr, withFile)
 
 import Clash.Explicit.Signal (Signal, sampleN)
@@ -94,10 +94,10 @@ data WaveformOptions = WaveformOptions
 Both GTKWave and Surfer read either.
 -}
 data Format
-  = -- | @waveforms\/\<name\>.vcd@: text, readable by any waveform viewer.
+  = -- | @\<path\>.vcd@: text, readable by any waveform viewer.
     VCD
-  | {- | @waveforms\/\<name\>.fst@: compressed, often tens of times smaller
-    than the VCD, and as fast to write.
+  | {- | @\<path\>.fst@: compressed, often tens of times smaller than the
+    VCD, and as fast to write.
     -}
     FST
   deriving (Eq, Show)
@@ -109,8 +109,8 @@ data Spill
     nothing.
     -}
     InMemory
-  | {- | In @waveforms\/\<name\>.spill@, deleted when the waveform is
-    written: memory does not grow with the length of the run, and a recording
+  | {- | In @\<path\>.spill@, beside the waveform, deleted when the waveform
+    is written: memory does not grow with the length of the run, and a recording
     that is stopped, or whose waveform cannot be written, leaves the file,
     holding what it recorded (a run of
     @writeWaveform@; @withWaveform@ and @simulateWaveform@ record only when
@@ -126,22 +126,23 @@ data Spill
 defaultOptions :: WaveformOptions
 defaultOptions = WaveformOptions{format = FST, spill = InMemory}
 
-{- | The path of a waveform name in this format: @waveforms\/\<name\>.vcd@
-or @.fst@, relative to the process's WORKING DIRECTORY. That is not the same
-place under every way of running a suite (@cabal test@ runs in the package
-directory, @cabal run@ where it was invoked), which is why a failure's
-waveform is announced with its absolute path.
+{- | The file of a waveform in this format: its path, which has no
+extension, with @.vcd@ or @.fst@ added. A relative path is relative to the
+process's WORKING DIRECTORY. That is not the same place under every way of
+running a suite (@cabal test@ runs in the package directory, @cabal run@
+where it was invoked), which is why a failure's waveform is announced with
+its absolute path.
 -}
-waveformPath :: Format -> String -> FilePath
-waveformPath fmt name = "waveforms" </> name <.> extension fmt
+waveformPath :: Format -> FilePath -> FilePath
+waveformPath fmt path = path <.> extension fmt
 
 extension :: Format -> String
 extension VCD = "vcd"
 extension FST = "fst"
 
--- | The spill file of a waveform name: @waveforms\/\<name\>.spill@.
-spillPath :: String -> FilePath
-spillPath name = "waveforms" </> name <.> "spill"
+-- | The spill file of a waveform's path: @\<path\>.spill@.
+spillPath :: FilePath -> FilePath
+spillPath path = path <.> "spill"
 
 -- | Throw, as 'Clash.Signal.Trace.dumpVCD' does, unless @0 <= start <= stop@.
 checkWindow :: String -> (Int, Int) -> IO ()
@@ -189,12 +190,12 @@ cancelled run keeps its spill file, and says so on stderr (see
 -}
 record ::
   WaveformOptions ->
-  String ->
+  FilePath ->
   Int ->
   ((HasCircuitContext) => IO r) ->
   IO (Either SomeException r, Recording)
-record opts name start =
-  withRecordingFrom start (if spill opts == OnDisk then Just (spillPath name) else Nothing)
+record opts path start =
+  withRecordingFrom start (if spill opts == OnDisk then Just (spillPath path) else Nothing)
 
 {- | Why a waveform is written. A 'Failure' waveform is marked in its
 comment (a VCD's @$comment@ line, an FST's comment), so that a later passing
@@ -207,28 +208,29 @@ data Origin = Requested | Failure
 failureComment :: String
 failureComment = "clash-circuit-context: the run of a failing test"
 
-{- | Write a recording as the options' waveform, @waveforms\/\<name\>.vcd@ or
-@.fst@ and its @.json@ sidecar, over the window @[start, stop)@ in ps, and
-then delete its spill file. Returns the waveform's ABSOLUTE path: the
-directory is relative to the working directory, which differs between ways
-of running a suite. 'Left', with the reason, and nothing written, when the
-run recorded nothing in the window or the files could not be written; an
-earlier file is then left alone. The spill file of a run that recorded
-cycles is then kept, for 'recover', and the reason says where it is.
+{- | Write a recording as the options' waveform, @\<path\>.vcd@ or @.fst@ and
+its @.json@ sidecar (making missing directories), over the window
+@[start, stop)@ in ps, and then delete its spill file. Returns the
+waveform's ABSOLUTE path: a relative path is relative to the working
+directory, which differs between ways of running a suite. 'Left', with the
+reason, and nothing written, when the run recorded nothing in the window or
+the files could not be written; an earlier file is then left alone. The
+spill file of a run that recorded cycles is then kept, for 'recover', and
+the reason says where it is.
 -}
 save ::
   Origin ->
   WaveformOptions ->
-  String ->
+  FilePath ->
   (Int, Int) ->
   Recording ->
   IO (Either String FilePath)
-save origin opts name window rec = do
-  written <- writeWaveformFiles origin opts name window rec
+save origin opts path window rec = do
+  written <- writeWaveformFiles origin opts path window rec
   case (written, recordingSpill rec) of
     (Left err, Just spillFile) | recorded -> do
-      path <- makeAbsolute spillFile
-      pure (Left (err <> "; what the run recorded is kept in " <> path))
+      kept <- makeAbsolute spillFile
+      pure (Left (err <> "; what the run recorded is kept in " <> kept))
     _ -> discard rec >> pure written
  where
   recorded = not (null (recordingSignals rec)) && recordingEndPs rec > recordingStartPs rec
@@ -237,13 +239,13 @@ save origin opts name window rec = do
 writeWaveformFiles ::
   Origin ->
   WaveformOptions ->
-  String ->
+  FilePath ->
   (Int, Int) ->
   Recording ->
   IO (Either String FilePath)
-writeWaveformFiles origin opts name (start, stop) rec = do
-  written <- writer comment window rec (waveformPath (format opts) name)
-  traverse (const (makeAbsolute (waveformPath (format opts) name))) written
+writeWaveformFiles origin opts path (start, stop) rec = do
+  written <- writer comment window rec (waveformPath (format opts) path)
+  traverse (const (makeAbsolute (waveformPath (format opts) path))) written
  where
   comment = if origin == Failure then failureComment else "No comment"
   window = (start `div` timescale rec, ticks rec stop)
@@ -255,25 +257,25 @@ writeWaveformFiles origin opts name (start, stop) rec = do
 discard :: Recording -> IO ()
 discard = mapM_ removePathForcibly . recordingSpill
 
-{- | Delete @waveforms\/\<name\>.vcd@ or @.fst@, and its @.json@, if it is
-the waveform of a failing run ('Failure'). A waveform written on purpose (by
-@writeWaveform@) is kept, also when another test of the same name passes.
+{- | Delete @\<path\>.vcd@ or @.fst@, and its @.json@, if it is the waveform
+of a failing run ('Failure'). A waveform written on purpose (by
+@writeWaveform@) is kept, also when another test with the same path passes.
 -}
-removeFailureWaveform :: String -> IO ()
-removeFailureWaveform name = do
+removeFailureWaveform :: FilePath -> IO ()
+removeFailureWaveform path = do
   failed <- filterM isFailure [VCD, FST]
-  mapM_ (removePathForcibly . (`waveformPath` name)) failed
-  -- The sidecar goes with the last waveform of its name.
-  left <- filterM (doesFileExist . (`waveformPath` name)) [VCD, FST]
+  mapM_ (removePathForcibly . (`waveformPath` path)) failed
+  -- The sidecar goes with the last waveform of its path.
+  left <- filterM (doesFileExist . (`waveformPath` path)) [VCD, FST]
   when (not (null failed) && null left) $
-    removePathForcibly ("waveforms" </> name <.> "json")
+    removePathForcibly (path <.> "json")
  where
   isFailure VCD = do
     -- Only the header: the VCD can be gigabytes.
     header <-
       try
         ( withFile
-            (waveformPath VCD name)
+            (waveformPath VCD path)
             ReadMode
             (\h -> mapM (const (hGetLine h)) [1 :: Int .. 3])
         )
@@ -281,28 +283,28 @@ removeFailureWaveform name = do
       Right ls -> ("$comment " <> failureComment <> " $end") `elem` ls
       Left (_ :: IOException) -> False
   isFailure FST = do
-    there <- doesFileExist (waveformPath FST name)
+    there <- doesFileExist (waveformPath FST path)
     if there
-      then (== Just True) <$> Fst.hasComment (waveformPath FST name) failureComment
+      then (== Just True) <$> Fst.hasComment (waveformPath FST path) failureComment
       else pure False
 
-{- | Say on stderr what became of a waveform: where it landed (as the
-absolute path 'save' gives), or why there is none.
+{- | Say on stderr what became of the waveform of this path: where it
+landed (as the absolute path 'save' gives), or why there is none.
 -}
-announce :: String -> Either String FilePath -> IO ()
-announce name written =
+announce :: FilePath -> Either String FilePath -> IO ()
+announce path written =
   hPutStrLn stderr $ case written of
-    Right path -> "clash-circuit-context: wrote " <> path
-    Left err -> "clash-circuit-context: " <> name <> ": no waveform written: " <> err
+    Right absolute -> "clash-circuit-context: wrote " <> absolute
+    Left err -> "clash-circuit-context: " <> path <> ": no waveform written: " <> err
 
 {- | Write the waveform of a run that was stopped, from its spill file
-@waveforms\/\<name\>.spill@, in the options' format: everything it recorded.
-Deletes the spill file once the waveform is written, and keeps it otherwise.
+@\<path\>.spill@, in the options' format: everything it recorded. Deletes
+the spill file once the waveform is written, and keeps it otherwise.
 Returns the waveform's absolute path, or why there is none.
 -}
-recover :: WaveformOptions -> String -> IO (Either String FilePath)
-recover opts name = do
-  spillFile <- makeAbsolute (spillPath name)
+recover :: WaveformOptions -> FilePath -> IO (Either String FilePath)
+recover opts path = do
+  spillFile <- makeAbsolute (spillPath path)
   there <- doesFileExist spillFile
   if not there
     then pure (Left (spillFile <> " does not exist"))
@@ -315,6 +317,6 @@ recover opts name = do
               pure (Left (spillFile <> " holds no recorded cycle"))
           | otherwise -> do
               written <-
-                writeWaveformFiles Requested opts name (recordingStartPs rec, recordingEndPs rec) rec
+                writeWaveformFiles Requested opts path (recordingStartPs rec, recordingEndPs rec) rec
               mapM_ (const (discard rec)) written
               pure written

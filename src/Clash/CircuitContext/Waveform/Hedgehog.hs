@@ -16,7 +16,7 @@ and, if you ask for it, of one passing case.
 > prop_counter :: Property
 > prop_counter = property $ do
 >   xs  <- forAll genInputs
->   out <- simulateWaveform defaultOptions Counterexample "counter" (0, length xs) (top (fromList xs))
+>   out <- simulateWaveform defaultOptions Counterexample "waveforms/counter" (0, length xs) (top (fromList xs))
 >   out === model xs
 
 Every case simulates without recording, so a property that passes costs
@@ -79,14 +79,14 @@ data Capture
   = -- | Only the counterexample Hedgehog reports.
     Counterexample
   | {- | The counterexample, and the first case whose 'Size' is at least this
-    one, once per waveform name in this process. 'Size' is Hedgehog's measure
+    one, once per waveform path in this process. 'Size' is Hedgehog's measure
     of how large a case is, so a small one gives a short waveform you can read
-    end to end. A property runs its cases at sizes 0, 1, 2, … in order, up
-    to 99, and then from 0 again. A discarded case takes a size too, so a
+    end to end. A property runs its cases at sizes 0, 1, 2, … in order, up to
+    99, and then from 0 again. A discarded case takes a size too, so a
     property of @n@ tests and @d@ discarded cases reaches sizes below
-    @min (n + d) 100@. The waveform of this case has the size in its name:
-    @waveforms\/\<name\>_\<size\>.fst@ for @AtSize \<size\>@, so the
-    counterexample's waveform does not replace it, nor it the counterexample's.
+    @min (n + d) 100@. The waveform of this case has the size in its path:
+    @\<path\>_\<size\>.fst@ for @AtSize \<size\>@, so the counterexample's
+    waveform does not replace it, nor it the counterexample's.
     -}
     AtSize Size
   deriving (Show, Eq)
@@ -95,27 +95,28 @@ data Capture
 except as 'Capture' asks; see the module header. A waveform shows the cycles
 @[start, stop)@ of the window, as in "Clash.CircuitContext.Waveform".
 
-The counterexample's waveform is @waveforms\/\<name\>.fst@ or @.vcd@ (and
-its @.json@ sidecar), and the case of an 'AtSize' capture's
-@waveforms\/\<name\>_\<size\>.fst@ or @.vcd@; give each property its own name.
+The counterexample's waveform is @\<path\>.fst@ or @.vcd@ (and its @.json@
+sidecar), and the case of an 'AtSize' capture's @\<path\>_\<size\>.fst@ or
+@.vcd@; give each property its own path. A relative path is relative to the
+working directory, and missing directories are made.
 -}
 simulateWaveform ::
   forall dom a.
   (KnownDomain dom, NFDataX a) =>
   WaveformOptions ->
   Capture ->
-  -- | The name of the waveform: @waveforms\/\<name\>.fst@ or @.vcd@
-  String ->
+  -- | The path of the waveform, without extension: @\<path\>.fst@ or @.vcd@
+  FilePath ->
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
   (Int, Int) ->
   -- | The signal to observe
   (HasCircuitContext => Signal dom a) ->
   PropertyT IO [a]
-simulateWaveform opts capture name window@(_, stop) sig = do
-  liftIO (checkWindow name window)
+simulateWaveform opts capture path window@(_, stop) sig = do
+  liftIO (checkWindow path window)
   keepThis <- case capture of
     Counterexample -> pure Nothing
-    AtSize size -> firstAtSize name size
+    AtSize size -> firstAtSize path size
   out <-
     liftIO $ case keepThis of
       Just sized -> do
@@ -124,7 +125,7 @@ simulateWaveform opts capture name window@(_, stop) sig = do
           >>= either (announce sized . Left) (const (pure ()))
         either throwIO pure xs
       Nothing -> simulate stop sig
-  footnote (onPrint (recordCounterexample @dom opts name window sig))
+  footnote (onPrint (recordCounterexample @dom opts path window sig))
   pure out
 
 -- | Record @stop@ samples of the signal, forced.
@@ -132,12 +133,12 @@ recordRun ::
   forall dom a.
   (KnownDomain dom, NFDataX a) =>
   WaveformOptions ->
-  String ->
+  FilePath ->
   (Int, Int) ->
   (HasCircuitContext => Signal dom a) ->
   IO (Either SomeException [a], Recording)
-recordRun opts name window@(_, stop) sig =
-  record opts name (fst (psWindow @dom window)) $ do
+recordRun opts path window@(_, stop) sig =
+  record opts path (fst (psWindow @dom window)) $ do
     let xs = sampleN stop sig
     evaluate (xs `deepseqX` xs)
 
@@ -148,18 +149,18 @@ recordCounterexample ::
   forall dom a.
   (KnownDomain dom, NFDataX a) =>
   WaveformOptions ->
-  String ->
+  FilePath ->
   (Int, Int) ->
   (HasCircuitContext => Signal dom a) ->
   IO String
-recordCounterexample opts name window sig = do
+recordCounterexample opts path window sig = do
   result <- try $ do
-    (_, rec) <- recordRun @dom opts name window sig
-    save Failure opts name (psWindow @dom window) rec
+    (_, rec) <- recordRun @dom opts path window sig
+    save Failure opts path (psWindow @dom window) rec
   pure $ case result of
-    Right (Right path) -> "waveform: " <> path
-    Right (Left err) -> "no waveform for " <> name <> ": " <> err
-    Left (err :: SomeException) -> "no waveform for " <> name <> ": " <> displayException err
+    Right (Right absolute) -> "waveform: " <> absolute
+    Right (Left err) -> "no waveform for " <> path <> ": " <> err
+    Left (err :: SomeException) -> "no waveform for " <> path <> ": " <> displayException err
 
 {- | A string whose evaluation runs an action: the footnote text above.
 
@@ -170,23 +171,23 @@ onPrint :: IO String -> String
 onPrint = unsafePerformIO
 {-# NOINLINE onPrint #-}
 
-{- | Is this the first case of at least this size for this name? Then the
-name of its waveform: @\<name\>_\<size\>@. Asked inside a generator, because
+{- | Is this the first case of at least this size for this path? Then the
+path of its waveform: @\<path\>_\<size\>@. Asked inside a generator, because
 that is where Hedgehog gives the size; it renders as nothing and has no
 shrinks.
 -}
-firstAtSize :: String -> Size -> PropertyT IO (Maybe String)
-firstAtSize name size =
+firstAtSize :: FilePath -> Size -> PropertyT IO (Maybe FilePath)
+firstAtSize path size =
   forAllWithT (const "") . Gen.sized $ \current ->
     if current >= size
       then liftIO (atomicModifyIORef' fired (\names -> (Set.insert sized names, first names)))
       else pure Nothing
  where
-  sized = name <> "_" <> show (fromIntegral size :: Int)
+  sized = path <> "_" <> show (fromIntegral size :: Int)
   first names = if Set.member sized names then Nothing else Just sized
 
-{- | The waveform names an 'AtSize' capture has used in this process. Only
-names, so it does not grow with the waveforms. It is what makes "once" hold
+{- | The waveform paths an 'AtSize' capture has used in this process. Only
+paths, so it does not grow with the waveforms. It is what makes "once" hold
 across cases, and across the reruns Hedgehog makes while it shrinks.
 -}
 fired :: IORef (Set.Set String)

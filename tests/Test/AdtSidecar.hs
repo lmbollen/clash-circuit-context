@@ -341,7 +341,7 @@ main = do
     try
       $ withWaveform
         defaultOptions{format = VCD}
-        "adt-sidecar-broken"
+        "waveforms/adt-sidecar-broken"
         (0, 4)
         ( bundle
             ( traceSignalSW "skewed" (fromList (P.map Skewed (P.cycle [1, 2, 3])))

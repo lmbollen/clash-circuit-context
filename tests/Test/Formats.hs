@@ -13,7 +13,7 @@
 recording keeps its values until then. Each choice must give the same
 waveform as the others, and a spill file must outlive a run that is stopped.
 
-Every test uses its own waveform names and scrubs their files first.
+Every test uses its own waveform paths and scrubs their files first.
 -}
 module Test.Formats (tests) where
 
@@ -31,6 +31,7 @@ import System.Directory (
   makeAbsolute,
   removeDirectory,
   removeFile,
+  removePathForcibly,
  )
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath ((<.>), (</>))
@@ -104,9 +105,13 @@ unlockedRead path = do
   closeFd fd
   pure bytes
 
+-- | The path of a waveform name: in @waveforms@, as every test's.
+pathOf :: String -> FilePath
+pathOf name = "waveforms" </> name
+
 -- | A file of a waveform name.
 file :: String -> String -> FilePath
-file name ext = "waveforms" </> name <.> ext
+file name ext = pathOf name <.> ext
 
 -- | Delete every file of these waveform names.
 scrub :: [String] -> IO ()
@@ -137,7 +142,7 @@ tests =
     [ testCase "the default options write an FST and its sidecar, and no spill file" $ do
         let name = "formats-default"
         scrub [name]
-        _ <- writeWaveform defaultOptions name (0, 8) counter
+        _ <- writeWaveform defaultOptions (pathOf name) (0, 8) counter
         existing name ["fst", "json", "vcd", "spill"] >>= (@?= [True, True, False, False])
         -- An FST file starts with its header block, whose tag is 0.
         header <- ByteString.take 1 <$> ByteString.readFile (file name "fst")
@@ -145,8 +150,8 @@ tests =
     , testCase "a spill file on disk gives the waveform a spill in memory gives" $ do
         let (onDisk, inMemory) = ("formats-on-disk", "formats-in-memory")
         scrub [onDisk, inMemory]
-        _ <- writeWaveform vcdOnDisk onDisk (0, 40) counter
-        _ <- writeWaveform vcd inMemory (0, 40) counter
+        _ <- writeWaveform vcdOnDisk (pathOf onDisk) (0, 40) counter
+        _ <- writeWaveform vcd (pathOf inMemory) (0, 40) counter
         a <- vcdBody (file onDisk "vcd")
         b <- vcdBody (file inMemory "vcd")
         a @?= b
@@ -154,35 +159,51 @@ tests =
     , testCase "an FST has the sidecar of the VCD" $ do
         let (v, f) = ("formats-sidecar-vcd", "formats-sidecar-fst")
         scrub [v, f]
-        _ <- writeWaveform vcd v (0, 40) counter
-        _ <- writeWaveform defaultOptions f (0, 40) counter
+        _ <- writeWaveform vcd (pathOf v) (0, 40) counter
+        _ <- writeWaveform defaultOptions (pathOf f) (0, 40) counter
         a <- P.readFile (file v "json")
         b <- P.readFile (file f "json")
         assertBool "the counter is described" ("logic.count" `P.elem` P.words (P.map unquote a))
         a @?= b
+    , -- The path is the caller's: relative or absolute, in directories that
+      -- do not exist yet. The spill file goes beside the waveform.
+      testCase "a waveform goes where its path says, absolute or in new directories" $ do
+        root <- makeAbsolute (pathOf "formats-paths")
+        removePathForcibly root
+        let absolute = root </> "new" </> "counter"
+        _ <- writeWaveform vcdOnDisk absolute (0, 8) counter
+        P.mapM (doesFileExist . (absolute <.>)) ["vcd", "json", "spill"]
+          >>= (@?= [True, True, False])
+        let nested = pathOf "formats-paths" </> "a" </> "b" </> "counter"
+        failed <-
+          try @SomeException
+            (withWaveform defaultOptions nested (0, 8) counter (\xs -> P.length xs @?= 9))
+        assertBool "the check failed" (P.either (P.const True) (P.const False) failed)
+        P.mapM (doesFileExist . (nested <.>)) ["fst", "json"] >>= (@?= [True, True])
+        removePathForcibly root
     , testCase "withWaveform deletes an earlier failing run's FST when the test passes" $ do
         let name = "formats-stale-fst"
         scrub [name]
         failed <-
           try @SomeException
-            (withWaveform defaultOptions name (0, 8) counter (\xs -> P.length xs @?= 9))
+            (withWaveform defaultOptions (pathOf name) (0, 8) counter (\xs -> P.length xs @?= 9))
         assertBool "the check failed" (P.either (P.const True) (P.const False) failed)
         existing name ["fst", "json"] >>= (@?= [True, True])
-        _ <- withWaveform defaultOptions name (0, 8) counter (\xs -> P.length xs @?= 8)
+        _ <- withWaveform defaultOptions (pathOf name) (0, 8) counter (\xs -> P.length xs @?= 8)
         existing name ["fst", "json"] >>= (@?= [False, False])
     , testCase "withWaveform keeps an FST written on purpose when the test passes" $ do
         let name = "formats-requested-fst"
         scrub [name]
-        _ <- writeWaveform defaultOptions name (0, 8) counter
-        _ <- withWaveform defaultOptions name (0, 8) counter (\xs -> P.length xs @?= 8)
+        _ <- writeWaveform defaultOptions (pathOf name) (0, 8) counter
+        _ <- withWaveform defaultOptions (pathOf name) (0, 8) counter (\xs -> P.length xs @?= 8)
         existing name ["fst", "json"] >>= (@?= [True, True])
     , testCase "a cancelled run keeps its spill file, and recoverWaveform writes its waveform" $ do
         let name = "formats-cancelled"
         scrub [name]
-        stopped <- timeout 500000 (writeWaveform vcdOnDisk name (0, 4000) slow)
+        stopped <- timeout 500000 (writeWaveform vcdOnDisk (pathOf name) (0, 4000) slow)
         assertBool "the run was cancelled" (P.null stopped)
         existing name ["spill", "vcd"] >>= (@?= [True, False])
-        recovered <- recoverWaveform vcd name
+        recovered <- recoverWaveform vcd (pathOf name)
         absolute <- makeAbsolute (file name "vcd")
         recovered @?= Right absolute
         cycles <- timestamps (file name "vcd")
@@ -191,7 +212,7 @@ tests =
     , testCase "a cancelled run in memory leaves nothing" $ do
         let name = "formats-cancelled-in-memory"
         scrub [name]
-        stopped <- timeout 500000 (writeWaveform defaultOptions name (0, 4000) slow)
+        stopped <- timeout 500000 (writeWaveform defaultOptions (pathOf name) (0, 4000) slow)
         assertBool "the run was cancelled" (P.null stopped)
         existing name ["spill", "fst", "json"] >>= (@?= [False, False, False])
     , testCase "spill2vcd and spill2fst write the waveform the library writes" $ do
@@ -277,10 +298,10 @@ tests =
         scrub [name]
         -- A directory where the waveform should go makes the write fail.
         createDirectoryIfMissing True (file name "vcd")
-        _ <- writeWaveform vcdOnDisk name (0, 8) counter
+        _ <- writeWaveform vcdOnDisk (pathOf name) (0, 8) counter
         existing name ["spill"] >>= (@?= [True])
         removeDirectory (file name "vcd")
-        recovered <- recoverWaveform vcd name
+        recovered <- recoverWaveform vcd (pathOf name)
         assertBool "recovered" (P.either (P.const False) (P.const True) recovered)
         existing name ["vcd", "spill"] >>= (@?= [True, False])
     , testCase "writeVCD and writeFST refuse a window that shows nothing, and IO errors" $ do

@@ -115,35 +115,37 @@ spill tests below use their own.
 vcdOptions :: WaveformOptions
 vcdOptions = defaultOptions{format = VCD}
 
-vcdOf :: String -> FilePath
-vcdOf name = "waveforms" </> name <.> "vcd"
+vcdOf :: FilePath -> FilePath
+vcdOf path = path <.> "vcd"
 
 -- | Leave the waveform of a failing run behind, as an earlier run would.
-plantFailure :: String -> IO ()
+plantFailure :: FilePath -> IO ()
 plantFailure name = do
   _ <- try @SomeException $ withWaveform vcdOptions name (0, 8) counter $ \xs -> evaluate (P.length xs) >> errorX "an earlier failure"
   (v, j) <- filesFor name
   assertBool "the earlier failure left its waveform" (v P.&& j)
 
--- | Do the files of a name exist? (VCD and its ADT sidecar.)
-filesFor :: String -> IO (Bool, Bool)
+-- | Do the files of a waveform's path exist? (VCD and its ADT sidecar.)
+filesFor :: FilePath -> IO (Bool, Bool)
 filesFor name = (,) <$> doesFileExist (vcdOf name) <*> doesFileExist (vcdOf name -<.> "json")
 
-{- | A test with its own, scrubbed waveform name. Afterwards, the recording's
-spill file must be gone, whatever the test did: written, failed or passed.
+{- | A test with its own, scrubbed waveform name: its body gets the
+waveform's path, @waveforms\/\<name\>@. Afterwards, the recording's spill
+file must be gone, whatever the test did: written, failed or passed.
 -}
-withName :: String -> (String -> Assertion) -> Assertion
+withName :: String -> (FilePath -> Assertion) -> Assertion
 withName name body = do
-  let vcd = vcdOf name
+  let path = "waveforms" </> name
+      vcd = vcdOf path
   P.mapM_ (\p -> doesFileExist p >>= \e -> when e (removeFile p)) [vcd, vcd -<.> "json"]
-  body name
+  body path
   spilled <- doesFileExist (vcd -<.> "spill")
   assertBool "the spill file is deleted" (P.not spilled)
 
 {- | How many cycles a VCD has: one @#@ timestamp per cycle, and the last one
 is the end of the last cycle.
 -}
-cyclesOf :: String -> IO Int
+cyclesOf :: FilePath -> IO Int
 cyclesOf name = do
   vcd <- P.readFile (vcdOf name)
   pure (P.length [l | l <- P.lines vcd, P.take 1 l P.== "#"] P.- 1)

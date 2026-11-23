@@ -132,7 +132,13 @@ prop_keepLargest :: Property
 prop_keepLargest = property $ do
   xs <- forAll genStim
   let n = P.length xs
-  out <- simulateWaveform options (AtSize 99) "example-largest-case" (0, n) (accDut (stim xs))
+  out <-
+    simulateWaveform
+      options
+      (AtSize 99)
+      "waveforms/example-largest-case"
+      (0, n)
+      (accDut (stim xs))
   out === accModel xs
 
 {- | The same, at a size the property actually reaches: this one runs
@@ -143,7 +149,13 @@ prop_keepSizedCase :: Property
 prop_keepSizedCase = withTests 20 $ property $ do
   xs <- forAll genStim
   let n = P.length xs
-  out <- simulateWaveform options (AtSize 15) "example-sized-case" (0, n) (accDut (stim xs))
+  out <-
+    simulateWaveform
+      options
+      (AtSize 15)
+      "waveforms/example-sized-case"
+      (0, n)
+      (accDut (stim xs))
   out === accModel xs
 
 {- | The failure pattern: the check is ordinary Hedgehog code after the
@@ -154,7 +166,13 @@ prop_offByOneIsCaught :: Property
 prop_offByOneIsCaught = property $ do
   xs <- forAll (Gen.list (Range.linear 1 8) (Gen.integral Range.linearBounded))
   let n = P.length xs
-  out <- simulateWaveform options Counterexample "example-counterexample" (0, n) (offByOne (stim xs))
+  out <-
+    simulateWaveform
+      options
+      Counterexample
+      "waveforms/example-counterexample"
+      (0, n)
+      (offByOne (stim xs))
   out === xs
 
 tests :: TestTree

@@ -120,7 +120,7 @@ import Clash.CircuitContext.Waveform
 main :: IO ()
 main = do
   -- 100 cycles; writes waveforms/top.fst (+ .json) of cycles [0, 100).
-  _samples <- writeWaveform defaultOptions "top" (0, 100) (top (fromList [1, 1 ..]))
+  _samples <- writeWaveform defaultOptions "waveforms/top" (0, 100) (top (fromList [1, 1 ..]))
   pure ()
 ```
 
@@ -399,13 +399,20 @@ hand with `Clash.CircuitContext.Recording` (`withRecording`, `writeFST` or
 import Clash.CircuitContext.Waveform
 
 -- Anywhere in IO: simulate, write waveforms/counter.fst (+ .json), get the samples.
-main = writeWaveform defaultOptions "counter" (0, 1000) (top (fromList [1 ..])) >>= print
+main = writeWaveform defaultOptions "waveforms/counter" (0, 1000) (top (fromList [1 ..])) >>= print
 
 -- In a test: nothing is recorded while it passes; the failing run's waveform when it fails.
 case_counter :: Assertion
-case_counter = withWaveform defaultOptions "counter" (0, 1000) (top (fromList [1 ..])) $ \out ->
+case_counter = withWaveform defaultOptions "waveforms/counter" (0, 1000) (top (fromList [1 ..])) $ \out ->
   out @?= expected
 ```
+
+The path is the waveform's, without extension: `"waveforms/counter"` writes
+`waveforms/counter.fst` and its `waveforms/counter.json` sidecar. A relative
+path is relative to the working directory, which is not the same under every
+way of running a suite, so the messages give absolute paths. An absolute path
+(`"/tmp/out/counter"`) works too, and missing directories are made. Give each
+test its own path.
 
 `withWaveform` runs the simulation without recording. When the check throws,
 it runs it again with recording, writes the waveform, prints its absolute path
@@ -432,7 +439,7 @@ until the file is written. `defaultOptions` writes an FST, recorded in memory:
 opts = defaultOptions {format = VCD, spill = OnDisk}
 ```
 
-* `format`: `FST` (`waveforms/<name>.fst`) or `VCD` (`waveforms/<name>.vcd`).
+* `format`: `FST` (`<path>.fst`) or `VCD` (`<path>.vcd`).
   GTKWave and Surfer read both. The FST is compressed: on bittide's test
   suite, 45 MB against 2.0 GB of VCD, written as fast.
 * `spill`: a recording keeps each signal's value changes as compact records,
@@ -440,7 +447,7 @@ opts = defaultOptions {format = VCD, spill = OnDisk}
   * `InMemory`: nothing is written to disk but the waveform. Memory holds the
     records, a few times smaller than the VCD. A recording that is stopped
     (cancelled, or killed) leaves nothing.
-  * `OnDisk`: the records go to `waveforms/<name>.spill` while the simulation
+  * `OnDisk`: the records go to `<path>.spill` while the simulation
     runs, deleted when the waveform is written. A long run needs about the same
     memory as a short one (on a CPU design, 237,000 recorded cycles took a
     maximum residency of 58 MB), and the values are written to disk twice. A
@@ -450,7 +457,7 @@ opts = defaultOptions {format = VCD, spill = OnDisk}
 ### A run that was stopped
 
 A recording with `spill = OnDisk` that is cancelled (a test timeout, Ctrl-C)
-or killed leaves `waveforms/<name>.spill`, and a cancelled one says where on
+or killed leaves `<path>.spill`, and a cancelled one says where on
 stderr. A cancelled run keeps everything it recorded; a killed one,
 everything up to about a second before (a second Ctrl-C kills). Only a run that records can leave one: a run of `writeWaveform`, or
 the rerun of a failed check of `withWaveform` or `simulateWaveform`. Their
@@ -460,7 +467,7 @@ run leaves nothing; to keep the waveform of such a test, simulate it with
 values recorded up to there. Write its waveform from Haskell:
 
 ```haskell
-recoverWaveform defaultOptions "counter"   -- waveforms/counter.fst, deletes the spill
+recoverWaveform defaultOptions "waveforms/counter"   -- waveforms/counter.fst, deletes the spill
 ```
 
 or from the command line, with the executables this package installs:
@@ -488,7 +495,7 @@ import Clash.CircuitContext.Waveform.Hedgehog
 prop_counter :: Property
 prop_counter = property $ do
   xs  <- forAll genInputs
-  out <- simulateWaveform defaultOptions Counterexample "counter" (0, length xs) (top (fromList xs))
+  out <- simulateWaveform defaultOptions Counterexample "waveforms/counter" (0, length xs) (top (fromList xs))
   out === model xs
 ```
 
@@ -497,11 +504,11 @@ when Hedgehog prints it, simulates that case again with recording and writes
 the waveform. Hedgehog prints footnotes only for the case it reports, so the
 waveform is of the **shrunk counterexample**, recorded once, and the report
 ends with its path. `AtSize s` additionally keeps the first passing case of at
-least size `s` (once per waveform name), as `waveforms/<name>_<s>.fst`: a
-small size gives a short waveform you can read end to end. Each case, a
-discarded one too, is one size larger than the one before, so a property of
-`n` tests and `d` discarded cases reaches sizes below `min (n + d) 100`
-(Hedgehog starts again at size 0 after 99).
+least size `s` (once per waveform path), as `<path>_<s>.fst`: a small size
+gives a short waveform you can read end to end. Each case, a discarded one
+too, is one size larger than the one before, so a property of `n` tests and
+`d` discarded cases reaches sizes below `min (n + d) 100` (Hedgehog starts
+again at size 0 after 99).
 
 A worked version of all of this is the Example level of the test suite,
 which `check.sh` builds and runs:
