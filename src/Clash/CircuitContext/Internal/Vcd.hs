@@ -27,7 +27,7 @@ module Clash.CircuitContext.Internal.Vcd (
   Origin (..),
   originComment,
   shownWindow,
-  writeSidecar,
+  placeWithSidecar,
   ioLeft,
   aliasMap,
   sourceOrder,
@@ -38,6 +38,7 @@ module Clash.CircuitContext.Internal.Vcd (
 ) where
 
 import Control.Exception (IOException, displayException, onException, try)
+import Control.Monad (when)
 import Data.Char (isDigit, ord)
 import Data.List (intercalate, sortOn)
 import qualified Data.List as List
@@ -47,7 +48,9 @@ import Data.Ord (Down (..))
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import System.Directory (
+  copyFile,
   createDirectoryIfMissing,
+  doesFileExist,
   removeFile,
   removePathForcibly,
   renameFile,
@@ -86,12 +89,14 @@ reason: the VCD at this path, and its typed-waveform sidecar beside it, with
 extension @.json@. Creates the directory.
 
 Both files go through a temporary file and a rename, and the SIDECAR LANDS
-FIRST. The temporary files get the default permissions (the umask), not the
-owner-only ones of 'openTempFile', so a waveform is as readable as any other
-file the process writes: if the @.vcd@ is there, its @.json@ is there and complete. (Not that
-the two are from the same run: a crash between the renames leaves a new
-@.json@ beside the previous run's @.vcd@.) On 'Left' (see 'shownWindow';
-also when a file cannot be written) neither is written.
+FIRST ('placeWithSidecar'). The temporary files get the default permissions
+(the umask), not the owner-only ones of 'openTempFile', so a waveform is as
+readable as any other file the process writes: if the @.vcd@ is there, its
+@.json@ is there and complete. (Not that the two are from the same run: a
+crash between the renames leaves a new @.json@ beside the previous run's
+@.vcd@, and a copy of the previous @.json@.) On 'Left' (see 'shownWindow';
+also when a file cannot be written) neither is written, and earlier files are
+as they were.
 -}
 writeFiles :: Origin -> (Int, Int) -> Recording -> FilePath -> IO (Either String ())
 writeFiles origin window0 rec path = case shownWindow rec window0 of
@@ -106,26 +111,41 @@ writeFiles origin window0 rec path = case shownWindow rec window0 of
       case rendered of
         Left err -> removeFile vTmp >> pure (Left err)
         Right () -> do
-          writeSidecar origin "vcd" rec path
-          renameFile vTmp path
+          placeWithSidecar origin "vcd" rec vTmp path
           pure (Right ())
  where
   dir = takeDirectory path
 
-{- | Write the typed-waveform sidecar of the waveform at this path, written
-for this reason, with this extension: beside it, with extension @.json@,
-through a temporary file and a rename.
+{- | Put a waveform in place at this path, from its temporary file, with its
+typed-waveform sidecar beside it (extension @.json@), for a waveform written
+for this reason, with this extension. The sidecar goes through a temporary
+file too, and lands first. Both land or, when this throws, neither: an
+earlier sidecar is put back, and the sidecar's temporary file is removed (the
+waveform's is the caller's).
 -}
-writeSidecar :: Origin -> String -> Recording -> FilePath -> IO ()
-writeSidecar origin ext rec path = do
+placeWithSidecar :: Origin -> String -> Recording -> FilePath -> FilePath -> IO ()
+placeWithSidecar origin ext rec wTmp path = do
   meta <-
     sidecar origin ext [(vcdPath n, s) | (n, s) <- namedSignals rec] (recordingLuts rec)
   (jTmp, jH) <-
     openBinaryTempFileWithDefaultPermissions dir (takeFileName sidecarPath <.> "tmp")
+  let earlier = jTmp <.> "earlier"
   flip onException (hClose jH >> removePathForcibly jTmp) $ do
     ByteStringLazy.hPut jH (Json.encode meta)
     hClose jH
-    renameFile jTmp sidecarPath
+    -- A copy of the earlier sidecar, to put back if the waveform does not
+    -- land. Copied, not moved: the earlier waveform keeps its sidecar
+    -- meanwhile.
+    hadEarlier <- doesFileExist sidecarPath
+    when hadEarlier (copyFile sidecarPath earlier)
+    let dropEarlier = when hadEarlier (removePathForcibly earlier)
+    renameFile jTmp sidecarPath `onException` dropEarlier
+    renameFile wTmp path
+      `onException` ( if hadEarlier
+                        then renameFile earlier sidecarPath
+                        else removePathForcibly sidecarPath
+                    )
+    dropEarlier
  where
   dir = takeDirectory path
   sidecarPath = path -<.> "json"

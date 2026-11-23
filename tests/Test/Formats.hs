@@ -28,6 +28,7 @@ import System.Directory (
   createDirectoryIfMissing,
   doesFileExist,
   getFileSize,
+  listDirectory,
   makeAbsolute,
   removeDirectory,
   removeFile,
@@ -328,6 +329,35 @@ tests =
         recovered <- recoverWaveform vcd (pathOf name)
         assertBool "recovered" (P.either (P.const False) (P.const True) recovered)
         existing name ["vcd", "spill"] >>= (@?= [True, False])
+    , -- A waveform that cannot be put in place (a directory has its name)
+      -- leaves no sidecar either, and the sidecar of an earlier waveform of
+      -- the same path (here: of the other format) as it was.
+      testCase "writeVCD and writeFST write no sidecar when the waveform cannot land" $ do
+        let name = "formats-no-landing"
+        scrub [name]
+        (_, rec) <-
+          withRecording Nothing (evaluate (P.sum (P.map P.toInteger (sampleN 8 counter))))
+        (_, other) <-
+          withRecording Nothing (evaluate (P.sum (P.map P.toInteger (sampleN 8 busyAndQuiet))))
+        let blocked ext write earlier = do
+              createDirectoryIfMissing True (file name ext)
+              refused <- write (0, 8) rec (file name ext)
+              assertBool (ext <> " refused") (P.either (P.const True) (P.const False) refused)
+              existing name ["json"] >>= (@?= [False])
+              -- The other recording's waveform, of the other format, and its sidecar.
+              earlier (0, 8) other (file name (if ext P.== "vcd" then "fst" else "vcd"))
+                >>= (@?= Right ())
+              sidecar <- ByteString.readFile (file name "json")
+              refused' <- write (0, 8) rec (file name ext)
+              assertBool (ext <> " refused") (P.either (P.const True) (P.const False) refused')
+              ByteString.readFile (file name "json") >>= (@?= sidecar)
+              removeDirectory (file name ext)
+              scrub [name]
+              -- No temporary file is left behind.
+              left <- P.filter (name `isPrefixOf`) <$> listDirectory "waveforms"
+              left @?= []
+        blocked "vcd" writeVCD writeFST
+        blocked "fst" writeFST writeVCD
     , testCase "writeVCD and writeFST refuse a window that shows nothing, and IO errors" $ do
         let name = "formats-windows"
         scrub [name]

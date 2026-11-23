@@ -18,7 +18,7 @@ import Control.Monad (foldM, forM_, when)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe)
-import System.Directory (createDirectoryIfMissing, removePathForcibly, renameFile)
+import System.Directory (createDirectoryIfMissing, removePathForcibly)
 import System.FilePath (takeDirectory, takeFileName, (<.>))
 import System.IO (hClose, openTempFile)
 
@@ -40,11 +40,11 @@ import Clash.CircuitContext.Internal.Vcd (
   namedSignals,
   naturalKey,
   originComment,
+  placeWithSidecar,
   shownWindow,
   sourceOrder,
   splitPath,
   vcdPath,
-  writeSidecar,
  )
 
 {- | Write a recording's waveform over the window @[start, stop)@, in units
@@ -55,7 +55,8 @@ this path, and its typed-waveform sidecar beside it, with extension
 As 'Clash.CircuitContext.Internal.Vcd.writeFiles' does: both files go
 through a temporary file and a rename, the sidecar lands first, and on
 'Left' (see 'shownWindow'; also when a file cannot be written) neither is
-written. The FST ends at @stop@, as the VCD does.
+written, and earlier files are as they were. The FST ends at @stop@, as the
+VCD does.
 -}
 writeFst :: Origin -> (Int, Int) -> Recording -> FilePath -> IO (Either String ())
 writeFst origin window rec path = case shownWindow rec window of
@@ -100,8 +101,7 @@ writeFst origin window rec path = case shownWindow rec window of
         -- The end of the window, so that a viewer shows its last cycle whole.
         Fst.timeChange w (stop * scale)
       Fst.close w
-      writeSidecar origin "fst" rec path
-      renameFile fTmp path
+      placeWithSidecar origin "fst" rec fTmp path
    where
     -- A signal's records as (time, value), then 'Nothing' where it ends.
     events s cs =
