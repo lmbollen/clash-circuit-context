@@ -72,6 +72,7 @@ import Clash.CircuitContext.Core (
 import Clash.CircuitContext.Internal.FstOut (writeFst)
 import Clash.CircuitContext.Internal.Recorder (
   Recording (..),
+  holdsCycles,
   readSpill,
   ticks,
   timescale,
@@ -110,7 +111,7 @@ data Spill
   | {- | In @\<path\>.spill@, beside the waveform, deleted when the waveform
     is written: memory does not grow with the length of the run, and a recording
     that is stopped, or whose waveform cannot be written, leaves the file,
-    holding what it recorded (a run of
+    holding what it recorded, when it recorded a cycle (a run of
     @writeWaveform@; @withWaveform@ and @simulateWaveform@ record only when
     they run a failed case again). Write its waveform
     with @recoverWaveform@, or from the command line with the package's
@@ -215,12 +216,10 @@ save ::
 save origin opts path window rec = do
   written <- writeWaveformFiles origin opts path window rec
   case (written, recordingSpill rec) of
-    (Left err, Just spillFile) | recorded -> do
+    (Left err, Just spillFile) | holdsCycles rec -> do
       kept <- makeAbsolute spillFile
       pure (Left (err <> "; what the run recorded is kept in " <> kept))
     _ -> discard rec >> pure written
- where
-  recorded = not (null (recordingSignals rec)) && recordingEndPs rec > recordingStartPs rec
 
 -- | 'save', but keep the spill file.
 writeWaveformFiles ::
@@ -284,7 +283,7 @@ recover opts path = do
       case read' of
         Left err -> pure (Left err)
         Right rec
-          | recordingEndPs rec <= recordingStartPs rec ->
+          | not (holdsCycles rec) ->
               pure (Left (spillFile <> " holds no recorded cycle"))
           | otherwise -> do
               written <-

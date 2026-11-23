@@ -458,7 +458,8 @@ opts = defaultOptions {format = VCD, spill = OnDisk}
 
 A recording with `spill = OnDisk` that is cancelled (a test timeout, Ctrl-C)
 or killed leaves `<path>.spill`, and a cancelled one says where on
-stderr. A cancelled run keeps everything it recorded; a killed one,
+stderr. A cancelled run that recorded no cycle leaves nothing and says
+nothing, as there is nothing to recover. A cancelled run keeps everything it recorded; a killed one,
 everything up to about a second before (a second Ctrl-C kills). Only a run that records can leave one: a run of `writeWaveform`, or
 the rerun of a failed check of `withWaveform` or `simulateWaveform`. Their
 first runs do not record, so a test that hangs and is cancelled in its first

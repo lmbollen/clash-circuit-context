@@ -88,6 +88,7 @@ module Clash.CircuitContext.Internal.Recorder (
 
   -- * A finished recording
   Recording (..),
+  holdsCycles,
   RecordedSignal (..),
   Chunk,
   Change (..),
@@ -614,6 +615,12 @@ data Recording = Recording
   , recordingLuts :: [ByteString.ByteString]
   -- ^ The lookup-table entries, as JSON, oldest first.
   }
+
+{- | Did the run record a cycle: one in progress at or after the time from
+which it recorded? A recording that holds none has no waveform.
+-}
+holdsCycles :: Recording -> Bool
+holdsCycles rec = recordingEndPs rec > recordingStartPs rec
 
 {- | Finish a recording that ends at this time (ps): make every buffer a
 chunk, mark the end in the spill file, and close it. A cycle recorded after

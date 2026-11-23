@@ -131,6 +131,7 @@ import Clash.CircuitContext.Internal.Recorder (
   Sig,
   Value,
   closeRecorder,
+  holdsCycles,
   newRecorder,
   newSig,
   recordCycle,
@@ -167,7 +168,7 @@ import GHC.Stack (
   srcLocStartCol,
   srcLocStartLine,
  )
-import System.Directory (makeAbsolute)
+import System.Directory (makeAbsolute, removePathForcibly)
 import System.IO (hPutStrLn, stderr)
 import System.IO.Unsafe (unsafeDupablePerformIO, unsafePerformIO)
 import System.Mem.StableName (StableName, hashStableName, makeStableName)
@@ -373,9 +374,10 @@ can be forced less far than another (a register's input, for one).
 What the action recorded before it threw is in the recording too: that is
 what the waveform of a failing test is made of. An asynchronous exception
 (a cancelled test) is not caught: the recording stops where it got to and
-the exception goes on. A spill file stays, holds what was recorded, and a
+the exception goes on. A spill file that holds recorded cycles stays, and a
 message on stderr says where it is: read it with
-'Clash.CircuitContext.Recording.recoverRecording'. The spill file of a
+'Clash.CircuitContext.Recording.recoverRecording'. One that holds none is
+deleted, without a message. The spill file of a
 process that was killed stays too, with what it recorded up to about a second
 before.
 -}
@@ -411,8 +413,11 @@ withRecordingFrom start spill k = do
     _ -> (,) r <$> finishRecording rec taps `onException` stopped rec
  where
   stopped rec = do
-    _ <- closeRecorder rec =<< recorderEnd rec
-    mapM_ stoppedMessage spill
+    recording <- closeRecorder rec =<< recorderEnd rec
+    -- Nothing to recover from a spill file without a recorded cycle.
+    if holdsCycles recording
+      then mapM_ stoppedMessage spill
+      else mapM_ removePathForcibly spill
 
 {- | Say on stderr that a run was stopped, and where its spill file is, as an
 ABSOLUTE path: the working directory differs between ways of running a suite.

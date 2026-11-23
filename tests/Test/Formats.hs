@@ -22,7 +22,7 @@ import qualified Prelude as P
 import Control.Concurrent (threadDelay)
 import Control.Exception (AsyncException (ThreadKilled), SomeException, evaluate, throwIO, try)
 import Control.Monad (forM_, when)
-import Data.List (isPrefixOf)
+import Data.List (isInfixOf, isPrefixOf)
 import Foreign.Ptr (plusPtr)
 import System.Directory (
   createDirectoryIfMissing,
@@ -41,7 +41,7 @@ import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, fdReadBu
 import System.Timeout (timeout)
 
 import SpillMain (spillWith)
-import Test.Child (Child, assertChild)
+import Test.Child (Child, assertChild, inChild)
 
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Internal as ByteString (createAndTrim)
@@ -154,7 +154,23 @@ children =
         _ <- withWaveform defaultOptions (pathOf name) (0, 8) counter (\xs -> P.length xs @?= 8)
         existing name ["fst", "json"] >>= (@?= [False, False])
     )
+  , -- A cancelled run: one that recorded nothing, and one that did.
+    ("formats-stopped-empty", stoppedRun "formats-stopped-empty" (pure ()))
+  ,
+    ( "formats-stopped-recorded"
+    , stoppedRun
+        "formats-stopped-recorded"
+        (() <$ evaluate (P.sum (P.map P.toInteger (sampleN 100 counter))))
+    )
   ]
+ where
+  stoppedRun :: String -> ((HasCircuitContext) => IO ()) -> IO ()
+  stoppedRun name act = do
+    scrub [name]
+    stopped <-
+      try @AsyncException
+        (withRecording (Just (file name "spill")) (act >> throwIO ThreadKilled))
+    assertBool "the run was cancelled" (P.either (P.const True) (P.const False) stopped)
 
 tests :: TestTree
 tests =
@@ -234,6 +250,21 @@ tests =
         cycles <- timestamps (file name "vcd")
         assertBool "the recovered waveform has cycles" (cycles P.> 1)
         existing name ["spill"] >>= (@?= [False])
+    , -- A cancelled run names its spill file only when there is something
+      -- to recover from it; recoverWaveform refuses one without a cycle.
+      testCase "a cancelled run that recorded nothing leaves no spill file, and says nothing" $ do
+        (code, _, err) <- inChild "formats-stopped-empty" []
+        code @?= ExitSuccess
+        assertBool ("said: " <> err) (P.not ("was stopped" `isInfixOf` err))
+        existing "formats-stopped-empty" ["spill"] >>= (@?= [False])
+        (code', _, err') <- inChild "formats-stopped-recorded" []
+        code' @?= ExitSuccess
+        spillFile <- makeAbsolute (file "formats-stopped-recorded" "spill")
+        assertBool
+          ("said: " <> err')
+          (("the run was stopped; what it recorded is in " <> spillFile) `isInfixOf` err')
+        existing "formats-stopped-recorded" ["spill"] >>= (@?= [True])
+        removeFile spillFile
     , testCase "a cancelled run in memory leaves nothing" $ do
         let name = "formats-cancelled-in-memory"
         scrub [name]
