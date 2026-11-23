@@ -340,7 +340,10 @@ make per project. The fallback itself is unchanged either way: instrumented
 code never fails to compile because something cannot be traced, and
 `traceNamed` remains the way to demand tracing at compile time, since it
 takes `Traceable` as a real constraint (`traceSignalC`, for a plain signal,
-takes `BitPack`).
+takes `BitPack`): a binding whose type has no `Traceable` instance is a
+compile error. A record or tuple with the generic instance is traced field
+by field, though, and a field that cannot be recorded only warns
+(`-Wx-circuit-context-untraced`) and is a hole in the waveform.
 
 Custom warning categories are a GHC 9.8 feature. On 9.6 these are still real
 warnings — a blanket `-Werror` promotes them — but they cannot be silenced or
@@ -527,12 +530,12 @@ Three things worth knowing:
 
 ## Manual API
 
-Everything the plugin injects is ordinary user API from
-`Clash.CircuitContext`, usable directly where you want explicit control:
-`component`, `imapComponents`, `traceSignalC`, `traceSignalSW`, `probe`,
-`probeSW`, `mealyProbed`, `withRecording` (with `writeVCD` from
-`Clash.CircuitContext.Recording` for the VCD and its sidecar), and, from
-`Clash.CircuitContext.Auto`, the `autoTrace`/`autoProbe` pair
+Everything the plugin injects is ordinary user API, usable directly where
+you want explicit control. From `Clash.CircuitContext`: `component`,
+`imapComponents`, `traceSignalC`, `traceSignalSW`, `probe`, `probeSW`,
+`mealyProbed`, and `withRecording` (with `writeVCD` from
+`Clash.CircuitContext.Recording` for the VCD and its sidecar). From
+`Clash.CircuitContext.Auto`: the `autoTrace`/`autoProbe` pair
 (these two still need the plugin enabled: its typechecker half reduces the
 `CanTrace`/`CanProbe`/`CanDescribe` type families).
 
@@ -547,9 +550,10 @@ Everything the plugin injects is ordinary user API from
   application allocates a fresh hierarchy cell, resolved to a small ordinal
   at registration time via its `StableName`.
 * Probing inside step functions works by pairing the mealy machine with a
-  companion cycle counter; writes are keyed by `(name, cycle)` and hence
-  idempotent — safe under lazy re-evaluation, and an expression that is
-  never forced simply records nothing.
+  companion cycle counter; writes are keyed by `(name, cycle)`, so a cycle
+  evaluated twice is recorded once. The recorder keeps cycles in increasing
+  order: a cycle evaluated after a later one is not recorded, and an
+  expression that is never forced records nothing.
 * The plugin is a renamer-stage rewrite (names are resolved, injection is
   by exact `Name` — user code needs no extra imports) plus a
   typechecker-plugin oracle that decides `CanTrace`/`CanProbe`/`CanDescribe` by
@@ -693,8 +697,8 @@ dependencies buys: the headline is register *contents*, invisible from the desig
 side because `registerWb`'s state is a `where`-binding inside a low-level
 `Circuit go`.
 
-The findings behind both, including the ones that argue against the current
-design, are in [`docs/dogfooding-bittide.md`](docs/dogfooding-bittide.md) and
+The findings behind all three, including the ones that argue against the
+current design, are in [`docs/dogfooding-bittide.md`](docs/dogfooding-bittide.md) and
 [`docs/dep-instrumentation-assessment.md`](docs/dep-instrumentation-assessment.md).
 The most important: `HasCircuitContext` is necessary but not sufficient — only
 combinators desugared through circuit-notation get traced, so annotating a

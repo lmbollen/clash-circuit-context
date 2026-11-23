@@ -250,8 +250,7 @@ Initial version.
   Describing one is the separate requirement `Waveform a`, whose superclass
   is `(Typeable a, BitPack a)`: where a polymorphic component has no
   `Typeable` for its payload, the payload is traced as raw bits.
-* Supported GHCs: 9.6, 9.10, 9.12; clash-prelude `>=1.9 && <1.12` (the trace
-  internals used are identical across these versions).
+* Supported GHCs: 9.6, 9.8, 9.10, 9.12; clash-prelude `>=1.9 && <1.12`.
 * Instrumentation is transparent to HDL generation. All recording
   combinators are gated on `Clash.Magic.clashSimulation`, so Clash reduces
   them to their plain forms and eliminates the tracing machinery:

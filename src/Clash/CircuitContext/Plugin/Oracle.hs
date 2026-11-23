@@ -346,9 +346,11 @@ Two categories, because the reader needs to know which of these happened:
   (@-Werror=x-circuit-context-undecided@) on a design whose waveform is load
   bearing.
 
-Both fall back to identity either way; @traceNamed@ is the escape hatch
-that takes @Traceable@ as a real constraint, so a binding it cannot record
-is a compile error rather than a hole.
+Both fall back to identity either way. @traceNamed@ is the escape hatch
+that takes @Traceable@ as a real constraint, so a binding whose type has no
+@Traceable@ instance is a compile error rather than a hole. A record or tuple
+with the generic instance is traced field by field, though: a field that
+cannot be recorded only gets one of these warnings, and is a hole.
 
 'Defer' is not reported at all: it is a round the solver will come back
 from, not an answer. Neither is a binding no recorder could ever take (see

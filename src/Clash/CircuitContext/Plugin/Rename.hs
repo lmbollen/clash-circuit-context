@@ -62,7 +62,7 @@ The renamer-stage rewrite ('GHC.renamedResultAction'):
   function never becomes a component), and a class or instance method (this
   pass rewrites value bindings only, so it never reaches the body).
 
-Supports GHC 9.6 and 9.10 (CPP at the few AST churn points).
+Supports GHC 9.6 to 9.12 (CPP at the few AST churn points).
 -}
 module Clash.CircuitContext.Plugin.Rename (renamePass) where
 

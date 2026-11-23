@@ -152,9 +152,9 @@ f1Out = withClockResetEnable clockGen resetGen enableGen (f1 (pure 3))
 planeWidth :: Integer
 planeWidth = natVal (Proxy @(BitSize Plain))
 
-{- | 'traceSignalC' takes @Traceable@ as a real constraint rather than a
-guess, so this compiling is a proof about the very payload the auto-trace
-declined.
+{- | 'traceSignalC' takes @BitPack@ and @NFDataX@ as real constraints rather
+than a guess, so this compiling is a proof about the very payload the
+auto-trace declined.
 -}
 explicit ::
   (HasCircuitContext) =>

@@ -512,9 +512,10 @@ imapComponents nm f = imap (\i x -> component (nm <> "_" <> show i) (f i x))
 qualifyName :: CircuitContext -> String -> String
 qualifyName ctx nm = intercalate "." (reverse (nm : map hsName (ccHier ctx)))
 
-{- | 'Clash.Signal.Trace.traceSignal' against the scoped map, qualified by
-the current hierarchy. Identity when tracing is off. Registration happens —
-as with the stock function — when the returned signal is first forced.
+{- | 'Clash.Signal.Trace.traceSignal' against the context's recorder,
+qualified by the current hierarchy. Identity when tracing is off.
+Registration happens — as with the stock function — when the returned signal
+is first forced.
 
 Every registration gets its own instance id, so re-using a trace name (e.g.
 by applying the same traced subcircuit twice in one 'component') records all
@@ -807,9 +808,11 @@ noProbe = ProbeCtx noCircuitContext 0 [] 0 (unsafePerformIO (newIORef Map.empty)
 > f acc i = let acc' = probe "acc" (acc + i) in (acc', acc)
 
 Returns its argument. The write happens when the expression is forced, keyed
-by (qualified name, cycle): idempotent under re-evaluation and sparks; never
-forced → never recorded. An X value is stored as an all-undefined (masked)
-entry rather than an exception.
+by (qualified name, cycle), so a cycle evaluated twice is recorded once. The
+recorder keeps cycles in increasing order: a cycle evaluated after a later
+one is not recorded and shows as @z@, as does a cycle whose expression is
+never forced. An X value is stored as an all-undefined (masked) entry rather
+than an exception.
 
 Transparent to Clash: during HDL generation this is exactly @a@, so a probed
 step function synthesizes as if the 'probe' calls were not there.
@@ -905,9 +908,10 @@ simProbe adt nm a = case (ccRecorder ctx, ccOrdinals ctx) of
           atomicModifyIORef' (pcCache ?probe) $ \c ->
             (Map.insert nm rsig c, ())
           pure rsig
-      -- Force the packed value NOW, releasing the design value 'a'. Probes
-      -- fire in simulation order, and a cycle the probed expression never
-      -- reaches leaves a gap, rendered @z@.
+      -- Force the packed value NOW, releasing the design value 'a'. A cycle
+      -- that fires after a later one is not recorded (see 'recordCycle'),
+      -- and a cycle the probed expression never reaches leaves a gap; both
+      -- render @z@.
       let !v = val
       recordCycle (liveRecorder live) rsig cyc v
       pure a
@@ -1096,8 +1100,9 @@ inside a 'Circuit'. The named @where@\/@let@ bindings inside such a function
 wants in the waveform, but they are neither 'Signal's (so 'traceSignalC'
 cannot reach them) nor inside a 'mealyProbed' step (so 'probe' has no cycle
 context). 'probeFmap' supplies that context: it is 'fmap' that additionally
-binds a per-cycle @?probe@, so 'probe' calls inside @f@ — including the ones
-the plugin injects when @f@ carries a 'HasProbe' signature — record.
+binds a per-cycle @?probe@, so 'probe' calls inside @f@ record, and so do
+the @autoProbe@ calls (which record with 'probe') that the plugin injects
+when @f@ carries a 'HasProbe' signature.
 
 Cycle identity comes from a companion counter on @clk@ (the function is
 stateless, so there is nothing else to derive it from). Rewrite a multi-input

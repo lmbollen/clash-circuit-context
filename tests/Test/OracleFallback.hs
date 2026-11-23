@@ -80,8 +80,9 @@ data PortB
 
 {- | Note: no 'Typeable' — @(KnownDomain, BitPack, NFDataX)@ is the full
 tracing requirement. The 'Waveform' given is not needed to trace; it is what
-lets the trace also carry the payload's ADT description (see
-"Clash.CircuitContext.Shockwaves"), decided from the givens like the rest.
+lets the trace also carry the payload's ADT description (see the @Waveform@
+class of "Clash.Shockwaves", in @clash-shockwaves@), decided from the givens
+like the rest.
 -}
 polyTraced ::
   (HasCircuitContext, KnownDomain dom, BitPack a, NFDataX a, Waveform a) =>
