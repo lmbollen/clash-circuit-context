@@ -482,8 +482,20 @@ recordCycle rec sig cyc v = Exception.mask $ \restore -> do
   -- Only the lookup-table entries, which run the payload type's own code,
   -- can be interrupted; the state is then as it was.
   s <- takeMVar (sigState sig)
-  s' <- step restore s `onException` putMVar (sigState sig) s
-  putMVar (sigState sig) s'
+  stepped <- try (step restore s)
+  case stepped of
+    Right s' -> putMVar (sigState sig) s'
+    Left err -> do
+      putMVar (sigState sig) s
+      case fromException err of
+        -- A cancellation goes on as one, thrown to this thread, as in
+        -- 'tryRender': this runs inside the design's values, and thrown with
+        -- throwIO it would be stored in them. Resumed, the cycle starts over.
+        Just (_ :: SomeAsyncException) -> do
+          me <- myThreadId
+          throwTo me err
+          recordCycle rec sig cyc v
+        Nothing -> Exception.throwIO err
  where
   step restore s
     | cyc < ssNext s = pure s

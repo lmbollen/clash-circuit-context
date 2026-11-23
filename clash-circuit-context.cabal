@@ -194,6 +194,7 @@ test-suite waveform-tests
     bytestring,
     clash-circuit-context,
     clash-prelude,
+    clash-shockwaves,
     containers,
     directory,
     filepath,
