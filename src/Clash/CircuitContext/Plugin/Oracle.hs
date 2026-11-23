@@ -17,10 +17,9 @@ stuck cases); ordinary instance resolution does the rest.
 Two cooperating stages — spike findings:
 
 * 'API.tcPluginRewrite' decides a GROUND type. A type with free variables
-  it reduces only to ''True', for a wanted that no given holds, when the
-  oracle finds the evidence among the givens GHC passes (see 'rewriteFlag').
-  Deciding here costs no round of GHC's plugin loop; everything else
-  defers.
+  it decides for a wanted that no given holds, from the givens GHC passes
+  (see 'rewriteFlag'). Deciding here costs no round of GHC's plugin loop;
+  everything else defers.
 * 'API.tcPluginSolve' catches the resulting stuck wanteds
   @AutoTrace (CanTrace t) t@ / @AutoProbe (CanProbe t) t@ — the solver
   stage DOES receive givens — decides from them, and solves by emitting the
@@ -255,11 +254,10 @@ rewriters env =
 * A ground type: decided here, either way, as it always was. Nothing about
   the occurrence can change the answer.
 
-* A type with free variables: reduced to ''True' when the oracle says yes
-  from the givens GHC passes here, only for a wanted, and only when no
-  given holds the same flag. Everything else is left as it was before this
-  rule: a type that is never recordable reduces to ''False' (see below), and
-  any other answer waits for the solver stage ('solveStuck').
+* A type with free variables: decided from the givens GHC passes here, for
+  a wanted, when there are givens and no given holds the same flag. A type
+  that is never recordable reduces to ''False' (see below), and anything
+  else waits for the solver stage ('solveStuck').
 
 The rule makes the rewriter decide only wanteds that the solver stage would
 otherwise decide, and decide them the same way.
@@ -278,8 +276,15 @@ otherwise decide, and decide them the same way.
   GHC does without this rule.
 * Every other such wanted reaches the solver stage: GHC solves an
   @AutoTrace@ wanted whose flag is stuck only from a given. There the oracle
-  asks the same question with the same givens, so a yes is the same yes. A
-  no is left to the solver stage.
+  asks the same question with the same givens, so it gives the same
+  answer, a no included.
+
+A no decided here also keeps the wanted from waiting for the solver stage,
+where the plugins listed before this one see it first.
+@ghc-typelits-natnormalise@ normalises the arithmetic in a wanted it cannot
+solve, and asks for what that needs: @30 - ((1 + w) - y)@ became @29 + (y -
+w)@, with @y <= 1 + w@ and @w <= y@ asked for, and a binding the oracle
+declined broke the build.
 
 Deciding here, and not in the solver stage, costs no round of the solver's
 plugin loop. That matters: GHC stops after four rounds in which a plugin
@@ -289,8 +294,7 @@ need rounds of their own. A component of type @Signal dom (Unsigned (n +
 round for the normalisation, one for its @CanTrace@, one for the
 @CanDescribe@ that its @Traceable@ instance asks for, and one for the
 @KnownNat (1 + n)@ that @Waveform@ asks for: then GHC gave up, with
-@solveWanteds: too many iterations@. A binding that the oracle declines
-still takes its rounds in the solver stage.
+@solveWanteds: too many iterations@.
 -}
 rewriteFlag ::
   OracleEnv ->
@@ -342,10 +346,12 @@ rewriteFlag' env fam cls givens [t]
               , not (any (holdsFlag . API.ctPred) givens) ->
                   decide (map API.ctPred givens)
             _ -> pure Defer
-          pure $
-            if isYes decision
-              then rewriteTo True
-              else API.TcPluginNoRewrite
+          case decision of
+            Defer -> pure API.TcPluginNoRewrite
+            _ -> do
+              loc <- API.rewriteEnvCtLoc <$> API.askRewriteEnv
+              reportDeclined env loc cls t decision
+              pure (rewriteTo (isYes decision))
  where
   decide givenPreds =
     solvablePred

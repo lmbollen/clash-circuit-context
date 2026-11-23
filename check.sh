@@ -24,8 +24,7 @@ run cabal test adt-sidecar -j1 "$@"
 runlog cabal test plugin-diagnostics -j1 "$@"
 # The plugin after the typelits solver plugins: compiling this suite is the
 # test that the oracle leaves GHC's rounds of plugin progress to them. Each
-# module is held to the rounds it takes without the plugin, and one more
-# where the oracle declines in its solver stage (see the suite's
+# module is held to the rounds it takes without the plugin (see the suite's
 # ghc-options), so a change that adds one does not compile.
 run cabal test typelits-plugins -j1 "$@"
 # The Example level (usage, kept honest by running) and the Test level
@@ -184,10 +183,10 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
   fi
 fi
 
-# The rewriter decides a type with free variables only to say yes; a no
-# waits for the solver stage, which has all the givens. So the plugin warns
-# about Test/RewriterShapes.hs exactly where the solver stage does: once on
-# each line marked "-- warns", and nowhere else. Same fresh-build caveat.
+# The rewriter decides no flag that a given holds: GHC solves that wanted
+# from the given. So the plugin warns about Test/RewriterShapes.hs on each
+# line marked "-- warns", as many times as it says ("-- warns 2"; once if
+# no number), and nowhere else. Same fresh-build caveat.
 if grep -q "Compiling Test.RewriterShapes" "$log" 2>/dev/null; then
   shapes=tests/Test/RewriterShapes.hs
   got=$(awk -v f="$shapes" '
@@ -195,9 +194,12 @@ if grep -q "Compiling Test.RewriterShapes" "$log" 2>/dev/null; then
     next_is { if ($0 ~ /^ *(not (traced|probed)|recorded as raw bits)/) print at; next_is = 0 }
   ' "$log" | sort -u)
   gotLines=$(printf '%s\n' "$got" | cut -d: -f1 | grep . | sort -n | tr '\n' ' ')
-  wantLines=$(grep -n -- '-- warns$' "$shapes" | cut -d: -f1 | sort -n | tr '\n' ' ')
+  wantLines=$(awk 'match($0, /-- warns( [0-9]+)?$/) {
+      n = substr($0, RSTART + 9); n = (n == "") ? 1 : n + 0
+      for (i = 0; i < n; i++) print NR
+    }' "$shapes" | sort -n | tr '\n' ' ')
   if [ "$gotLines" = "$wantLines" ]; then
-    echo "ok: the rewriter decides no negative early (warnings at lines $gotLines)"
+    echo "ok: no flag that a given holds is decided (warnings at lines $gotLines)"
   else
     echo "FAIL: warnings of $shapes at lines [$gotLines], want [$wantLines]"; fail=1
   fi

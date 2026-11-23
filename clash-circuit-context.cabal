@@ -245,8 +245,8 @@ test-suite plugin-diagnostics
 -- them; each module enables them in its own OPTIONS_GHC. Compiling the suite
 -- is the regression test: the oracle must not use up GHC's rounds of plugin
 -- progress. Every module here compiles in two rounds without this plugin, so
--- the suite is held to two; Test.DeclinedWidths, where the oracle takes a
--- round of its own, says why it is held to three.
+-- the suite is held to two (Test.LowerBounds, where the typelits plugins
+-- take five, to five).
 test-suite typelits-plugins
   import: common-options
   type: exitcode-stdio-1.0

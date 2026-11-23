@@ -677,8 +677,7 @@ contract, and the tasty-sequenced tests that decode the waveforms the Example
 level wrote) and `typelits-plugins` (the plugin together with
 `ghc-typelits-natnormalise`, `ghc-typelits-knownnat` and
 `ghc-typelits-extra`, in the orders designs list them, each module held to
-the rounds of GHC's plugin loop it takes without the plugin, and one more
-where the plugin declines a binding of a width such as `n + 1`) — then diffs the generated VCDs against the goldens in
+the rounds of GHC's plugin loop it takes without the plugin) — then diffs the generated VCDs against the goldens in
 `goldens/`, asserts every warning category fired during the build, and
 compiles a one-binding module three ways to check that a decline warns by
 default, disappears under `-Wno-`, and is fatal under `-Werror=`. That last

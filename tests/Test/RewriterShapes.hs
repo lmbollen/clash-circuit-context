@@ -25,14 +25,12 @@ sees it. A flag that the rewriter decides no longer matches the given, so
 the wanted then needs an instance: a yes that the oracle gives too readily
 breaks the build (@addressed@), and a no drops a binding that the caller
 records, and warns about it. So the rewriter decides no flag that a given
-holds, and only decides a yes.
+holds.
 
-@check.sh@ checks that the plugin warns exactly once on each line marked
-@-- warns@, and nowhere else: those are the warnings that the solver stage
-gives. Any other warning is a negative that the rewriter decided early. In
-these shapes it came from GHC's check of an inferred type, which solves the
-type's own constraints from a copy of them; the binding itself was still
-recorded, but the warning was false.
+@check.sh@ checks that the plugin warns on each line marked @-- warns@, as
+many times as it says (once if it gives no number), and nowhere else. Any
+other warning is a false one: a negative decided for a flag that a given
+holds.
 -}
 module Test.RewriterShapes (
   countTo,
@@ -84,7 +82,7 @@ stepped en = counter
 data Port a
 
 {- | Two ports of one type, bound by one pattern, of a payload without
-'BitPack'. Both share one wanted, so the oracle warns once, about @a@.
+'BitPack'. The oracle warns about each.
 -}
 ports ::
   forall dom a.
@@ -92,7 +90,7 @@ ports ::
   Signal dom a -> Signal dom a -> (Signal dom a, Signal dom a)
 ports x0 y0 = (unTagged a, unTagged b)
  where
-  (a, b) = (Tagged @(Port a) x0, Tagged @(Port a) y0) -- warns
+  (a, b) = (Tagged @(Port a) x0, Tagged @(Port a) y0) -- warns 2
 {-# OPAQUE ports #-}
 
 {- | The same ports, bound in a local function that GHC generalises. The
