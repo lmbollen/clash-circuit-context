@@ -111,7 +111,8 @@ data Spill
     InMemory
   | {- | In @waveforms\/\<name\>.spill@, deleted when the waveform is
     written: memory does not grow with the length of the run, and a recording
-    that is stopped leaves the file, holding what it recorded (a run of
+    that is stopped, or whose waveform cannot be written, leaves the file,
+    holding what it recorded (a run of
     @writeWaveform@; @withWaveform@ and @simulateWaveform@ record only when
     they run a failed case again). Write its waveform
     with @recoverWaveform@, or from the command line with the package's
@@ -208,11 +209,12 @@ failureComment = "clash-circuit-context: the run of a failing test"
 
 {- | Write a recording as the options' waveform, @waveforms\/\<name\>.vcd@ or
 @.fst@ and its @.json@ sidecar, over the window @[start, stop)@ in ps, and
-delete its spill file. Returns the waveform's ABSOLUTE path: the directory is
-relative to the working directory, which differs between ways of running a
-suite. 'Left', with the reason, and nothing written, when the run recorded
-nothing in the window or the files could not be written; an earlier file is
-then left alone.
+then delete its spill file. Returns the waveform's ABSOLUTE path: the
+directory is relative to the working directory, which differs between ways
+of running a suite. 'Left', with the reason, and nothing written, when the
+run recorded nothing in the window or the files could not be written; an
+earlier file is then left alone. The spill file of a run that recorded
+cycles is then kept, for 'recover', and the reason says where it is.
 -}
 save ::
   Origin ->
@@ -223,8 +225,13 @@ save ::
   IO (Either String FilePath)
 save origin opts name window rec = do
   written <- writeWaveformFiles origin opts name window rec
-  discard rec
-  pure written
+  case (written, recordingSpill rec) of
+    (Left err, Just spillFile) | recorded -> do
+      path <- makeAbsolute spillFile
+      pure (Left (err <> "; what the run recorded is kept in " <> path))
+    _ -> discard rec >> pure written
+ where
+  recorded = not (null (recordingSignals rec)) && recordingEndPs rec > recordingStartPs rec
 
 -- | 'save', but keep the spill file.
 writeWaveformFiles ::

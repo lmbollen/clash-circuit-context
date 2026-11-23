@@ -24,7 +24,14 @@ import Control.Exception (AsyncException (ThreadKilled), SomeException, evaluate
 import Control.Monad (forM_, when)
 import Data.List (isPrefixOf)
 import Foreign.Ptr (plusPtr)
-import System.Directory (doesFileExist, getFileSize, makeAbsolute, removeFile)
+import System.Directory (
+  createDirectoryIfMissing,
+  doesFileExist,
+  getFileSize,
+  makeAbsolute,
+  removeDirectory,
+  removeFile,
+ )
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath ((<.>), (</>))
 import System.IO.Unsafe (unsafePerformIO)
@@ -263,6 +270,19 @@ tests =
               "no signal is z"
               (P.not (P.any ('z' `P.elem`) [l | l <- body, P.take 1 l P.== "b"]))
             discardRecording rec
+    , -- A waveform that cannot be written must not cost the recording: the
+      -- spill file stays, for recoverWaveform.
+      testCase "a spill file stays when its waveform cannot be written" $ do
+        let name = "formats-blocked"
+        scrub [name]
+        -- A directory where the waveform should go makes the write fail.
+        createDirectoryIfMissing True (file name "vcd")
+        _ <- writeWaveform vcdOnDisk name (0, 8) counter
+        existing name ["spill"] >>= (@?= [True])
+        removeDirectory (file name "vcd")
+        recovered <- recoverWaveform vcd name
+        assertBool "recovered" (P.either (P.const False) (P.const True) recovered)
+        existing name ["vcd", "spill"] >>= (@?= [True, False])
     , testCase "writeVCD and writeFST refuse a window that shows nothing, and IO errors" $ do
         let name = "formats-windows"
         scrub [name]

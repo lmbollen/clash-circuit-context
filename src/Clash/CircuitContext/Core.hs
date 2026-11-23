@@ -26,10 +26,10 @@ Everything hangs off one implicit parameter @?circuitContext@:
 * 'component' pushes a hierarchy segment; trace/probe names are qualified by
   the path where they are created.
 * 'traceSignalC' is 'Clash.Signal.Trace.traceSignal' against the context's
-  own recorder instead of the global 'traceMap#'. The recorder writes value
-  changes to a spill file as the simulation runs
-  ("Clash.CircuitContext.Internal.Recorder"), so the recorded history is
-  not kept in memory, and memory does not grow with the length of a run.
+  own recorder instead of the global 'traceMap#'. The recorder keeps value
+  changes as compact records, in memory or in a spill file that it writes
+  as the simulation runs; with a spill file, memory does not grow with the
+  length of a run.
 * 'mealyProbed' + 'probe' record values of expressions INSIDE a mealy step
   function. The step function has no cycle identity of its own, so the
   wrapper derives one from a companion counter register and binds a
