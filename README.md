@@ -661,7 +661,7 @@ uses the shell's dependencies instead of building clash-prelude again:
 nix develop --command ./check.sh --project-file=cabal.project.nix --builddir=dist-nix
 ```
 
-`check.sh` builds everything and runs six suites — `manual-instrumentation`
+`check.sh` builds everything and runs seven suites — `manual-instrumentation`
 (hand-instrumented reference), `oracle-fallback` (oracle decisions per type),
 `auto-instrumentation` (the same design written naturally, instrumented
 entirely by the plugin), `adt-sidecar` (the clash-shockwaves half of the
@@ -674,7 +674,9 @@ sent and inverted to assert the fix) and `waveform-tests` (the test suite in two
 [`tests/Example/`](tests/Example/) is usage, kept honest by running, and
 [`tests/Test/`](tests/Test/) pins features — recorder properties, the capture
 contract, and the tasty-sequenced tests that decode the waveforms the Example
-level wrote) — then diffs the generated VCDs against the goldens in
+level wrote) and `typelits-plugins` (the plugin together with
+`ghc-typelits-natnormalise` and `ghc-typelits-knownnat`, in the order a
+design lists them) — then diffs the generated VCDs against the goldens in
 `goldens/`, asserts every warning category fired during the build, and
 compiles a one-binding module three ways to check that a decline warns by
 default, disappears under `-Wno-`, and is fatal under `-Werror=`. That last
