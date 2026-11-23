@@ -26,6 +26,7 @@ module Test.SideConditions (
   unchecked,
   checked,
   logarithm,
+  idleWithoutExtra,
 ) where
 
 import Clash.Prelude
@@ -72,3 +73,21 @@ logarithm s = bits
 bitsOf :: (KnownNat n) => SNat n -> Signal System (BitVector (Log2 n))
 bitsOf _ = pure (errorX "bits")
 {-# OPAQUE bitsOf #-}
+
+{- | @KnownNat (Div t (Max 1 p))@ needs @1 <= Max 1 p@. That holds for every
+@p@, but only @ghc-typelits-extra@'s solver proves it, and this module does
+not load it: @cycles@ is not recorded ("Test.LowerBounds" loads it).
+-}
+idleWithoutExtra ::
+  (HasCircuitContext, KnownNat p) =>
+  SNat p ->
+  Signal System (Index (Max 1 (Div 94999 (Max 1 p))))
+idleWithoutExtra p = cycles
+ where
+  cycles = undefinedOf p
+{-# OPAQUE idleWithoutExtra #-}
+
+-- | A signal of undefined values, of a type GHC need not know the width of.
+undefinedOf :: proxy -> Signal System a
+undefinedOf _ = pure (errorX "undefined")
+{-# OPAQUE undefinedOf #-}

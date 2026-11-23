@@ -50,6 +50,7 @@ import Clash.CircuitContext.Recording (
 
 import qualified Test.DeclinedWidths as DeclinedWidths
 import Test.ExtraSolverFirst (ptrExtra)
+import qualified Test.LowerBounds as LowerBounds
 import Test.RewriterShapes (stepped)
 import qualified Test.SideConditions as SideConditions
 
@@ -145,6 +146,35 @@ main = do
     (P.map (signalDescribed . P.snd) (P.filter ((P.== "foo") . P.fst) leaves4) P.== [P.False])
   check "a payload without BitPack is not recorded" ("bar" `P.notElem` P.map P.fst leaves4)
   discardRecording rec4
+
+  -- Side conditions that hold for every value of their variables, and that
+  -- the typelits plugins prove, are proved by the oracle too; the others are
+  -- not.
+  (r5, rec5) <-
+    withRecording
+      "waveforms/typelits-plugins-lower-bounds.spill"
+      (evaluate LowerBounds.sampled)
+  check "the lower-bound run finished" (P.either (P.const False) (P.const True) r5)
+  let
+    scopes5 =
+      [ P.takeWhile (P./= '@') segment
+      | s <- recordedSignals rec5
+      , segment <- splitOn (signalKey s)
+      ]
+    splitOn k = case P.break (P.== '.') k of
+      (a, []) -> [a]
+      (a, _ : rest) -> a : splitOn rest
+  putStrLn ("lower-bound signals: " <> P.show (P.map signalKey (recordedSignals rec5)))
+  check "1 <= 8 + w is proved" ("remote" `P.elem` scopes5)
+  check "a given is used in another order" ("remoteRestated" `P.elem` scopes5)
+  check "...under Max too" ("remoteWide" `P.elem` scopes5)
+  check "1 <= Max 1 p is proved" ("idle" `P.elem` scopes5)
+  check "1 <= Max 3 p, which no plugin proves, is not" ("idleThree" `P.notElem` scopes5)
+  check "1 <= n - 1 is not proved" ("predecessor" `P.notElem` scopes5)
+  check
+    "1 <= Max 1 p is not proved without ghc-typelits-extra"
+    ("idleWithoutExtra" `P.notElem` scopes5)
+  discardRecording rec5
  where
   -- A key is @scope\@ordinal\@callsite.name\@ordinal\@callsite@.
   leaf = P.takeWhile (P./= '@') . P.reverse . P.takeWhile (P./= '.') . P.reverse

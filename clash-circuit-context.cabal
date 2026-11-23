@@ -254,6 +254,7 @@ test-suite typelits-plugins
   other-modules:
     Test.DeclinedWidths
     Test.ExtraSolverFirst
+    Test.LowerBounds
     Test.RewriterShapes
     Test.SideConditions
 

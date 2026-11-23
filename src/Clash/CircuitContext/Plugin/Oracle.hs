@@ -56,6 +56,7 @@ They report in separate warning categories; see
 -}
 module Clash.CircuitContext.Plugin.Oracle (oracle) where
 
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Maybe (isJust)
 
 import qualified GHC.Builtin.Names as GHC
@@ -90,9 +91,18 @@ import qualified GHC.Tc.Types.CtLoc as GHC (ctLocSpan)
 import qualified GHC.Tc.Types.Constraint as GHC (ctLocSpan)
 #endif
 {- FOURMOLU_ENABLE -}
-import qualified GHC.Tc.Types as GHC (re_flavour)
-import qualified GHC.Tc.Types.Constraint as GHC (CtFlavour (Wanted))
-import qualified GHC.Tc.Utils.Monad as GHC (getTopEnv, initIfaceTcRn)
+import qualified GHC.Data.Bag as GHC (listToBag)
+import qualified GHC.Tc.Solver as GHC (tcCheckGivens, tcCheckWanteds)
+import qualified GHC.Tc.Solver.InertSet as GHC (emptyInert)
+import qualified GHC.Tc.Types as GHC (TcM, re_flavour)
+import qualified GHC.Tc.Types.Constraint as GHC (CtFlavour (Wanted), ctEvId)
+import qualified GHC.Tc.Utils.Monad as GHC (
+  discardErrs,
+  getTopEnv,
+  initIfaceTcRn,
+  liftIO,
+  tryM,
+ )
 import qualified GHC.Tc.Utils.TcType as GHC
 import qualified GHC.TcPlugin.API as API
 import qualified GHC.TcPlugin.API.Internal as APIInternal (unsafeLiftTcM)
@@ -119,6 +129,11 @@ data OracleEnv = OracleEnv
   , knownNatClasses :: [(Int, API.Class)]
   {- ^ @KnownNat1@, @KnownNat2@ and @KnownNat3@ of @ghc-typelits-knownnat@, by
   arity, when its solver plugin is loaded for this module; otherwise none.
+  -}
+  , speculating :: IORef Bool
+  {- ^ Set while GHC solves a side condition for the oracle ('ghcSolves'):
+  GHC runs every plugin then, this one too, and this one must then stay out
+  of the way.
   -}
   }
 
@@ -167,6 +182,7 @@ initEnv = do
           <*> tc "NonTranslatable"
           <*> cl "TurnOnThePlugin"
           <*> knownNatSolver
+          <*> APIInternal.unsafeLiftTcM (GHC.liftIO $ newIORef False)
       -- Same hazard one package over: CanDescribe asks for clash-shockwaves'
       -- Waveform per payload, and a module that never mentions
       -- clash-shockwaves never loads its instances, so every stock payload
@@ -283,7 +299,18 @@ rewriteFlag ::
   [API.Ct] ->
   [API.Type] ->
   API.TcPluginM 'API.Rewrite API.TcPluginRewriteResult
-rewriteFlag env fam cls givens [t]
+rewriteFlag env fam cls givens tys = do
+  nested <- APIInternal.unsafeLiftTcM (GHC.liftIO $ readIORef (speculating env))
+  if nested then pure API.TcPluginNoRewrite else rewriteFlag' env fam cls givens tys
+
+rewriteFlag' ::
+  OracleEnv ->
+  API.TyCon ->
+  API.Class ->
+  [API.Ct] ->
+  [API.Type] ->
+  API.TcPluginM 'API.Rewrite API.TcPluginRewriteResult
+rewriteFlag' env fam cls givens [t]
   | GHC.noFreeVarsOfType t = do
       decision <- decide []
       case decision of
@@ -326,6 +353,7 @@ rewriteFlag env fam cls givens [t]
       reduceFamily
       (totalClassesOf env)
       (knownNatClasses env)
+      (APIInternal.unsafeLiftTcM . ghcSolves env givens)
       givenPreds
       fuel0
       (GHC.mkClassPred cls [t])
@@ -344,7 +372,7 @@ rewriteFlag env fam cls givens [t]
           (boolTy b)
       )
       []
-rewriteFlag _ _ _ _ _ = pure API.TcPluginNoRewrite
+rewriteFlag' _ _ _ _ _ = pure API.TcPluginNoRewrite
 
 --------------------------------------------------------------------------------
 -- Solver stage: stuck Auto{Trace,Probe} wanteds (givens available)
@@ -352,6 +380,11 @@ rewriteFlag _ _ _ _ _ = pure API.TcPluginNoRewrite
 
 solveStuck :: OracleEnv -> API.TcPluginSolver
 solveStuck env givens wanteds = do
+  nested <- APIInternal.unsafeLiftTcM (GHC.liftIO $ readIORef (speculating env))
+  if nested then pure (API.TcPluginOk [] []) else solveStuck' env givens wanteds
+
+solveStuck' :: OracleEnv -> API.TcPluginSolver
+solveStuck' env givens wanteds = do
   let givenPreds = map API.ctPred givens
   stucks <- traverse (stuck givenPreds) wanteds
   results <- traverse solve1 [x | Just x <- stucks]
@@ -395,6 +428,7 @@ solveStuck env givens wanteds = do
                 reduceFamily
                 (totalClassesOf env)
                 (knownNatClasses env)
+                (APIInternal.unsafeLiftTcM . ghcSolves env givens)
                 givenPreds
                 fuel0
                 (GHC.mkClassPred target [t])
@@ -832,11 +866,16 @@ solvablePred ::
   loaded: see 'knownNat'.
   -}
   [(Int, API.Class)] ->
+  {- | Whether GHC solves a constraint that is not a class constraint (a side
+  condition such as @1 <= n@) under the givens, without committing anything:
+  see 'ghcSolves'.
+  -}
+  (API.PredType -> m Bool) ->
   [API.PredType] ->
   Int ->
   API.PredType ->
   m Decision
-solvablePred getEnvs reduceFam totalClasses knownNatN givenPreds = go
+solvablePred getEnvs reduceFam totalClasses knownNatN solves givenPreds = go
  where
   go fuel pred0
     | fuel <= 0 = pure (gaveUp pred0)
@@ -875,7 +914,9 @@ solvablePred getEnvs reduceFam totalClasses knownNatN givenPreds = go
         _ -> do
           reduced <- normalise fuel pred0
           if GHC.eqType reduced pred0
-            then pure (gaveUp pred0)
+            then do
+              proved <- solves pred0
+              pure (if proved then Yes else gaveUp pred0)
             else
               if emptyConstraint reduced
                 then pure Yes
@@ -1018,6 +1059,32 @@ data Lookup
     matches, or another might once the type's variables are known.
     -}
     NoPick
+
+{- | Whether GHC solves @pred@ under @givens@: the constraint solver runs on
+them as it would on the program, with every plugin loaded for the module
+(the typelits ones prove the side conditions this is for), and its result
+is thrown away. Nothing is committed: the solve has an inert set and
+evidence bindings of its own, and a constraint with a metavariable (which it
+could unify) is never asked about.
+
+This plugin is loaded too, so it would be asked again while GHC solves the
+givens; 'speculating' keeps it out of that solve.
+-}
+ghcSolves :: OracleEnv -> [API.Ct] -> API.PredType -> GHC.TcM Bool
+ghcSolves env givens pred0
+  | any hasMetas (pred0 : map API.ctPred givens) = pure False
+  | otherwise = do
+      GHC.liftIO (writeIORef (speculating env) True)
+      -- A solve that does not finish (GHC's limit on its rounds) reports an
+      -- error: it belongs to this question, not to the program.
+      result <- GHC.tryM . GHC.discardErrs $ do
+        inerts <- GHC.tcCheckGivens GHC.emptyInert (GHC.listToBag (map GHC.ctEvId givens))
+        case inerts of
+          Just is -> GHC.tcCheckWanteds is [pred0]
+          -- The givens contradict each other: nothing here is reachable.
+          Nothing -> pure False
+      GHC.liftIO (writeIORef (speculating env) False)
+      pure (either (const False) id result)
 
 hasMetas :: API.PredType -> Bool
 hasMetas = GHC.anyFreeVarsOfType (\v -> GHC.isTyVar v && GHC.isMetaTyVar v)
