@@ -57,6 +57,14 @@ import System.IO.Unsafe (unsafePerformIO)
 import System.Mem (performMajorGC)
 import System.Posix.Files (readSymbolicLink)
 import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, fdReadBuf, openFd)
+import System.Posix.Resource (
+  Resource (ResourceFileSize),
+  ResourceLimit (ResourceLimit),
+  ResourceLimits (softLimit),
+  getResourceLimit,
+  setResourceLimit,
+ )
+import System.Posix.Signals (Handler (Ignore), installHandler, sigXFSZ)
 import System.Timeout (timeout)
 
 import SpillMain (spillWith)
@@ -96,6 +104,16 @@ that value. A run that is not cancelled ends after 4000 cycles.
 slow :: (HasCircuitContext) => Signal System (Unsigned 8)
 slow = P.const 0 <$> traceSignalSW "count" (fromList [valueAt i | i <- [0 :: Int ..]])
 {-# OPAQUE slow #-}
+
+{- | Values that do not compress: an FST of them is as large as they are.
+Eight bytes a cycle.
+-}
+noise :: (HasCircuitContext) => Signal System (Unsigned 64)
+noise =
+  traceSignalSW
+    "noise"
+    (fromList (P.iterate (\x -> x P.* 6364136223846793005 P.+ 1442695040888963407) 1))
+{-# OPAQUE noise #-}
 
 -- | A signal that changes every cycle, and one that never changes.
 busyAndQuiet :: (HasCircuitContext) => Signal System (Unsigned 8)
@@ -252,6 +270,33 @@ children =
           -- The recording is alive until here.
           recordingEnd rec @?= P.fromIntegral (chunks P.* 16384 `P.div` 3)
     )
+  ,
+    ( "formats-fst-too-large"
+    , do
+        -- A file system that takes no more than 64 KiB per file: an FST of
+        -- 20000 cycles of noise, about 160 KiB, cannot be written. That is
+        -- an error, and the spill file stays.
+        let name = "formats-fst-too-large"
+        scrub [name]
+        (r, _) <-
+          withRecording
+            (Just (file name "spill"))
+            (evaluate (P.sum (P.map P.toInteger (sampleN 20000 noise))))
+        assertBool "the run finished" (P.either (P.const False) (P.const True) r)
+        _ <- installHandler sigXFSZ Ignore P.Nothing
+        limits <- getResourceLimit ResourceFileSize
+        setResourceLimit ResourceFileSize limits{softLimit = ResourceLimit 65536}
+        recovered <- recoverWaveform defaultOptions (pathOf name)
+        assertBool
+          ("recovered: " <> P.show recovered)
+          (P.either (P.const True) (P.const False) recovered)
+        existing name ["spill", "fst", "json"] >>= (@?= [True, False, False])
+        code <- spillWith FST "spill2fst" ["--delete", file name "spill"]
+        code @?= ExitFailure 1
+        existing name ["spill", "fst", "json"] >>= (@?= [True, False, False])
+        left <- P.filter (name `isPrefixOf`) <$> listDirectory "waveforms"
+        left @?= [name <.> "spill"]
+    )
   ]
  where
   stoppedRun :: String -> ((HasCircuitContext) => IO ()) -> IO ()
@@ -357,6 +402,9 @@ tests =
         removeFile spillFile
     , testCase "a recording cancelled at any moment leaves no file open"
         $ assertChild "formats-cancel-storm" []
+    , testCase "an FST that cannot be written whole is an error, and the spill file stays"
+        $ assertChild "formats-fst-too-large" []
+        >> removeFile (file "formats-fst-too-large" "spill")
     , testCase "reading a spill file does not keep its records in memory"
         $ assertChild "formats-read-big-spill" []
     , testCase "a cancelled run in memory leaves nothing" $ do

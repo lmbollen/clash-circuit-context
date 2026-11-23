@@ -374,7 +374,8 @@ struct fstETab
 
 typedef struct fstWriterContext fstWriterContext;
 
-void fstWriterClose(fstWriterContext *ctx);
+/* clash-circuit-context: 0, or the errno of a failed write (see fstapi.c) */
+int fstWriterClose(fstWriterContext *ctx);
 fstWriterContext *fstWriterCreate(const char *nam, int use_compressed_hier);
 fstEnumHandle fstWriterCreateEnumTable(fstWriterContext *ctx,
                                         const char *name,

@@ -83,7 +83,7 @@ writeFst origin window rec path = case shownWindow rec window of
             (List.sortOn (order . fst) named)
         groupOf n = Map.findWithDefault n n aliasOf
       w <- Fst.create fTmp Fst.Zlib (originComment origin)
-      flip onException (Fst.close w) $ do
+      flip onException (Fst.abandon w) $ do
         handles <- declareTree w groupOf tree
         let reps = [(h, s) | (n, s) <- named, Map.notMember n aliasOf, Just h <- [Map.lookup n handles]]
         streams <- mapM (\(h, s) -> (,) (h, s) <$> readChanges records s) reps

@@ -22,9 +22,12 @@ module Clash.CircuitContext.Internal.Fst (
   timeChange,
   valueChange,
   close,
+  abandon,
 ) where
 
+import Control.Monad (when)
 import Data.Word (Word32, Word64)
+import Foreign.C.Error (Errno (..), errnoToIOError)
 import Foreign.C.String (CString, withCString)
 import Foreign.C.Types (CInt (..))
 import Foreign.Ptr (Ptr, nullPtr)
@@ -63,7 +66,7 @@ foreign import ccall unsafe "fstWriterEmitTimeChange"
 foreign import ccall unsafe "fstWriterEmitValueChange"
   c_valueChange :: Ptr Context -> Word32 -> CString -> IO ()
 foreign import ccall safe "fstWriterClose"
-  c_close :: Ptr Context -> IO ()
+  c_close :: Ptr Context -> IO CInt
 
 {- | Open an FST file for writing, in ps, with this comment. Also creates
 @\<path\>.hier@, which holds the declarations until 'close' moves them into
@@ -107,6 +110,16 @@ timeChange (Writer ctx) t = c_timeChange ctx (fromIntegral t)
 valueChange :: Writer -> Handle -> ByteString.ByteString -> IO ()
 valueChange (Writer ctx) h bs = ByteString.unsafeUseAsCString bs (c_valueChange ctx h)
 
--- | Write the declarations and the last block, and close the file.
+{- | Write the declarations and the last block, and close the file. Throws
+when a write to the file, or to the scratch files @libfst@ keeps meanwhile,
+failed: the file is then incomplete.
+-}
 close :: Writer -> IO ()
-close (Writer ctx) = c_close ctx
+close (Writer ctx) = do
+  r <- c_close ctx
+  when (r /= 0) $
+    ioError (errnoToIOError "libfst could not write the FST file" (Errno r) Nothing Nothing)
+
+-- | Close the file, which is then of no use: after an exception.
+abandon :: Writer -> IO ()
+abandon (Writer ctx) = () <$ c_close ctx

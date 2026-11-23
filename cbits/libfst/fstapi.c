@@ -748,6 +748,12 @@ struct fstWriterContext
     unsigned char already_in_flush; /* in case control-c handlers interrupt */
     unsigned char already_in_close; /* in case control-c handlers interrupt */
 
+    /* clash-circuit-context: a write to the file or to a scratch file failed
+     * (write_failed), and the errno of the first close or flush that said so
+     * (write_errno); fstWriterClose returns it. */
+    unsigned write_failed : 1;
+    int write_errno;
+
 #ifdef FST_WRITER_PARALLEL
     pthread_mutex_t mutex;
     pthread_t thread;
@@ -1841,10 +1847,42 @@ void fstWriterFlushContext(fstWriterContext *xc)
 }
 
 /*
- * close out FST file
+ * clash-circuit-context: note whether a write to (or read from) this file
+ * failed, as its error indicator says, which a failed fwrite sets and nothing
+ * here clears.
  */
-void fstWriterClose(fstWriterContext *xc)
+static void fstWriterNoteFile(fstWriterContext *xc, FILE *f)
 {
+    if (f && ferror(f)) {
+        xc->write_failed = 1;
+    }
+}
+
+/*
+ * clash-circuit-context: note the result of an fflush, fclose or gzclose:
+ * nonzero when it failed, with errno set.
+ */
+static void fstWriterNoteResult(fstWriterContext *xc, int failed)
+{
+    if (failed) {
+        if (!xc->write_errno && errno) {
+            xc->write_errno = errno;
+        }
+        xc->write_failed = 1;
+    }
+}
+
+/*
+ * close out FST file
+ *
+ * clash-circuit-context: returns 0 when every write to the file and to its
+ * scratch files succeeded, and else an errno value (EIO when the error is not
+ * known), so that a caller can tell a complete file from a cut-off one.
+ */
+int fstWriterClose(fstWriterContext *xc)
+{
+    int result = 0;
+
 #ifdef FST_WRITER_PARALLEL
     if (xc) {
         pthread_mutex_lock(&xc->mutex);
@@ -2011,8 +2049,9 @@ void fstWriterClose(fstWriterContext *xc)
                         fstFread(mem, len, 1, xc->hier_handle);
                         gzwrite(zhandle, mem, len);
                     }
-                    gzclose(zhandle);
+                    fstWriterNoteResult(xc, gzclose(zhandle) != Z_OK);
                 } else {
+                    fstWriterNoteResult(xc, 1);
                     close(zfd);
                 }
                 free(mem);
@@ -2103,8 +2142,14 @@ void fstWriterClose(fstWriterContext *xc)
         fstWriterUint64(xc->handle, xc->numsigs);
         fstWriterUint64(xc->handle, xc->maxhandle);
         fstWriterUint64(xc->handle, xc->secnum);
-        fflush(xc->handle);
+        fstWriterNoteResult(xc, fflush(xc->handle) != 0);
 
+        fstWriterNoteFile(xc, xc->handle);
+        fstWriterNoteFile(xc, xc->hier_handle);
+        fstWriterNoteFile(xc, xc->geom_handle);
+        fstWriterNoteFile(xc, xc->valpos_handle);
+        fstWriterNoteFile(xc, xc->curval_handle);
+        fstWriterNoteFile(xc, xc->tchn_handle);
         tmpfile_close(&xc->tchn_handle, &xc->tchn_handle_nam);
         free(xc->vchg_mem);
         xc->vchg_mem = NULL;
@@ -2157,7 +2202,8 @@ void fstWriterClose(fstWriterContext *xc)
                     offpnt = ftello(fp);
                     fstWriterFseeko(xc, fp, 1, SEEK_SET);
                     fstWriterUint64(fp, offpnt - 1);
-                    fclose(fp);
+                    fstWriterNoteFile(xc, fp);
+                    fstWriterNoteResult(xc, fclose(fp) != 0);
                     fclose(xc->handle);
                     xc->handle = NULL;
 
@@ -2171,7 +2217,7 @@ void fstWriterClose(fstWriterContext *xc)
 
                 free(hf);
             } else {
-                fclose(xc->handle);
+                fstWriterNoteResult(xc, fclose(xc->handle) != 0);
                 xc->handle = NULL;
             }
         }
@@ -2201,10 +2247,16 @@ void fstWriterClose(fstWriterContext *xc)
             JenkinsFree(&(xc->path_array), hashmask);
         }
 
+        if (xc->write_failed) {
+            result = xc->write_errno ? xc->write_errno : EIO;
+        }
+
         free(xc->filename);
         xc->filename = NULL;
         free(xc);
     }
+
+    return result;
 }
 
 /*
