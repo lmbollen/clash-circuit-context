@@ -33,9 +33,10 @@ Everything hangs off one implicit parameter @?circuitContext@:
 * 'mealyProbed' + 'probe' record values of expressions INSIDE a mealy step
   function. The step function has no cycle identity of its own, so the
   wrapper derives one from a companion counter register and binds a
-  per-application @?probe@ context; writes are keyed by (name, cycle) and
-  hence idempotent — safe under lazy re-ordering and speculative sparks, and
-  an expression that is never forced simply records nothing.
+  per-application @?probe@ context; writes are keyed by (name, cycle), so a
+  cycle evaluated twice is recorded once. The recorder keeps cycles in
+  increasing order: a cycle that the simulation evaluates after a later one
+  is not recorded, and an expression that is never forced records nothing.
 * 'traceSignalSW' and 'probeSW' are 'traceSignalC' and 'probe' plus the
   payload type's @clash-shockwaves@ descriptor. They are separate functions,
   not extra constraints on the plain ones, because recording and describing
@@ -548,7 +549,8 @@ traceSignalC nm sig
 
 {- | 'traceSignalC' that also records the payload type's @clash-shockwaves@
 descriptor, so a typed-waveform viewer shows constructors and fields rather
-than raw bits (see "Clash.CircuitContext.Shockwaves").
+than raw bits (see the @Waveform@ class of "Clash.Shockwaves", in
+@clash-shockwaves@).
 
 Separate from 'traceSignalC' rather than replacing it, for the same reason
 as 'probeSW': a payload 'BitPack' accepts is not always one

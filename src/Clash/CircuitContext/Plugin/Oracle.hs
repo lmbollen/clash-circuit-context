@@ -346,8 +346,8 @@ Two categories, because the reader needs to know which of these happened:
   (@-Werror=x-circuit-context-undecided@) on a design whose waveform is load
   bearing.
 
-Both fall back to identity either way; @traceSignalC@ is the escape hatch
-that takes @Traceable@ as a real constraint, so a payload it cannot describe
+Both fall back to identity either way; @traceNamed@ is the escape hatch
+that takes @Traceable@ as a real constraint, so a binding it cannot record
 is a compile error rather than a hole.
 
 'Defer' is not reported at all: it is a round the solver will come back

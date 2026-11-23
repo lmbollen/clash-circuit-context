@@ -124,18 +124,19 @@ main = do
   pure ()
 ```
 
-The VCD scope tree mirrors the design hierarchy; the two `acc` instances
-are numbered by the call sites of their `component` calls:
+The VCD scope tree mirrors the design hierarchy. The plugin makes `acc` a
+component, so its two instances share one `component` call site and are
+numbered in the order the simulation first reaches them:
 
 ```
 top
 ├── out
 ├── acc_0
 │   ├── total
-│   └── next, prev   (per-cycle probes from the step function)
+│   └── next   (a per-cycle probe from the step function)
 └── acc_1
     ├── total
-    └── next, prev
+    └── next
 ```
 
 ## What the plugin does
@@ -337,8 +338,9 @@ register would reintroduce the silence these warnings exist to remove.
 Nothing here ever fails a build on its own, so promoting is a decision you
 make per project. The fallback itself is unchanged either way: instrumented
 code never fails to compile because something cannot be traced, and
-`traceSignalC` remains the way to demand tracing at compile time, since it
-takes `Traceable` as a real constraint.
+`traceNamed` remains the way to demand tracing at compile time, since it
+takes `Traceable` as a real constraint (`traceSignalC`, for a plain signal,
+takes `BitPack`).
 
 Custom warning categories are a GHC 9.8 feature. On 9.6 these are still real
 warnings — a blanket `-Werror` promotes them — but they cannot be silenced or
@@ -449,7 +451,8 @@ the waveform. Hedgehog prints footnotes only for the case it reports, so the
 waveform is of the **shrunk counterexample**, recorded once, and the report
 ends with its path. `AtSize s` additionally keeps the first passing case of at
 least size `s` (once per waveform name): a small size gives a short waveform
-you can read end to end, and a property of `n` tests reaches sizes below `n`.
+you can read end to end, and a property of `n` tests reaches sizes below
+`min n 100` (Hedgehog starts again at size 0 after 99).
 
 A worked version of all of this is the Example level of the test suite,
 which `check.sh` builds and runs:
@@ -528,8 +531,8 @@ Everything the plugin injects is ordinary user API from
 `Clash.CircuitContext`, usable directly where you want explicit control:
 `component`, `imapComponents`, `traceSignalC`, `traceSignalSW`, `probe`,
 `probeSW`, `mealyProbed`, `withRecording` (with `writeVCD` from
-`Clash.CircuitContext.Recording` for the VCD and its sidecar), and the
-`autoTrace`/`autoProbe` pair
+`Clash.CircuitContext.Recording` for the VCD and its sidecar), and, from
+`Clash.CircuitContext.Auto`, the `autoTrace`/`autoProbe` pair
 (these two still need the plugin enabled: its typechecker half reduces the
 `CanTrace`/`CanProbe`/`CanDescribe` type families).
 
@@ -587,9 +590,8 @@ actually collects a waveform.
 
 ## Limitations
 
-* GHC 9.6, 9.10 and 9.12 are supported (`tested-with: 9.6.7, 9.10.3,
-  9.12.4`), with `clash-prelude >= 1.9 && < 1.12` — the
-  `Clash.Signal.Trace` internals used are identical across these versions.
+* GHC 9.6, 9.8, 9.10 and 9.12 are supported (`tested-with: 9.6.7, 9.8.4,
+  9.10.3, 9.12.4`), with `clash-prelude >= 1.9 && < 1.12`.
   The `cabal.project` here pins the 1.11 upstream commit this package is
   developed against (1.11 is not yet on Hackage).
 * An **unsigned closed** local binding that does not refer to itself is
@@ -671,10 +673,10 @@ default, disappears under `-Wno-`, and is fatal under `-Werror=`. That last
 one is a claim about the compiler's behaviour rather than this package's,
 which is why it is checked rather than described.
 VCD output is fully deterministic by design, so the goldens are
-byte-identical across GHC 9.6, 9.10 and 9.12.
+byte-identical across GHC 9.6, 9.8, 9.10 and 9.12.
 ## Proof of concept: tracing a real design
 
-`main` is the plugin alone, and builds from a plain clone. Two branches carry
+`main` is the plugin alone, and builds from a plain clone. Three branches carry
 the proof of concept — this plugin applied to
 [bittide-hardware](https://github.com/bittide/bittide-hardware), with the
 instrumented checkouts committed so the waveforms can be reproduced:
