@@ -753,7 +753,9 @@ readSpill path = bracket (openBinaryFile path ReadMode) hClose $ \h -> do
             Nothing
     Nothing -> pure (Left (path <> " is not a spill file"))
  where
-  blocks h size start off sigs luts end = do
+  -- The signals are kept evaluated as each block is read: a lazy update
+  -- would keep the block's payload, and with it the whole file, in memory.
+  blocks h size start !off !sigs luts end = do
     hdr <- ByteString.hGet h 5
     case runParser ((,) <$> byte <*> takeBytes 4) hdr of
       Just ((tag, lenBytes), _)
@@ -768,18 +770,16 @@ readSpill path = bracket (openBinaryFile path ReadMode) hClose $ \h -> do
               (_, Just (Chunked i next, records)) ->
                 let at = off + 5 + (len - ByteString.length records)
                     add s =
-                      s
-                        { signalEnd = next
-                        , signalChunks = OnFile at (ByteString.length records) : signalChunks s
-                        , signalHash = ByteString.foldl' fnv (signalHash s) records
-                        }
+                      let !chunk = OnFile at (ByteString.length records)
+                          !hash = ByteString.foldl' fnv (signalHash s) records
+                       in s{signalEnd = next, signalChunks = chunk : signalChunks s, signalHash = hash}
                  in continue (Map.adjust add i sigs) luts end
               (_, Just (Lut, _)) -> continue sigs (payload : luts) end
               (_, Just (Ended e, _)) -> continue sigs luts (Just e)
               (_, Just (BrokeDown i err, _)) ->
                 continue (Map.adjust (\s -> s{signalDescription = Broken err}) i sigs) luts end
               (_, Just (Progress moved, _)) ->
-                let reach s n = s{signalEnd = max n (signalEnd s)}
+                let reach s n = let !e = max n (signalEnd s) in s{signalEnd = e}
                  in continue (List.foldl' (\m (i, n) -> Map.adjust (`reach` n) i m) sigs moved) luts end
               (_, Just (Unknown, _)) -> continue sigs luts end
       _ -> done start sigs luts end

@@ -33,12 +33,14 @@ import Control.Exception (
   IOException,
   SomeException,
   evaluate,
+  finally,
   throwIO,
   try,
  )
 import Control.Monad (forM, forM_, when)
 import Data.List (isInfixOf, isPrefixOf)
 import Foreign.Ptr (plusPtr)
+import GHC.Stats (gc, gcdetails_live_bytes, getRTSStats)
 import System.Directory (
   createDirectoryIfMissing,
   doesFileExist,
@@ -52,6 +54,7 @@ import System.Directory (
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath ((<.>), (</>))
 import System.IO.Unsafe (unsafePerformIO)
+import System.Mem (performMajorGC)
 import System.Posix.Files (readSymbolicLink)
 import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, fdReadBuf, openFd)
 import System.Timeout (timeout)
@@ -60,7 +63,9 @@ import SpillMain (spillWith)
 import Test.Child (Child, assertChild, inChild)
 
 import qualified Data.ByteString as ByteString
+import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Internal as ByteString (createAndTrim)
+import qualified Data.ByteString.Lazy as ByteStringLazy
 
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
@@ -201,6 +206,52 @@ children =
         [l | P.Right l <- links, dir `isInfixOf` l] @?= []
         removePathForcibly dir
     )
+  ,
+    ( "formats-read-big-spill"
+    , do
+        -- Reading a spill file keeps where its records are, not the records:
+        -- the live heap stays far below the file's 64 MiB. It measures the
+        -- heap of the whole process.
+        let spillFile = file "formats-read-big-spill" "spill"
+            chunks = 4096 :: Int
+            chunk = ByteString.replicate 16384 0
+            varint :: Int -> Builder.Builder
+            varint x
+              | x P.< 0x80 = Builder.word8 (P.fromIntegral x)
+              | P.otherwise =
+                  Builder.word8 (P.fromIntegral (x `P.mod` 0x80) P.+ 0x80) <> varint (x `P.div` 0x80)
+            block tag payload =
+              Builder.word8 tag
+                <> Builder.word32LE (P.fromIntegral (ByteStringLazy.length payload))
+                <> Builder.lazyByteString payload
+            -- Signal 0: a trace of 8 bits, at 10000 ps, named "big", undescribed.
+            declared =
+              varint 0
+                <> Builder.word8 0
+                <> varint 10000
+                <> varint 8
+                <> varint 3
+                <> Builder.string7 "big"
+                <> Builder.word8 0
+            -- Records of 0 at every cycle: 3 bytes each.
+            chunked i = varint 0 <> varint (i P.* 16384 `P.div` 3) <> Builder.byteString chunk
+        createDirectoryIfMissing True "waveforms"
+        ByteStringLazy.writeFile spillFile
+          . Builder.toLazyByteString
+          $ Builder.string7 "CCCSPILL"
+          <> Builder.word8 1
+          <> Builder.word64LE 0
+          <> block 1 (Builder.toLazyByteString declared)
+          <> foldMap (block 2 . Builder.toLazyByteString . chunked) [1 .. chunks]
+        flip finally (removeFile spillFile) $ do
+          read' <- recoverRecording spillFile
+          rec <- P.either assertFailure pure read'
+          performMajorGC
+          live <- gcdetails_live_bytes . gc <$> getRTSStats
+          assertBool ("the live heap is " <> P.show live <> " bytes") (live P.< 16000000)
+          -- The recording is alive until here.
+          recordingEnd rec @?= P.fromIntegral (chunks P.* 16384 `P.div` 3)
+    )
   ]
  where
   stoppedRun :: String -> ((HasCircuitContext) => IO ()) -> IO ()
@@ -306,6 +357,8 @@ tests =
         removeFile spillFile
     , testCase "a recording cancelled at any moment leaves no file open"
         $ assertChild "formats-cancel-storm" []
+    , testCase "reading a spill file does not keep its records in memory"
+        $ assertChild "formats-read-big-spill" []
     , testCase "a cancelled run in memory leaves nothing" $ do
         let name = "formats-cancelled-in-memory"
         scrub [name]
