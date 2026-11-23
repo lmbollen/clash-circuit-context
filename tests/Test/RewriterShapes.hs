@@ -13,10 +13,14 @@
 {-# LANGUAGE NoStarIsType #-}
 
 {- | Shapes from a downstream design (bittide) where the oracle must NOT
-decide in GHC's rewriter. GHC gives a rewriter the givens of its inert set,
-and while it infers the type of a local binding that set can be partial. A
-negative decided there drops a binding that the oracle, deciding in its
-solver stage, records or leaves to GHC. So the rewriter decides only a yes.
+decide in GHC's rewriter. In each, a given holds the same flag as the
+wanted: the constraint that GHC quantified over when it generalised a local
+binding. GHC solves the wanted from that given, and the solver stage never
+sees it. A flag that the rewriter decides no longer matches the given, so
+the wanted then needs an instance: a yes that the oracle gives too readily
+breaks the build (@addressed@), and a no drops a binding that the caller
+records, and warns about it. So the rewriter decides no flag that a given
+holds, and only decides a yes.
 
 @check.sh@ checks that the plugin warns exactly once on each line marked
 @-- warns@, and nowhere else: those are the warnings that the solver stage
@@ -31,6 +35,7 @@ module Test.RewriterShapes (
   ports,
   generalisedPorts,
   masks,
+  addressed,
 ) where
 
 import qualified Prelude as P
@@ -124,3 +129,22 @@ masks bits = (\(Mask bv) -> bv) <$> toMask bits -- warns
    where
     maskS = Mask . pack <$> vs
 {-# OPAQUE masks #-}
+
+-- | An address as wide as a table of @n@ entries needs.
+addrOf :: (KnownNat n) => SNat n -> Signal System (BitVector (CLog 2 n))
+addrOf _ = pure (errorX "address")
+{-# OPAQUE addrOf #-}
+
+{- | A local function that GHC generalises, of an address width that has a
+side condition: @KnownNat (CLog 2 n)@ holds only where @1 <= n@ does. GHC
+checks the inferred type of @table@ by solving its constraints from a copy
+of them, and the oracle must leave the wanted that records @addr@ to that
+copy. No warning.
+-}
+addressed :: (HasCircuitContext) => Signal System (BitVector (CLog 2 4))
+addressed = table (SNat @4)
+ where
+  table s = addr
+   where
+    addr = addrOf s
+{-# OPAQUE addressed #-}

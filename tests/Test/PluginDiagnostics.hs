@@ -65,6 +65,8 @@ import Clash.CircuitContext.Recording
 import qualified Test.DeclGroups as DeclGroups
 import Test.DesignCtx (DesignCtx)
 import qualified Test.Downstream as Downstream
+import Test.GeneralisedLocals (widened)
+import Test.GeneralisedLocalsAmbiguous (widenedAmbiguous)
 import qualified Test.Impredicative as Impredicative
 
 {- | A constraint synonym declared in the module being compiled: its
@@ -366,7 +368,15 @@ top inp =
     + (unAwkward <$> grounded (Awkward . fromIntegral <$> inp))
     + DeclGroups.beforeSplice inp
     + DeclGroups.etaReduced resetGen inp
+    + generalised inp
 {-# OPAQUE top #-}
+
+-- | Both local functions of an unknown width, from a signal of @top@'s.
+generalised :: (HasCircuitContext) => Signal System Int -> Signal System Int
+generalised inp = unpack . resize <$> (widened nib + widenedAmbiguous nib)
+ where
+  nib = resize . pack <$> inp
+{-# OPAQUE generalised #-}
 
 -- | Record an action, rethrowing what it throws.
 recorded :: String -> ((HasCircuitContext) => IO a) -> IO Recording
@@ -448,6 +458,15 @@ main = do
               <> show p
           | p <- paths
           , P.last p == "partialLast"
+          ]
+        , -- 'widened': GHC solves the wanted that records @zs@ from the
+          -- given it quantified over, and the caller decides it.
+          [ "a generalised local function's binding was not recorded: " <> show p
+          | p <-
+              [ ["top", "generalised", "widened", "zs"]
+              , ["top", "generalised", "widenedAmbiguous", "zs"]
+              ]
+          , p `P.notElem` paths
           ]
         , [ "a synonym from an earlier declaration group not seen: expected "
               <> show p

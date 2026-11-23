@@ -17,10 +17,10 @@ stuck cases); ordinary instance resolution does the rest.
 Two cooperating stages — spike findings:
 
 * 'API.tcPluginRewrite' decides a GROUND type. A type with free variables
-  it reduces only to ''True', for a wanted, when the oracle finds the
-  evidence among the givens GHC passes (see 'rewriteFlag': those givens can
-  be partial, so a NO here would not be safe). Deciding here costs no round
-  of GHC's plugin loop; everything else defers.
+  it reduces only to ''True', for a wanted that no given holds, when the
+  oracle finds the evidence among the givens GHC passes (see 'rewriteFlag').
+  Deciding here costs no round of GHC's plugin loop; everything else
+  defers.
 * 'API.tcPluginSolve' catches the resulting stuck wanteds
   @AutoTrace (CanTrace t) t@ / @AutoProbe (CanProbe t) t@ — the solver
   stage DOES receive givens — decides from them, and solves by emitting the
@@ -209,22 +209,30 @@ rewriters env =
   the occurrence can change the answer.
 
 * A type with free variables: reduced to ''True' when the oracle says yes
-  from the givens GHC passes here, and only for a wanted. Everything else is
-  left as it was before this rule: a type that is never recordable reduces
-  to ''False' (see below), and any other answer waits for the solver stage
-  ('solveStuck').
+  from the givens GHC passes here, only for a wanted, and only when no
+  given holds the same flag. Everything else is left as it was before this
+  rule: a type that is never recordable reduces to ''False' (see below), and
+  any other answer waits for the solver stage ('solveStuck').
 
-Only a YES is safe here. The givens that GHC passes to a rewriter are the
-givens of the inert set, and while GHC infers the type of a local binding
-that set can be partial: the residual implication of a generalised local
-function has the constraints GHC inferred for it as its givens, and a wanted
-@AutoTrace (CanTrace b) b@ in it is solved by GHC from the identical given
-that GHC quantified over, never by this oracle. Asking for @Traceable b@
-instead finds no instance, so a NO decided here would drop a binding the
-caller records, and warn about it. A yes is backed by evidence the oracle
-found among those givens and the instances, so the solver stage, which sees
-the same givens later, gives the same yes: the rewriter adds no negative
-decision.
+The rule makes the rewriter decide only wanteds that the solver stage would
+otherwise decide, and decide them the same way.
+
+* A wanted @AutoTrace (CanTrace t) t@ whose flag a given also holds is
+  solved by GHC from that given, and never reaches the solver stage. There
+  is such a given in the residual implication of a local binding that GHC
+  generalises (the constraints it quantified over), and in GHC's check of an
+  inferred type, which solves the type's constraints from a copy of them. A
+  rewriter rewrites the wanted but not the given (it decides no given with
+  free variables), so a rewritten @AutoTrace 'True t@ no longer matches the
+  given: GHC must then solve @Traceable t@ from the instances, which the
+  given made unnecessary. That fails where the given has evidence that the
+  instances do not, and it turns any yes the oracle gives too readily into a
+  compile error. So the rewriter leaves the flag to the given: that is what
+  GHC does without this rule.
+* Every other such wanted reaches the solver stage: GHC solves an
+  @AutoTrace@ wanted whose flag is stuck only from a given. There the oracle
+  asks the same question with the same givens, so a yes is the same yes. A
+  no is left to the solver stage.
 
 Deciding here, and not in the solver stage, costs no round of the solver's
 plugin loop. That matters: GHC stops after four rounds in which a plugin
@@ -271,7 +279,10 @@ rewriteFlag env fam cls givens [t]
         else do
           flavour <- GHC.re_flavour <$> API.askRewriteEnv
           decision <- case flavour of
-            GHC.Wanted | not (null givens) -> decide (map API.ctPred givens)
+            GHC.Wanted
+              | not (null givens)
+              , not (any (holdsFlag . API.ctPred) givens) ->
+                  decide (map API.ctPred givens)
             _ -> pure Defer
           pure $
             if isYes decision
@@ -286,6 +297,10 @@ rewriteFlag env fam cls givens [t]
       givenPreds
       fuel0
       (GHC.mkClassPred cls [t])
+  -- A given that holds this flag: GHC solves the wanted from it.
+  holdsFlag given = case GHC.classifyPredType given of
+    GHC.ClassPred _ args -> any (GHC.eqType (GHC.mkTyConApp fam [t])) args
+    _ -> False
   rewriteTo b =
     API.TcPluginRewriteTo
       ( API.mkTyFamAppReduction
