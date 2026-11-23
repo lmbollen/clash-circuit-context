@@ -145,8 +145,9 @@ file, because a VCD file is text, and we read it below.
 
 `top` needs `HasCircuitContext`, but `runCounters` does not have that
 constraint. `writeWaveform` supplies the context: its design argument has
-the type `(HasCircuitContext) => Signal dom a`. This is where the hierarchy
-starts.
+the type `(CircuitContextOnly) => Signal dom a`, the context without the
+call sites that `HasCircuitContext` also asks for. This is where the
+hierarchy starts.
 
 Now start a session with `cabal repl`, and run the simulation:
 
@@ -156,10 +157,11 @@ Now start a session with `cabal repl`, and run the simulation:
 ```
 
 The output of `top` is the sum of the two counters. The output is 0 in the
-first two cycles: cycle 0 shows the initial value of each register, and
-cycle 1 shows the reset value, because the reset is active in cycle 0. From
-cycle 2, one of the counters counts in each cycle, so the sum goes up by one
-in each cycle.
+first two cycles. The reset is active in cycle 0, and the domain `System`
+has an asynchronous reset: in cycle 0, each register shows its reset value
+at once. In cycle 1, each register shows what it took in cycle 0, which is
+the reset value again. From cycle 2, one of the counters counts in each
+cycle, so the sum goes up by one in each cycle.
 
 The simulation also wrote the file `waveforms/counters.vcd`, and a file
 `waveforms/counters.json` beside it. The directory `waveforms` is in the

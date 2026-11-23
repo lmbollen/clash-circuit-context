@@ -40,7 +40,7 @@ component :: (HasCallStack, CircuitContextOnly) => String -> ((CircuitContextOnl
 
 -- Make element i of a vector a component with the name <name>_<i>.
 imapComponents ::
-  (CircuitContextOnly, KnownNat n) =>
+  (HasCallStack, CircuitContextOnly, KnownNat n) =>
   String -> ((CircuitContextOnly) => Index n -> a -> b) -> Vec n a -> Vec n b
 
 -- Supply a context that records nothing.

@@ -12,7 +12,7 @@ and their content.
 | Waveform | `waveforms/<name>.fst`, or `waveforms/<name>.vcd` with `format = VCD` | kept |
 | Waveform of the passing case of `AtSize size` | `waveforms/<name>_<size>.fst`, or `.vcd` | kept |
 | Sidecar | `waveforms/<name>.json`, beside the waveform | kept |
-| Spill file | `waveforms/<name>.spill`, only with `spill = OnDisk` | while the simulation records. Deleted when the waveform is written. Kept when a recording run stops first. The first runs of `withWaveform` and `simulateWaveform` do not record |
+| Spill file | `waveforms/<name>.spill`, only with `spill = OnDisk` | while the simulation records. Deleted when the waveform is written. Kept when a recording run stops first, or when the waveform cannot be written (the message gives its path). The first runs of `withWaveform` and `simulateWaveform` do not record |
 
 `<name>` is the name that you give to `writeWaveform`, `withWaveform` or
 `simulateWaveform`. One name is one pair of files: two tests must not use
@@ -36,8 +36,9 @@ path. `recoverWaveform` also returns the absolute path.
   first recorded. A description that fails to render (a `Waveform` instance
   whose width is not `BitSize`) is left out of the sidecar, with a message
   on stderr. The waveform still has the signal.
-- If nothing was recorded, no file is written, and a message on stderr says
-  why.
+- If nothing was recorded, no file is written. The functions of
+  `Clash.CircuitContext.Waveform` then say why on stderr; `writeFST` and
+  `writeVCD` return the reason as `Left`.
 
 ## Which functions delete files
 

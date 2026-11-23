@@ -78,8 +78,9 @@ project:
 cabal exec -- clash -package <your-package> <Module> --verilog
 ```
 
-- `-package <your-package>` is necessary: `cabal exec` does not expose the
-  packages of the project itself.
+- `-package <your-package>` makes sure that `clash` sees your package. Some
+  versions of `cabal exec` do not expose the packages of the project
+  itself; cabal-install 3.16 does.
 - If you build with another GHC than the default one, for example with
   `cabal build -w ghc-9.10.3`, give `cabal exec` the same `-w`:
   `cabal exec -w ghc-9.10.3 -- clash …`. Otherwise it uses the environment

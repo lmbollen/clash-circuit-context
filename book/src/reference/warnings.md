@@ -1,9 +1,11 @@
 # Warning categories
 
 The plugin reports in five GHC warning categories. Each category is on by
-default. Each warning names the binding and, where one exists, the fix.
-`x-circuit-context-undescribed` is reported once for each type in a
-function: for the first binding of that type. For
+default. Each warning points at the binding, names the type or the
+constraint that is missing, and, where one exists, gives the fix. Under
+`MonoLocalBinds` (which `TypeFamilies` and `GADTs` turn on), GHC can solve
+the constraints of several bindings of one type together; the plugin then
+reports one of those bindings. For
 how to turn a category off or make it an error, see [How to control the
 warnings of the plugin](../how-to/warnings.md).
 

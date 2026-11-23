@@ -28,8 +28,9 @@ simulation records it.
 
 A recording packs the value of each signal in each cycle, and keeps the
 changes, in memory or in a spill file. This takes time for each signal in
-each cycle: in one design with 474 recorded signals, a recording run took
-about 26 times as long as a run without recording. At the end, the waveform is written
+each cycle: in a 4×4 systolic array with 474 recorded signals (measured
+with GHC 9.10.3 in November 2026), a recording run took about 26 times as
+long as a run without recording. At the end, the waveform is written
 from them. In a
 test suite that runs tests in parallel, the peak memory is the sum over the
 tests that run at the same time, so the time and memory of recording add up
@@ -39,9 +40,10 @@ The functions of `Clash.CircuitContext.Waveform` therefore decide before a
 run if it records. A run whose waveform will not be kept runs without
 recording. The waveform of a passing test is rarely read, so `withWaveform`
 does not record while the test passes. When the test fails, it runs the
-simulation a second time, with recording. On the test suite of one real
-project (24 cores), recording only on failure took the peak memory from
-25.2 GB to 8.2 GB, and the time from 6 min 22 s to 1 min 6 s.
+simulation a second time, with recording. On the test suite of
+[bittide-hardware](https://github.com/bittide/bittide-hardware) (24 cores),
+recording only on failure took the peak memory from 25.2 GB to 8.2 GB, and
+the time from 6 min 22 s to 1 min 6 s.
 
 The second run is the price. It assumes that the failure repeats. For a
 design where it does not, `writeWaveform` records the only run, at the cost
@@ -73,8 +75,8 @@ the blocks go:
 The waveform is written by a merge of the changes of all signals by time,
 straight to the file, so the text of a VCD is never in memory.
 
-On the firmware test of one CPU design (237,000 cycles, 162 signals), the
-maximum residency was 167 MB in memory and 58 MB with the spill file. The
+On the AXI firmware test of bittide-hardware (237,000 cycles, 162 signals),
+the maximum residency was 167 MB in memory and 58 MB with the spill file. The
 waveform was 14 MB as FST and 377 MB as VCD, and took the same time to
 write.
 

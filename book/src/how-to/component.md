@@ -64,13 +64,20 @@ A component can use the hidden clock, reset and enable of
 `exposeClockResetEnable`, as usual:
 
 ```haskell
+createDomain vSystem{vName = "Fast", vPeriod = 10000}
+
 syncFF :: (HasCircuitContext, HiddenClockResetEnable dom) => Signal dom Bool -> Signal dom Bool
-syncFF = register False . register False
+syncFF inp = second
+ where
+  first = register False inp
+  second = register False first
 {-# OPAQUE syncFF #-}
 
 pair :: (HasCircuitContext) => Clock Fast -> Reset Fast -> Signal Fast Bool -> Signal Fast Bool
 pair clk rst inp = withClockResetEnable clk rst enableGen $ syncFF inp .&&. syncFF (not <$> inp)
 ```
+
+`createDomain` needs the extension `TemplateHaskell`.
 
 Each call has its own instance, numbered in the order of the calls, also
 through `$`.
@@ -92,8 +99,8 @@ the vector a component with the name `<name>_<i>`:
 
 ```haskell
 imapComponents ::
-  (HasCircuitContext, KnownNat n) =>
-  String -> ((HasCircuitContext) => Index n -> a -> b) -> Vec n a -> Vec n b
+  (HasCallStack, CircuitContextOnly, KnownNat n) =>
+  String -> ((CircuitContextOnly) => Index n -> a -> b) -> Vec n a -> Vec n b
 ```
 
 The elements can be of each type, not only signals. Here, each element is

@@ -46,7 +46,15 @@ plugins that your test code uses.
 
 Give the design to a function of this guide directly, as its argument. If
 you bind it with `let` first, give the binding a signature with
-`HasCircuitContext`: without one, the error names `CircuitContextOnly`.
+`CircuitContextOnly`, the context that these functions supply.
+`Clash.CircuitContext.Waveform` exports it:
+
+```haskell
+let design :: (CircuitContextOnly) => Signal System (Unsigned 8)
+    design = top (pure True)
+```
+
+Without a signature, the error names `CircuitContextOnly`.
 
 ## Always write the waveform
 
@@ -188,9 +196,11 @@ time.
 ## Let the test decide how long to simulate
 
 Some tests read output until a value appears, for example the text that a
-CPU writes to a UART. Give `maxBound` as `stop`. The check then decides how
-many cycles to evaluate, and the waveform ends at the last cycle that it
-evaluated:
+CPU writes to a UART. With `withWaveform`, give `maxBound` as `stop`. The
+check then decides how many cycles to evaluate, and the waveform ends at the
+last cycle that it evaluated. Do not give `maxBound` to `writeWaveform` or
+`simulateWaveform`: they evaluate each sample up to `stop`, so they do not
+end.
 
 ```haskell
 case_firmware :: Assertion

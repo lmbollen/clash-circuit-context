@@ -22,7 +22,7 @@ argument has the type `Capture`, with the constructors `Counterexample` and
 simulateWaveform ::
   (KnownDomain dom, NFDataX a) =>
   WaveformOptions -> Capture -> String -> (Int, Int) ->
-  ((HasCircuitContext) => Signal dom a) -> PropertyT IO [a]
+  ((CircuitContextOnly) => Signal dom a) -> PropertyT IO [a]
 ```
 
 ```haskell,clash group=hedgehog hidden

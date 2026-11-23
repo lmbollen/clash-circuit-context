@@ -38,10 +38,13 @@ scaled
 
 ## One module
 
-Do not turn the plugin on for that module: use the `OPTIONS_GHC` pragma in
-the modules that need it, not `ghc-options` for the whole package. You
-usually do not need this. A module without `HasCircuitContext` or `HasProbe`
-in its signatures is not changed by the plugin.
+Give the functions of that module no `HasCircuitContext` and no `HasProbe`.
+The plugin does not change a module without these constraints, so you do
+not need to turn it off for the module.
+
+Do not turn the plugin off for a module whose functions have
+`HasCircuitContext`: each call of such a function then fails to compile,
+with an error that names `TurnOnTheCircuitContextPlugin`.
 
 ## One call, and everything under it
 
