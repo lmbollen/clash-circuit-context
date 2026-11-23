@@ -229,6 +229,40 @@ vecOfRecords inp = lanes
   lanes = map (\i -> Lane (inp + pure i) (inp + pure (i + 10))) (0 :> 1 :> 2 :> Nil)
 {-# OPAQUE vecOfRecords #-}
 
+--------------------------------------------------------------------------------
+-- Functions the plugin does not split
+
+class One a where
+  one :: (HasCircuitContext) => a -> Unsigned 8 -> Signal System (Unsigned 8)
+
+instance One Bool where
+  one _ s = acc s
+
+-- | Two calls of an instance method that makes one 'acc'.
+xMethod :: (HasCircuitContext) => Pair
+xMethod = (one True 1, one True 100)
+{-# OPAQUE xMethod #-}
+
+class Dflt a where
+  dflt :: (HasCircuitContext) => a -> Unsigned 8 -> Signal System (Unsigned 8)
+  dflt _ s = acc s
+
+instance Dflt Bool
+
+-- | Two calls of a default method that makes one 'acc'.
+xDefault :: (HasCircuitContext) => Pair
+xDefault = (dflt True 1, dflt True 100)
+{-# OPAQUE xDefault #-}
+
+-- | A helper the plugin leaves whole: it has another annotation.
+annd :: (HasCircuitContext) => Unsigned 8 -> Signal System (Unsigned 8)
+annd s = acc s
+{-# ANN annd ("HLint: ignore" :: String) #-}
+
+xAnn :: (HasCircuitContext) => Pair
+xAnn = (annd 1, annd 100)
+{-# OPAQUE xAnn #-}
+
 {- | Record an action and return its VCD of @[0, n)@. Every file has a
 fresh name, as the properties run in parallel.
 -}
@@ -422,4 +456,7 @@ tests =
     , testProperty
         "a vector of records is listed field by field"
         prop_vecOfRecords
+    , testProperty "the calls of an instance method" (numbered "xMethod.acc" ".total" xMethod)
+    , testProperty "the calls of a default method" (numbered "xDefault.acc" ".total" xDefault)
+    , testProperty "the calls of a function with another annotation" (numbered "xAnn.acc" ".total" xAnn)
     ]

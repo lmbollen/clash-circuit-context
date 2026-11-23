@@ -12,14 +12,15 @@ to the context's call path, and a worker `$wf` with its body and pragmas
 calls of a helper with a signature order the instances it makes, and the
 signals it records into its caller's scope come call by call. Before, the
 instances of a plugin-made component were numbered in the order the
-simulation first reached them. A `map` or `fmap` over a vector, a class
-method, a local function without a signature, and a function with an
-annotation other than `NoCircuitScope` still number their instances that
-way. A class method and a function with such an annotation are not split,
-and keep the call sites as an argument: when such a function is an HDL
-module (`OPAQUE`), Clash makes one module for each call site. The numbers rank the instances that the run evaluated: a test that
-evaluates only some of them numbers those in the same order, but from 0, and
-a single evaluated instance gets no number.
+simulation first reached them. A `map` or `fmap` over a vector, a shared
+partial application, and a local function without a signature still number
+their instances that way. A class method and a function with an annotation
+other than `NoCircuitScope` are not split; their calls are numbered by the
+call stack that the next wrapper receives. They keep the call sites as an
+argument: when such a function is an HDL module (`OPAQUE`), Clash makes one
+module for each call site. The numbers rank the instances that the run
+evaluated: a test that evaluates only some of them numbers those in the
+same order, but from 0, and a single evaluated instance gets no number.
 
 `HasCircuitContext` is now `(CallSitesOnly, CircuitContextOnly,
 TurnOnTheCircuitContextPlugin)`. The call sites are an implicit parameter

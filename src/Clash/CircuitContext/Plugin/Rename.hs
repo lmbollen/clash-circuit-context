@@ -49,6 +49,10 @@ The renamer-stage rewrite ('GHC.renamedResultAction'):
   of each call, which GHC passes in the call stack that @HasCircuitContext@
   asks for, to the context's call path; that is what numbers the instances
   of one plugin-made component by their calls.
+  A function that is not split (a class or instance method, or a function
+  with an annotation other than 'NoCircuitScope') keeps its body, but its
+  signature has @HasCircuitContext@ written out as its three constraints
+  (see 'keptSig'), so that GHC 9.8 gives each of its calls a call stack.
 
 * The pass is IDEMPOTENT: an injection this pass would make, and that is
   already there under the same name, is not made twice (see
@@ -139,9 +143,10 @@ renamePass _opts env grp =
             }
       topEntityErrors ctx grp
       (grp', notes) <- rewriteGroup ctx grp
+      tyclds <- mapM (methodSigsWrittenOut ctx) (hs_tyclds grp')
       methods <- methodNotes ctx grp
       mapM_ (\(spn, cat, body) -> Diag.report spn cat body) (notes <> methods)
-      pure (env, grp')
+      pure (env, grp'{hs_tyclds = tyclds})
 
 -- | The module's own type synonyms, by name, for 'ctxMentions'.
 localSynonyms :: HsGroup GhcRn -> [(GHC.Name, LHsType GhcRn)]
@@ -593,6 +598,57 @@ methodNotes ctx grp =
     TypeSig _ ns (HsWC _ body) -> [(n, body) | L _ n <- ns]
     ClassOpSig _ _ ns body -> [(n, body) | L _ n <- ns]
     _ -> []
+
+{- | The class declarations and instances of a group with the method
+signatures ('keptSig'): those of the class (also of a default method), and
+those that an instance gives with @InstanceSigs@. A method is not split, as
+the pass does not reach its body (see 'methodNotes').
+-}
+methodSigsWrittenOut :: Ctx -> TyClGroup GhcRn -> GHC.TcM (TyClGroup GhcRn)
+methodSigsWrittenOut ctx g = do
+  tyclds <- mapM (traverse classDecl) (group_tyclds g)
+  instds <- mapM (traverse instDecl) (group_instds g)
+  pure g{group_tyclds = tyclds, group_instds = instds}
+ where
+  classDecl = \case
+    d@ClassDecl{tcdSigs = sigs} -> (\s -> d{tcdSigs = s}) <$> mapM (keptSig ctx) sigs
+    d -> pure d
+  instDecl = \case
+    ClsInstD x cid@ClsInstDecl{cid_sigs = sigs} ->
+      ClsInstD x . (\s -> cid{cid_sigs = s}) <$> mapM (keptSig ctx) sigs
+    d -> pure d
+
+{- | The signature of a function that the pass does not split, with each
+@HasCircuitContext@ in the constraints of its spine written out as its three
+constraints ('keptContext'), also behind a synonym (see 'withContext').
+GHC 9.8 gives two calls in one expression one call stack when the callee's
+type asks for a constraint tuple: the calls of such a function then have
+the site of the first on the call path that the next wrapper receives
+(see 'Clash.CircuitContext.Core.CallSitesOnly'). A signature that does not
+ask for a context stays as it is.
+
+The class and instance signatures come as 'ClassOpSig' or as 'TypeSig',
+depending on the GHC: both are written out.
+-}
+keptSig :: Ctx -> LSig GhcRn -> GHC.TcM (LSig GhcRn)
+keptSig ctx (L l sig) =
+  L l <$> case sig of
+    TypeSig x ns ty ->
+      ifTraced (sigModes ctx ty) (TypeSig x ns <$> withContext ctx kept ty)
+    ClassOpSig x dflt ns ty ->
+      ifTraced (sigModesT ctx ty) (ClassOpSig x dflt ns <$> withSigContext ctx kept ty)
+    _ -> pure sig
+ where
+  kept = keptContext (ctxAbi ctx)
+  ifTraced modes rewrite = modes >>= \(_, isTrace) -> if isTrace then rewrite else pure sig
+
+{- | What a function that is not split asks for instead of
+@HasCircuitContext@: all three of its constraints. Unlike a wrapper's
+signature, it keeps 'TurnOnTheCircuitContextPlugin': its callers call it,
+and it asks the module of each call to turn the plugin on.
+-}
+keptContext :: AbiNames -> [GHC.Name]
+keptContext abi = [abiCallSitesOnly abi, abiCircuitContextOnly abi, abiTurnOnPlugin abi]
 
 --------------------------------------------------------------------------------
 -- Top-level rewrite
@@ -1237,8 +1293,13 @@ recursion (see 'Clash.CircuitContext.Core.ccCallPath').
 
 Not split: a function with an annotation other than 'NoCircuitScope' (see
 'otherAnnotated'), a class or instance method (a method has no binding of
-its own here), and a function without a signature. Their calls are not on
-the call path.
+its own here), and a function without a signature. The calls of the first
+two are on the call stack that the next wrapper receives, so they still
+order instances (see 'Clash.CircuitContext.Core.simCallContext'). Their
+signatures have @HasCircuitContext@ written out ('keptSig'; the methods'
+in 'methodSigsWrittenOut'), as GHC 9.8 gives each call a call stack only
+then. GHC does not give a function without a signature a call stack of its
+own.
 -}
 splitGroups ::
   Ctx ->
@@ -1274,6 +1335,13 @@ splitGroups ctx workerName keep groups sigs = do
       | L _ (TypeSig _ ns ty) <- sigs
       , any (`elem` map fst workers) [n | L _ n <- ns]
       ]
+  -- The signatures of the binders not to split, written out.
+  keptSigs <-
+    sequence
+      [ (,) (map unLoc ns) <$> keptSig ctx s
+      | s@(L _ (TypeSig _ ns _)) <- sigs
+      , any ((`elem` keep) . unLoc) ns
+      ]
   specTys <-
     sequence
       [ (,) n <$> mapM (withSigContext ctx [abiCircuitContextOnly abi]) tys
@@ -1301,6 +1369,8 @@ splitGroups ctx workerName keep groups sigs = do
                 | L ln n <- ns
                 , Just w <- [lookup n workers]
                 ]
+      L _ (TypeSig _ ns _)
+        | Just s <- lookup (map unLoc ns) keptSigs -> [s]
       L l (InlineSig x (L ln n) prag)
         | Just w <- lookup n workers -> [L l (InlineSig x (L ln w) prag)]
       -- The body is the worker's: so is what specialises it.
@@ -1388,12 +1458,14 @@ splitGroups ctx workerName keep groups sigs = do
 
 {- | A signature with each @HasCircuitContext@ in the constraints of its spine
 replaced by @with@: the wrapper asks for @CallSitesOnly, CircuitContextOnly@,
-the worker for @CircuitContextOnly@.
+the worker for @CircuitContextOnly@, and a function that is not split for all
+three ('keptContext').
 
-The wrapper's constraints are written out, also those behind a synonym of
-the designer's (@type MyC dom = (HasCircuitContext, KnownDomain dom)@): GHC
-9.8 gives two calls in one expression one call stack when the callee's type
-asks for a constraint tuple, and a synonym of a tuple is one (see
+The wrapper's constraints (and those of a function that is not split) are
+written out, also those behind a synonym of the designer's
+(@type MyC dom = (HasCircuitContext, KnownDomain dom)@): GHC 9.8 gives two
+calls in one expression one call stack when the callee's type asks for a
+constraint tuple, and a synonym of a tuple is one (see
 'Clash.CircuitContext.Core.CallSitesOnly'). The worker leaves out the call
 sites, which Clash would specialise it on, and 'TurnOnTheCircuitContextPlugin',
 which only this module's plugin solves.

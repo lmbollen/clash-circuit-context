@@ -326,10 +326,12 @@ type CircuitContextOnly = (?circuitContext :: SimOnly CircuitContext)
 an implicit parameter of type 'CallStack', as to that of 'HasCallStack'.
 
 The plugin writes 'HasCircuitContext' out as @(CallSitesOnly,
-CircuitContextOnly)@ in the signature of each function it splits. GHC 9.8
-gives two calls in one expression one call stack when the callee's type asks
-for a constraint tuple (a synonym such as 'HasCircuitContext' is one): both
-calls had the site of the first.
+CircuitContextOnly)@ in the signature of each function it splits, and as all
+three of its constraints in that of a class method and of a function with
+another annotation, which it does not split. GHC 9.8 gives two calls in one
+expression one call stack when the callee's type asks for a constraint tuple
+(a synonym such as 'HasCircuitContext' is one): both calls had the site of
+the first.
 -}
 type CallSitesOnly = (?circuitCallSites :: CallStack)
 
@@ -768,8 +770,12 @@ callContext sites
   | otherwise = ?circuitContext
 {-# INLINE callContext #-}
 
-{- | Simulation worker for 'callContext', given the call sites: the first is
-the call of the wrapper.
+{- | Simulation worker for 'callContext', given the call sites, innermost
+first: the call of the wrapper, then the calls that led to it through
+functions the plugin does not split (a class method, a function with
+another annotation), up to the nearest function it did split, whose worker
+starts from an empty call stack. All of them go on the call path, outermost
+first.
 -}
 simCallContext ::
   (?circuitContext :: SimOnly CircuitContext) =>
@@ -777,9 +783,9 @@ simCallContext ::
   SimOnly CircuitContext
 simCallContext frames
   | ccDisabled ctx = ?circuitContext
-  | (_, site) : _ <- frames =
-      SimOnly ctx{ccCallPath = push (encodeSite site) (ccCallPath ctx)}
-  | otherwise = ?circuitContext
+  | null frames = ?circuitContext
+  | otherwise =
+      SimOnly ctx{ccCallPath = foldr (push . encodeSite . snd) (ccCallPath ctx) frames}
  where
   ctx = circuitContext
   push here = \case

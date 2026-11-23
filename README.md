@@ -251,11 +251,13 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
   caller's scope come call by call. Clash names the worker's module after
   `f` and makes one module of it. Instances with the *same* call site are
   numbered in the order the simulation first reaches them: `map acc`- or
-  `fmap acc`-style replication over a vector, and the calls of a class
-  method, of a local function without a signature, or of a function with an
-  annotation other than `NoCircuitScope` (those are not split). To fix
-  those names, use `imapComponents` (structural position) or call
-  `component` by hand.
+  `fmap acc`-style replication over a vector, a shared partial application
+  (`where a = acc`, then `a 1` and `a 100`), and the calls of a local
+  function without a signature. To fix those names, use `imapComponents`
+  (structural position) or call `component` by hand. A class method and a
+  function with an annotation other than `NoCircuitScope` are not split,
+  but the call stack the next wrapper receives holds their call sites too,
+  so their calls are numbered by call site as well.
 * A class method, and a function with an annotation other than
   `NoCircuitScope` (an HLint `ANN`, for example), are not split, so they
   keep the call sites as an argument. Clash specialises a function on a

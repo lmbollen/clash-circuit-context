@@ -34,6 +34,10 @@ data AbiNames = AbiNames
   -- ^ What a worker's signature asks for instead of @HasCircuitContext@.
   , abiCallSitesOnly :: GHC.Name
   -- ^ With 'abiCircuitContextOnly', what a wrapper's signature asks for.
+  , abiTurnOnPlugin :: GHC.Name
+  {- ^ With 'abiCallSitesOnly' and 'abiCircuitContextOnly', what the
+  signature of a function that is not split asks for (see @keptContext@).
+  -}
   , abiHasCircuitContext :: GHC.Name
   , abiHasProbe :: GHC.Name
   , abiNoCircuitScope :: GHC.Name
@@ -64,6 +68,7 @@ lookupAbiNames = do
       rootCallStackN <- GHC.lookupOrig cm (GHC.mkVarOcc "rootCallStack")
       contextOnlyN <- GHC.lookupOrig cm (GHC.mkTcOcc "CircuitContextOnly")
       callSitesOnlyN <- GHC.lookupOrig cm (GHC.mkTcOcc "CallSitesOnly")
+      turnOnN <- GHC.lookupOrig cm (GHC.mkTcOcc "TurnOnTheCircuitContextPlugin")
       hasCircuitContextN <- GHC.lookupOrig cm (GHC.mkTcOcc "HasCircuitContext")
       hasProbeN <- GHC.lookupOrig cm (GHC.mkTcOcc "HasProbe")
       noCircuitScopeN <- GHC.lookupOrig cm (GHC.mkDataOcc "NoCircuitScope")
@@ -83,6 +88,7 @@ lookupAbiNames = do
               , abiRootCallStack = rootCallStackN
               , abiCircuitContextOnly = contextOnlyN
               , abiCallSitesOnly = callSitesOnlyN
+              , abiTurnOnPlugin = turnOnN
               , abiHasCircuitContext = hasCircuitContextN
               , abiHasProbe = hasProbeN
               , abiNoCircuitScope = noCircuitScopeN
