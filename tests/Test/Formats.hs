@@ -15,7 +15,7 @@ waveform as the others, and a spill file must outlive a run that is stopped.
 
 Every test uses its own waveform paths and scrubs their files first.
 -}
-module Test.Formats (tests) where
+module Test.Formats (tests, children) where
 
 import qualified Prelude as P
 
@@ -40,6 +40,7 @@ import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, fdReadBu
 import System.Timeout (timeout)
 
 import SpillMain (spillWith)
+import Test.Child (Child, assertChild)
 
 import qualified Data.ByteString as ByteString
 import qualified Data.ByteString.Internal as ByteString (createAndTrim)
@@ -135,6 +136,25 @@ vcd, vcdOnDisk :: WaveformOptions
 vcd = defaultOptions{format = VCD}
 vcdOnDisk = defaultOptions{format = VCD, spill = OnDisk}
 
+-- | The tests of this module that run in a process of their own ("Test.Child").
+children :: [Child]
+children =
+  [
+    ( "formats-cut-fst"
+    , do
+        let name = "formats-cut-fst"
+        scrub [name]
+        failed <-
+          try @SomeException
+            (withWaveform defaultOptions (pathOf name) (0, 8) counter (\xs -> P.length xs @?= 9))
+        assertBool "the check failed" (P.either (P.const True) (P.const False) failed)
+        whole <- ByteString.readFile (file name "fst")
+        ByteString.writeFile (file name "fst") (ByteString.take 100 whole)
+        _ <- withWaveform defaultOptions (pathOf name) (0, 8) counter (\xs -> P.length xs @?= 8)
+        existing name ["fst", "json"] >>= (@?= [False, False])
+    )
+  ]
+
 tests :: TestTree
 tests =
   testGroup
@@ -191,6 +211,10 @@ tests =
         existing name ["fst", "json"] >>= (@?= [True, True])
         _ <- withWaveform defaultOptions (pathOf name) (0, 8) counter (\xs -> P.length xs @?= 8)
         existing name ["fst", "json"] >>= (@?= [False, False])
+    , -- Telling a failure's waveform from one written on purpose reads the
+      -- sidecar, never the waveform: libfst's reader crashes on a cut-off FST.
+      testCase "withWaveform deletes a failing run's FST that is cut off when the test passes"
+        $ assertChild "formats-cut-fst" []
     , testCase "withWaveform keeps an FST written on purpose when the test passes" $ do
         let name = "formats-requested-fst"
         scrub [name]

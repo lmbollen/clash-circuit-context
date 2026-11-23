@@ -24,6 +24,8 @@ module Clash.CircuitContext.Internal.Vcd (
   renderVCD,
 
   -- * Shared with the FST writer
+  Origin (..),
+  originComment,
   shownWindow,
   writeSidecar,
   ioLeft,
@@ -64,7 +66,7 @@ import qualified Data.ByteString.Builder as Builder
 import qualified Data.ByteString.Lazy as ByteStringLazy
 
 import Clash.CircuitContext.Internal.Bits (bits)
-import Clash.CircuitContext.Internal.Sidecar (sidecar)
+import Clash.CircuitContext.Internal.Sidecar (Origin (..), sidecar)
 
 import Clash.CircuitContext.Internal.Recorder (
   Change (..),
@@ -79,9 +81,9 @@ import Clash.CircuitContext.Internal.Recorder (
   withReader,
  )
 
-{- | Write a recording's waveform over a window (see 'renderVCD'): the VCD at
-this path, and its typed-waveform sidecar beside it, with extension
-@.json@. Creates the directory.
+{- | Write a recording's waveform over a window (see 'renderVCD'), for this
+reason: the VCD at this path, and its typed-waveform sidecar beside it, with
+extension @.json@. Creates the directory.
 
 Both files go through a temporary file and a rename, and the SIDECAR LANDS
 FIRST. The temporary files get the default permissions (the umask), not the
@@ -91,31 +93,33 @@ the two are from the same run: a crash between the renames leaves a new
 @.json@ beside the previous run's @.vcd@.) On 'Left' (see 'shownWindow';
 also when a file cannot be written) neither is written.
 -}
-writeFiles :: String -> (Int, Int) -> Recording -> FilePath -> IO (Either String ())
-writeFiles comment window0 rec path = case shownWindow rec window0 of
+writeFiles :: Origin -> (Int, Int) -> Recording -> FilePath -> IO (Either String ())
+writeFiles origin window0 rec path = case shownWindow rec window0 of
   Left err -> pure (Left err)
   Right window -> ioLeft $ withReader rec $ \records -> do
     createDirectoryIfMissing True dir
     (vTmp, vH) <- openBinaryTempFileWithDefaultPermissions dir (takeFileName path <.> "tmp")
     flip onException (hClose vH >> removePathForcibly vTmp) $ do
       hSetBuffering vH (BlockBuffering Nothing)
-      rendered <- renderVCD records comment window rec vH
+      rendered <- renderVCD records (originComment origin) window rec vH
       hClose vH
       case rendered of
         Left err -> removeFile vTmp >> pure (Left err)
         Right () -> do
-          writeSidecar rec path
+          writeSidecar origin "vcd" rec path
           renameFile vTmp path
           pure (Right ())
  where
   dir = takeDirectory path
 
-{- | Write the typed-waveform sidecar of the waveform at this path: beside
-it, with extension @.json@, through a temporary file and a rename.
+{- | Write the typed-waveform sidecar of the waveform at this path, written
+for this reason, with this extension: beside it, with extension @.json@,
+through a temporary file and a rename.
 -}
-writeSidecar :: Recording -> FilePath -> IO ()
-writeSidecar rec path = do
-  meta <- sidecar [(vcdPath n, s) | (n, s) <- namedSignals rec] (recordingLuts rec)
+writeSidecar :: Origin -> String -> Recording -> FilePath -> IO ()
+writeSidecar origin ext rec path = do
+  meta <-
+    sidecar origin ext [(vcdPath n, s) | (n, s) <- namedSignals rec] (recordingLuts rec)
   (jTmp, jH) <-
     openBinaryTempFileWithDefaultPermissions dir (takeFileName sidecarPath <.> "tmp")
   flip onException (hClose jH >> removePathForcibly jTmp) $ do
@@ -125,6 +129,13 @@ writeSidecar rec path = do
  where
   dir = takeDirectory path
   sidecarPath = path -<.> "json"
+
+{- | The comment of a waveform written for this reason: a 'Failure' says it
+shows the run of a failing test.
+-}
+originComment :: Origin -> String
+originComment Requested = "No comment"
+originComment Failure = "clash-circuit-context: the run of a failing test"
 
 {- | The part of a window @[start, stop)@, in units of the recording's
 'timescale', that a waveform shows: it ends where the simulation stopped, at

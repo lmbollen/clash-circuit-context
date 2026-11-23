@@ -34,16 +34,25 @@ included, and the @logic@ scope of a dot-free name.
 Traces AND probes. A probe is how an FSM state is seen at all (it is state,
 never a wire), so probes are precisely the signals whose constructors a
 reader most wants named.
+
+The sidecar also says when its waveform shows the run of a failing test
+('Failure'), which a later passing run deletes. It says so under a key of its
+own, @clash-circuit-context@, which a viewer ignores, so that telling the two
+apart reads this small JSON file, not the waveform.
 -}
 module Clash.CircuitContext.Internal.Sidecar (
+  Origin (..),
   sidecar,
+  failureWaveform,
 ) where
 
+import Control.Exception (IOException, try)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import System.IO (hPutStrLn, stderr)
 
 import qualified Data.ByteString as ByteString
+import qualified Data.Text as Text
 
 import Data.Aeson ((.=))
 import qualified Data.Aeson as Json
@@ -54,10 +63,23 @@ import Clash.CircuitContext.Internal.Recorder (
   RecordedSignal (..),
  )
 
-{- | The sidecar of these signals, each given with its full VCD scope path,
+-- | Why a waveform is written.
+data Origin
+  = -- | It was asked for.
+    Requested
+  | {- | It shows the run of a failing test, and a later run that passes
+    deletes it.
+    -}
+    Failure
+  deriving (Eq, Show)
+
+{- | The sidecar of a waveform written for this reason, with this extension
+(@vcd@ or @fst@), of these signals, each given with its full VCD scope path,
 and of these lookup-table entries, in @clash-shockwaves@' schema:
 @{ signals, types, luts }@ — the same three keys its own @dumpVCD@ emits, so
-its Surfer plugin reads this unmodified. @signals@ maps a path to its type
+its Surfer plugin reads this unmodified. The sidecar of a 'Failure' waveform
+also has @\"clash-circuit-context\": {\"origin\": \"failure\", \"waveform\": ext}@;
+the plugin ignores a key it does not know. @signals@ maps a path to its type
 name, @types@ carries each type's translator (the ADT structure), and @luts@
 the lookup-table entries for the values that occurred.
 
@@ -74,8 +96,9 @@ the error of one that throws ('Broken'); such a signal is left out here and
 reported on stderr, naming it: the waveform still records its bits, and
 every other signal keeps its description.
 -}
-sidecar :: [(String, RecordedSignal)] -> [ByteString.ByteString] -> IO Json.Value
-sidecar named luts = do
+sidecar ::
+  Origin -> String -> [(String, RecordedSignal)] -> [ByteString.ByteString] -> IO Json.Value
+sidecar origin ext named luts = do
   mapM_
     ( \(path, err) ->
         hPutStrLn
@@ -91,13 +114,15 @@ sidecar named luts = do
     [(path, err) | (path, s) <- named, Broken err <- [signalDescription s]]
   pure
     ( Json.object
-        [ "signals" .= Map.fromList [(path, tyName) | (path, tyName, _) <- described]
-        , "types"
-            .= List.foldl' KeyMap.union KeyMap.empty [object types | (_, _, types) <- described]
-        , -- Left-biased at both levels, as clash-shockwaves' own addValueT is
-          -- within a signal: the first translation of a pattern stands.
-          "luts" .= List.foldl' (KeyMap.unionWith inner) KeyMap.empty (map object luts)
-        ]
+        ( [ "signals" .= Map.fromList [(path, tyName) | (path, tyName, _) <- described]
+          , "types"
+              .= List.foldl' KeyMap.union KeyMap.empty [object types | (_, _, types) <- described]
+          , -- Left-biased at both levels, as clash-shockwaves' own addValueT is
+            -- within a signal: the first translation of a pattern stands.
+            "luts" .= List.foldl' (KeyMap.unionWith inner) KeyMap.empty (map object luts)
+          ]
+            <> [ownKey .= Json.object ["origin" .= failureOrigin, "waveform" .= ext] | origin == Failure]
+        )
     )
  where
   described =
@@ -110,3 +135,27 @@ sidecar named luts = do
     _ -> KeyMap.empty
   inner (Json.Object a) (Json.Object b) = Json.Object (KeyMap.union a b)
   inner a _ = a
+
+-- | The key under which a sidecar says what this package adds.
+ownKey :: KeyMap.Key
+ownKey = "clash-circuit-context"
+
+failureOrigin :: String
+failureOrigin = "failure"
+
+{- | Does the sidecar at this path belong to the waveform of a failing run
+('Failure')? Then the extension of that waveform. 'Nothing' also when the
+file is not there, or is not a sidecar.
+-}
+failureWaveform :: FilePath -> IO (Maybe String)
+failureWaveform path = do
+  read' <- try (Json.decodeFileStrict' path)
+  pure $ case read' of
+    Right (Just (Json.Object o))
+      | Just (Json.Object own) <- KeyMap.lookup ownKey o
+      , Just (Json.String origin) <- KeyMap.lookup "origin" own
+      , origin == Text.pack failureOrigin
+      , Just (Json.String ext) <- KeyMap.lookup "waveform" own ->
+          Just (Text.unpack ext)
+    Right _ -> Nothing
+    Left (_ :: IOException) -> Nothing

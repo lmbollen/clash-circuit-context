@@ -47,11 +47,9 @@ module Clash.CircuitContext.Internal.Waveform (
 
 import Control.Exception (
   ErrorCall (..),
-  IOException,
   SomeException,
   evaluate,
   throwIO,
-  try,
  )
 import Control.Monad (filterM, when)
 import System.Directory (
@@ -60,7 +58,7 @@ import System.Directory (
   removePathForcibly,
  )
 import System.FilePath ((<.>))
-import System.IO (IOMode (ReadMode), hGetLine, hPutStrLn, stderr, withFile)
+import System.IO (hPutStrLn, stderr)
 
 import Clash.Explicit.Signal (Signal, sampleN)
 import Clash.Prelude (KnownDomain, NFDataX, deepseqX, snatToNum)
@@ -71,7 +69,6 @@ import Clash.CircuitContext.Core (
   withRecordingFrom,
   withoutCircuitContext,
  )
-import qualified Clash.CircuitContext.Internal.Fst as Fst
 import Clash.CircuitContext.Internal.FstOut (writeFst)
 import Clash.CircuitContext.Internal.Recorder (
   Recording (..),
@@ -79,6 +76,7 @@ import Clash.CircuitContext.Internal.Recorder (
   ticks,
   timescale,
  )
+import Clash.CircuitContext.Internal.Sidecar (Origin (..), failureWaveform)
 import Clash.CircuitContext.Internal.Vcd (writeFiles)
 
 -- | How a waveform is recorded and written.
@@ -197,17 +195,6 @@ record ::
 record opts path start =
   withRecordingFrom start (if spill opts == OnDisk then Just (spillPath path) else Nothing)
 
-{- | Why a waveform is written. A 'Failure' waveform is marked in its
-comment (a VCD's @$comment@ line, an FST's comment), so that a later passing
-run can tell it from one written on purpose ('removeFailureWaveform').
--}
-data Origin = Requested | Failure
-  deriving (Eq)
-
--- | The comment of a 'Failure' waveform.
-failureComment :: String
-failureComment = "clash-circuit-context: the run of a failing test"
-
 {- | Write a recording as the options' waveform, @\<path\>.vcd@ or @.fst@ and
 its @.json@ sidecar (making missing directories), over the window
 @[start, stop)@ in ps, and then delete its spill file. Returns the
@@ -244,10 +231,9 @@ writeWaveformFiles ::
   Recording ->
   IO (Either String FilePath)
 writeWaveformFiles origin opts path (start, stop) rec = do
-  written <- writer comment window rec (waveformPath (format opts) path)
+  written <- writer origin window rec (waveformPath (format opts) path)
   traverse (const (makeAbsolute (waveformPath (format opts) path))) written
  where
-  comment = if origin == Failure then failureComment else "No comment"
   window = (start `div` timescale rec, ticks rec stop)
   writer = case format opts of
     VCD -> writeFiles
@@ -258,35 +244,20 @@ discard :: Recording -> IO ()
 discard = mapM_ removePathForcibly . recordingSpill
 
 {- | Delete @\<path\>.vcd@ or @.fst@, and its @.json@, if it is the waveform
-of a failing run ('Failure'). A waveform written on purpose (by
-@writeWaveform@) is kept, also when another test with the same path passes.
+of a failing run ('Failure'), as its sidecar says. A waveform written on
+purpose (by @writeWaveform@) is kept, also when another test with the same
+path passes. Only the sidecar is read, not the waveform.
 -}
 removeFailureWaveform :: FilePath -> IO ()
 removeFailureWaveform path = do
-  failed <- filterM isFailure [VCD, FST]
-  mapM_ (removePathForcibly . (`waveformPath` path)) failed
-  -- The sidecar goes with the last waveform of its path.
-  left <- filterM (doesFileExist . (`waveformPath` path)) [VCD, FST]
-  when (not (null failed) && null left) $
-    removePathForcibly (path <.> "json")
- where
-  isFailure VCD = do
-    -- Only the header: the VCD can be gigabytes.
-    header <-
-      try
-        ( withFile
-            (waveformPath VCD path)
-            ReadMode
-            (\h -> mapM (const (hGetLine h)) [1 :: Int .. 3])
-        )
-    pure $ case header of
-      Right ls -> ("$comment " <> failureComment <> " $end") `elem` ls
-      Left (_ :: IOException) -> False
-  isFailure FST = do
-    there <- doesFileExist (waveformPath FST path)
-    if there
-      then (== Just True) <$> Fst.hasComment (waveformPath FST path) failureComment
-      else pure False
+  failed <- failureWaveform (path <.> "json")
+  case [fmt | fmt <- [VCD, FST], Just (extension fmt) == failed] of
+    [] -> pure ()
+    fmt : _ -> do
+      removePathForcibly (waveformPath fmt path)
+      -- The sidecar goes with the last waveform of its path.
+      left <- filterM (doesFileExist . (`waveformPath` path)) [VCD, FST]
+      when (null left) (removePathForcibly (path <.> "json"))
 
 {- | Say on stderr what became of the waveform of this path: where it
 landed (as the absolute path 'save' gives), or why there is none.

@@ -5,9 +5,8 @@ Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
 
 A binding to the FST writer of GTKWave's @libfst@ (vendored in
 @cbits\/libfst@, MIT). Only what the waveform writer here uses: scopes, wire
-vars, and value changes as @0@/@1@/@x@/@z@ text, most significant bit first;
-and, to tell a failing test's waveform from one written on purpose, its
-comment ('hasComment').
+vars, and value changes as @0@/@1@/@x@/@z@ text, most significant bit first.
+Nothing here reads an FST file.
 
 Times are in ps. The writer requires them to go up: a value for a time before
 the last 'timeChange' cannot be written.
@@ -23,7 +22,6 @@ module Clash.CircuitContext.Internal.Fst (
   timeChange,
   valueChange,
   close,
-  hasComment,
 ) where
 
 import Data.Word (Word32, Word64)
@@ -66,8 +64,6 @@ foreign import ccall unsafe "fstWriterEmitValueChange"
   c_valueChange :: Ptr Context -> Word32 -> CString -> IO ()
 foreign import ccall safe "fstWriterClose"
   c_close :: Ptr Context -> IO ()
-foreign import ccall safe "ccc_fst_has_comment"
-  c_hasComment :: CString -> CString -> IO CInt
 
 {- | Open an FST file for writing, in ps, with this comment. Also creates
 @\<path\>.hier@, which holds the declarations until 'close' moves them into
@@ -114,12 +110,3 @@ valueChange (Writer ctx) h bs = ByteString.unsafeUseAsCString bs (c_valueChange 
 -- | Write the declarations and the last block, and close the file.
 close :: Writer -> IO ()
 close (Writer ctx) = c_close ctx
-
-{- | Does the FST file at this path have this comment? 'Nothing' when it
-cannot be read as an FST file.
--}
-hasComment :: FilePath -> String -> IO (Maybe Bool)
-hasComment path comment =
-  withCString path $ \p -> withCString comment $ \c -> do
-    r <- c_hasComment p c
-    pure (if r < 0 then Nothing else Just (r == 1))

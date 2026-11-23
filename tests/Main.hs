@@ -13,6 +13,8 @@
 -}
 module Main where
 
+import Control.Monad (unless)
+
 import Test.Tasty (
   DependencyType (AllFinish, AllSucceed),
   defaultMain,
@@ -24,6 +26,7 @@ import qualified Example.Hedgehog
 import qualified Example.SingleRun
 import qualified Test.Cancel
 import qualified Test.Capture
+import Test.Child (childMain)
 import qualified Test.ExampleOutput
 import qualified Test.Formats
 import qualified Test.Memory
@@ -31,7 +34,15 @@ import qualified Test.Recorder
 
 main :: IO ()
 main = do
-  Example.Hedgehog.scrubExamples
+  -- A test that runs in a process of its own ("Test.Child") runs this
+  -- executable again, which then runs only that test's child.
+  child <- childMain Test.Formats.children
+  unless child $ do
+    Example.Hedgehog.scrubExamples
+    suite
+
+suite :: IO ()
+suite =
   defaultMain $
     -- The memory test measures the whole process, so it runs alone, last.
     dependentTestGroup

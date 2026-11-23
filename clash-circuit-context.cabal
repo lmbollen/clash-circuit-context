@@ -119,7 +119,6 @@ library
   -- GTKWave's libfst (MIT), vendored at gtkwave/libfst 17f6a5d, for the FST
   -- writer in Clash.CircuitContext.Internal.Fst. It needs zlib.
   c-sources:
-    cbits/ccc_fst.c
     cbits/libfst/fastlz.c
     cbits/libfst/fstapi.c
     cbits/libfst/lz4.c
@@ -183,6 +182,7 @@ test-suite waveform-tests
     SpillMain
     Test.Cancel
     Test.Capture
+    Test.Child
     Test.ExampleOutput
     Test.Formats
     Test.Memory
@@ -198,6 +198,7 @@ test-suite waveform-tests
     directory,
     filepath,
     hedgehog,
+    process,
     tasty >=1.5.4,
     tasty-hedgehog,
     tasty-hunit,

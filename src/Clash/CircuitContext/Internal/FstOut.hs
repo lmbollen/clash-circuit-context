@@ -34,10 +34,12 @@ import Clash.CircuitContext.Internal.Recorder (
   withReader,
  )
 import Clash.CircuitContext.Internal.Vcd (
+  Origin,
   aliasMap,
   ioLeft,
   namedSignals,
   naturalKey,
+  originComment,
   shownWindow,
   sourceOrder,
   splitPath,
@@ -46,8 +48,8 @@ import Clash.CircuitContext.Internal.Vcd (
  )
 
 {- | Write a recording's waveform over the window @[start, stop)@, in units
-of its timescale (for a single domain: cycles): the FST at this path, with
-this comment, and its typed-waveform sidecar beside it, with extension
+of its timescale (for a single domain: cycles), for this reason: the FST at
+this path, and its typed-waveform sidecar beside it, with extension
 @.json@. Creates the directory.
 
 As 'Clash.CircuitContext.Internal.Vcd.writeFiles' does: both files go
@@ -55,8 +57,8 @@ through a temporary file and a rename, the sidecar lands first, and on
 'Left' (see 'shownWindow'; also when a file cannot be written) neither is
 written. The FST ends at @stop@, as the VCD does.
 -}
-writeFst :: String -> (Int, Int) -> Recording -> FilePath -> IO (Either String ())
-writeFst comment window rec path = case shownWindow rec window of
+writeFst :: Origin -> (Int, Int) -> Recording -> FilePath -> IO (Either String ())
+writeFst origin window rec path = case shownWindow rec window of
   Left err -> pure (Left err)
   Right shown -> ioLeft (Right () <$ writeShown shown)
  where
@@ -79,7 +81,7 @@ writeFst comment window rec path = case shownWindow rec window of
             (Tree Map.empty [])
             (List.sortOn (order . fst) named)
         groupOf n = Map.findWithDefault n n aliasOf
-      w <- Fst.create fTmp Fst.Zlib comment
+      w <- Fst.create fTmp Fst.Zlib (originComment origin)
       flip onException (Fst.close w) $ do
         handles <- declareTree w groupOf tree
         let reps = [(h, s) | (n, s) <- named, Map.notMember n aliasOf, Just h <- [Map.lookup n handles]]
@@ -98,7 +100,7 @@ writeFst comment window rec path = case shownWindow rec window of
         -- The end of the window, so that a viewer shows its last cycle whole.
         Fst.timeChange w (stop * scale)
       Fst.close w
-      writeSidecar rec path
+      writeSidecar origin "fst" rec path
       renameFile fTmp path
    where
     -- A signal's records as (time, value), then 'Nothing' where it ends.

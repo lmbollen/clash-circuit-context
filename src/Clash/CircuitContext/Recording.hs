@@ -70,7 +70,7 @@ import Clash.CircuitContext.Internal.Recorder (
   timescale,
   withReader,
  )
-import Clash.CircuitContext.Internal.Vcd (writeFiles)
+import Clash.CircuitContext.Internal.Vcd (Origin (Requested), writeFiles)
 import Clash.CircuitContext.Internal.Waveform (Format (..))
 
 {- | The time from which the recording has cycles, in units of the timescale
@@ -112,7 +112,7 @@ empty or starts at or after 'recordingEnd', when a name has a character VCD
 does not allow, or when a file cannot be written.
 -}
 writeVCD :: (Natural, Natural) -> Recording -> FilePath -> IO (Either String ())
-writeVCD = writeFiles "No comment" . toInts
+writeVCD = writeFiles Requested . toInts
 
 {- | 'writeVCD', as an FST at this path: the same signals, names, scopes and
 window, with times in ps. Compressed, so much smaller than the VCD.
@@ -120,7 +120,7 @@ window, with times in ps. Compressed, so much smaller than the VCD.
 'Left', and no file written, as for 'writeVCD'.
 -}
 writeFST :: (Natural, Natural) -> Recording -> FilePath -> IO (Either String ())
-writeFST = writeFst "No comment" . toInts
+writeFST = writeFst Requested . toInts
 
 -- | A window as the writers take it; beyond 'maxBound' is the end of time anyway.
 toInts :: (Natural, Natural) -> (Int, Int)
