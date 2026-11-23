@@ -27,6 +27,7 @@ module Test.SideConditions (
   checked,
   logarithm,
   idleWithoutExtra,
+  unknownOperand,
 ) where
 
 import Clash.Prelude
@@ -86,6 +87,20 @@ idleWithoutExtra p = cycles
  where
   cycles = undefinedOf p
 {-# OPAQUE idleWithoutExtra #-}
+
+{- | @KnownNat (n + m)@ with @m@ unknown: GHC leaves @KnownNat m@, of which
+there is no instance, so @total@ is not recorded, and the plugin says so as
+an answer (no instance for @KnownNat m@), not as a guess.
+-}
+unknownOperand ::
+  (HasCircuitContext, KnownNat n) =>
+  SNat n ->
+  SNat m ->
+  Signal System (BitVector (n + m))
+unknownOperand n _ = total
+ where
+  total = undefinedOf n
+{-# OPAQUE unknownOperand #-}
 
 -- | A signal of undefined values, of a type GHC need not know the width of.
 undefinedOf :: proxy -> Signal System a
