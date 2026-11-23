@@ -19,9 +19,24 @@ module Test.Formats (tests, children) where
 
 import qualified Prelude as P
 
-import Control.Concurrent (threadDelay)
-import Control.Exception (AsyncException (ThreadKilled), SomeException, evaluate, throwIO, try)
-import Control.Monad (forM_, when)
+import Control.Concurrent (
+  forkFinally,
+  killThread,
+  newEmptyMVar,
+  putMVar,
+  takeMVar,
+  threadDelay,
+  yield,
+ )
+import Control.Exception (
+  AsyncException (ThreadKilled),
+  IOException,
+  SomeException,
+  evaluate,
+  throwIO,
+  try,
+ )
+import Control.Monad (forM, forM_, when)
 import Data.List (isInfixOf, isPrefixOf)
 import Foreign.Ptr (plusPtr)
 import System.Directory (
@@ -37,6 +52,7 @@ import System.Directory (
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath ((<.>), (</>))
 import System.IO.Unsafe (unsafePerformIO)
+import System.Posix.Files (readSymbolicLink)
 import System.Posix.IO (OpenMode (ReadOnly), closeFd, defaultFileFlags, fdReadBuf, openFd)
 import System.Timeout (timeout)
 
@@ -162,6 +178,29 @@ children =
         "formats-stopped-recorded"
         (() <$ evaluate (P.sum (P.map P.toInteger (sampleN 100 counter))))
     )
+  ,
+    ( "formats-cancel-storm"
+    , do
+        -- Many recordings, each cancelled at a different moment: none may
+        -- leave its spill file open. It counts the open files of the process.
+        let dir = pathOf "formats-cancel-storm"
+        removePathForcibly dir
+        createDirectoryIfMissing True dir
+        ends <- forM [1 .. 20000 :: Int] $ \i -> do
+          ended <- newEmptyMVar
+          run <-
+            forkFinally
+              (withRecording (Just (dir </> P.show (i `P.mod` 50) <.> "spill")) (pure ()))
+              (\_ -> putMVar ended ())
+          P.sequence_ (P.replicate (i `P.mod` 40) yield)
+          killThread run
+          pure ended
+        P.mapM_ takeMVar ends
+        fds <- listDirectory "/proc/self/fd"
+        links <- P.mapM (try @IOException . readSymbolicLink . ("/proc/self/fd" </>)) fds
+        [l | P.Right l <- links, dir `isInfixOf` l] @?= []
+        removePathForcibly dir
+    )
   ]
  where
   stoppedRun :: String -> ((HasCircuitContext) => IO ()) -> IO ()
@@ -265,6 +304,8 @@ tests =
           (("the run was stopped; what it recorded is in " <> spillFile) `isInfixOf` err')
         existing "formats-stopped-recorded" ["spill"] >>= (@?= [True])
         removeFile spillFile
+    , testCase "a recording cancelled at any moment leaves no file open"
+        $ assertChild "formats-cancel-storm" []
     , testCase "a cancelled run in memory leaves nothing" $ do
         let name = "formats-cancelled-in-memory"
         scrub [name]

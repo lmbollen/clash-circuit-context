@@ -100,7 +100,14 @@ module Clash.CircuitContext.Internal.Recorder (
   ticks,
 ) where
 
-import Control.Concurrent (ThreadId, forkIO, killThread, myThreadId, threadDelay, throwTo)
+import Control.Concurrent (
+  ThreadId,
+  forkIOWithUnmask,
+  killThread,
+  myThreadId,
+  threadDelay,
+  throwTo,
+ )
 import Control.Concurrent.MVar (
   MVar,
   modifyMVar,
@@ -116,6 +123,7 @@ import Control.Exception (
   bracket,
   displayException,
   evaluate,
+  finally,
   fromException,
   onException,
   try,
@@ -277,14 +285,15 @@ newRecorder spill start = do
     Just path -> do
       createDirectoryIfMissing True (takeDirectory path)
       h <- openBinaryFile path WriteMode
-      -- Each block is written whole, so that a stopped run leaves whole blocks.
-      hSetBuffering h NoBuffering
-      let header =
-            Builder.byteString magic
-              <> Builder.word8 spillVersion
-              <> Builder.word64LE (fromIntegral start)
-      ByteStringLazy.hPut h (Builder.toLazyByteString header)
-      pure (ToFile h (ByteString.length magic + 9))
+      flip onException (hClose h) $ do
+        -- Each block is written whole, so that a stopped run leaves whole blocks.
+        hSetBuffering h NoBuffering
+        let header =
+              Builder.byteString magic
+                <> Builder.word8 spillVersion
+                <> Builder.word64LE (fromIntegral start)
+        ByteStringLazy.hPut h (Builder.toLazyByteString header)
+        pure (ToFile h (ByteString.length magic + 9))
   rec <-
     Recorder spill start
       <$> newMVar store
@@ -293,7 +302,9 @@ newRecorder spill start = do
       <*> newIORef 0
       <*> newIORef Nothing
   case store of
-    ToFile{} -> forkIO (ticker rec) >>= writeIORef (rTicker rec) . Just
+    -- Unmasked, also when the recorder is made under 'Exception.mask': the
+    -- ticker waits between ticks, and must be stoppable there.
+    ToFile{} -> forkIOWithUnmask (\unmask -> unmask (ticker rec)) >>= writeIORef (rTicker rec) . Just
     _ -> pure ()
   pure rec
 
@@ -624,10 +635,10 @@ holdsCycles rec = recordingEndPs rec > recordingStartPs rec
 
 {- | Finish a recording that ends at this time (ps): make every buffer a
 chunk, mark the end in the spill file, and close it. A cycle recorded after
-this is dropped.
+this is dropped. The spill file is closed also when writing to it fails.
 -}
 closeRecorder :: Recorder -> Int -> IO Recording
-closeRecorder rec end = do
+closeRecorder rec end = flip finally closeStore $ do
   readIORef (rTicker rec) >>= mapM_ killThread
   -- A last tick: the progress of a signal without new records (one that has
   -- not changed since the last tick) is in no chunk the flush below writes.
@@ -649,11 +660,12 @@ closeRecorder rec end = do
           }
       )
   _ <- writeBlock rec 4 (varint end) noRaw
-  modifyMVar_ (rStore rec) $ \store -> case store of
-    ToFile h _ -> hClose h >> pure Closed
-    _ -> pure Closed
   luts <- reverse <$> readIORef (rLuts rec)
   pure (Recording (rSpill rec) frozen (rStart rec) end luts)
+ where
+  closeStore = modifyMVar_ (rStore rec) $ \store -> case store of
+    ToFile h _ -> hClose h >> pure Closed
+    _ -> pure Closed
 
 -- | A record: from this cycle on, the signal has this value ('Nothing': not evaluated).
 data Change = Change !Int !(Maybe Value)

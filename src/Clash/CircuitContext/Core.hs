@@ -149,6 +149,7 @@ import Control.Exception (
   throwIO,
   try,
  )
+import qualified Control.Exception as Exception (mask, uninterruptibleMask_)
 import Control.Monad (forM, forM_, unless)
 import Data.Bits (xor, (.&.))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
@@ -396,24 +397,32 @@ withRecordingFrom ::
   Maybe FilePath ->
   ((HasCircuitContext) => IO r) ->
   IO (Either SomeException r, Recording)
-withRecordingFrom start spill k = do
+withRecordingFrom start spill k = Exception.mask $ \restore -> do
+  -- Masked, so that a cancellation cannot leave the recorder's spill file
+  -- open and its thread running: only the action and finishing the traces
+  -- can be cancelled, and closing the recorder, which waits for nothing but
+  -- its own thread's last write, cannot be.
   rec <- newRecorder spill start
   taps <- newIORef []
   ords <- newIORef emptyOrdinals
   r <-
     try
-      ( let ?circuitContext = CircuitContext [] (Just (Live rec taps)) (Just ords) []
-         in k
+      ( restore
+          ( let ?circuitContext = CircuitContext [] (Just (Live rec taps)) (Just ords) []
+             in k
+          )
       )
   case r of
     Left err | Just (_ :: SomeAsyncException) <- fromException err -> do
       -- Stop now: no cycle is evaluated to finish the traces.
       stopped rec
       throwIO err
-    _ -> (,) r <$> finishRecording rec taps `onException` stopped rec
+    _ -> do
+      end <- restore (finishTraces rec taps) `onException` stopped rec
+      (,) r <$> Exception.uninterruptibleMask_ (closeRecorder rec end)
  where
   stopped rec = do
-    recording <- closeRecorder rec =<< recorderEnd rec
+    recording <- Exception.uninterruptibleMask_ (closeRecorder rec =<< recorderEnd rec)
     -- Nothing to recover from a spill file without a recorded cycle.
     if holdsCycles recording
       then mapM_ stoppedMessage spill
@@ -433,7 +442,7 @@ stoppedMessage f = do
         <> " clash-circuit-context), or with recoverWaveform or writeSpill"
     )
 
-{- | Finish every trace up to the end of the run, then close the recorder.
+{- | Finish every trace up to the end of the run, and return that end (ps).
 
 The end is the furthest time any signal was forced to. A trace's last forced
 cycle is still in its tap ('TraceTap'), so it counts one cycle more than it
@@ -447,8 +456,8 @@ and a design without a last stage (a stage that calls itself) would never
 stop. Recording its last cycle can register a trace in turn, which records
 the same way, until no new trace registers.
 -}
-finishRecording :: Recorder -> IORef [(Sig, IORef TraceTap)] -> IO Recording
-finishRecording rec tapsRef = do
+finishTraces :: Recorder -> IORef [(Sig, IORef TraceTap)] -> IO Int
+finishTraces rec tapsRef = do
   taps <- takeTaps
   forced <- forM taps $ \(sig, ref) -> do
     TraceTap touched next _ <- readIORef ref
@@ -466,7 +475,7 @@ finishRecording rec tapsRef = do
       unless (null new) (forM_ new (\t -> evaluated t >>= finish t) >> evaluatedOfNew)
   forM_ taps (\t@(sig, _) -> finish t (upto sig))
   evaluatedOfNew
-  closeRecorder rec end
+  pure end
  where
   takeTaps = atomicModifyIORef' tapsRef (\ts -> ([], ts))
   -- Record the cycles of a trace up to this one, exclusive.
@@ -688,7 +697,7 @@ packed TAIL ('TraceTap'), which references no history.
 Value semantics are unchanged: @pack@ per sample via 'packMaskValue'
 (undefined bits masked, exceptions rendered @x@), and 'sample_lazy' so a
 partial binding is never forced outside the guard. Cycles the design never
-forces are evaluated from the tail when the run ends ('finishRecording'). No
+forces are evaluated from the tail when the run ends ('finishTraces'). No
 duplicate-key check: keys carry fresh leaf ordinals by construction.
 -}
 registerTrace ::
@@ -713,7 +722,7 @@ registerTrace live period adt key sig = do
   -- Mark the tap TOUCHED when the consumer takes the signal's first cell.
   -- Recording proper runs one cell behind (see 'tap'), so without this a
   -- run that forced ONLY cell 0 leaves the tap in its initial state and
-  -- 'finishRecording' cannot tell it from a signal nobody forced — a
+  -- 'finishTraces' cannot tell it from a signal nobody forced — a
   -- one-cycle simulation would capture nothing. Marking demands no design
   -- value, so it cannot re-enter a combinational knot.
   touchOnce :: IORef TraceTap -> Signal dom a -> Signal dom a
