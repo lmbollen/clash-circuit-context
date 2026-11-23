@@ -971,11 +971,16 @@ solvablePred getEnvs reduceFam totalClasses knownNatN givenPreds = go
       -- "no instance" would be a lie the reader cannot check.
       NoPick -> pure (gaveUp pred0)
 
+  -- GHC picks an instance only when it is the one match AND no other
+  -- instance could match once the type's variables are known (a potential
+  -- unifier: @BitPack (T Int)@ beside @BitPack (T a)@, for @T b@). With one,
+  -- GHC reports overlapping instances, so the oracle picks none either.
   lookupInstance cls args = do
     ienvs <- getEnvs
     pure $ case GHC.lookupInstEnv False ienvs cls args of
-      ([(inst, dfunTys)], _, _)
-        | Just tys <- sequence dfunTys ->
+      ([(inst, dfunTys)], unifiers, _)
+        | GHC.nullUnifiers unifiers
+        , Just tys <- sequence dfunTys ->
             let
               (tvs, theta, _, _) = GHC.instanceSig inst
              in
@@ -1009,7 +1014,9 @@ data Lookup
     Picked [API.PredType]
   | -- | No instance matches.
     NoMatch
-  | -- | Instances match, but none is the one.
+  | {- | Instances match, but GHC would not pick one: more than one
+    matches, or another might once the type's variables are known.
+    -}
     NoPick
 
 hasMetas :: API.PredType -> Bool

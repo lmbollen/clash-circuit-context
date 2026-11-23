@@ -4,6 +4,7 @@
 {-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE DerivingStrategies #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE GeneralizedNewtypeDeriving #-}
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE RankNTypes #-}
@@ -41,8 +42,9 @@ Two halves, both exercised by this one module:
   translate but nobody declared; its plain values, its signal of lists and
   its signal of the declared 'Names' must NOT warn),
   @x-circuit-context-undecided@ (@held@, whose 'Awkward' payload has a
-  'BitPack' instance the oracle cannot recurse into, and @wider@, whose width
-  only @ghc-typelits-knownnat@ knows) and
+  'BitPack' instance the oracle cannot recurse into, @wider@, whose width
+  only @ghc-typelits-knownnat@ knows, and @kept@, whose 'BitPack' instance
+  GHC does not pick) and
   @x-circuit-context-undescribed@ (@bare@, recorded as raw bits for want of
   a @Waveform@ instance). @check.sh@ greps the build log for all of them,
   because a diagnostic that stops firing is exactly as silent as the bug it
@@ -108,6 +110,38 @@ instance (KnownNat n, 1 <= n) => BitPack (Awkward n) where
 
 unAwkward :: (KnownNat n) => Awkward n -> Int
 unAwkward (Awkward u) = fromIntegral u
+
+{- | A payload with two 'BitPack' instances: one for every tag, and one for
+the 'Int' tag. For a tag that is not known, GHC picks neither, because the
+'Int' one might be the one that applies.
+-}
+newtype Overlapped tag = Overlapped (Unsigned 4)
+  deriving stock (Generic)
+  deriving anyclass (NFDataX)
+
+instance {-# OVERLAPPABLE #-} BitPack (Overlapped tag) where
+  type BitSize (Overlapped tag) = 4
+  pack (Overlapped u) = pack u
+  unpack = Overlapped . unpack
+
+instance {-# OVERLAPPING #-} BitPack (Overlapped Int) where
+  type BitSize (Overlapped Int) = 4
+  pack (Overlapped u) = complement (pack u)
+  unpack = Overlapped . unpack . complement
+
+unOverlapped :: Overlapped tag -> Int
+unOverlapped (Overlapped u) = fromIntegral u
+
+{- | A tag that is not known: the oracle must not pick the general instance
+when GHC would not, so @kept@ is not recorded, and the oracle says it could
+not decide. It used to pick it, and the module did not compile.
+-}
+anyTag ::
+  (HasCircuitContext) => Signal System (Overlapped tag) -> Signal System (Overlapped tag)
+anyTag inp = kept
+ where
+  kept = inp
+{-# OPAQUE anyTag #-}
 
 {- | A width that only @ghc-typelits-knownnat@ knows from @KnownNat n@, in a
 suite that does not load it: nothing gives @KnownNat (n + 1)@, so @wider@
@@ -385,6 +419,9 @@ top inp =
     + DeclGroups.etaReduced resetGen inp
     + generalised inp
     + (unpack . resize <$> widerByOne (pack <$> inp))
+    + ( unOverlapped
+          <$> anyTag (Overlapped . fromIntegral <$> inp :: Signal System (Overlapped Bool))
+      )
 {-# OPAQUE top #-}
 
 -- | Both local functions of an unknown width, from a signal of @top@'s.
@@ -487,6 +524,10 @@ main = do
         , [ "a width nothing knows was recorded: " <> show p
           | p <- paths
           , P.last p == "wider"
+          ]
+        , [ "a payload of an instance GHC does not pick was recorded: " <> show p
+          | p <- paths
+          , P.last p == "kept"
           ]
         , [ "a synonym from an earlier declaration group not seen: expected "
               <> show p
