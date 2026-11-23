@@ -83,7 +83,10 @@ reaches them:
   calls of such a helper are told apart only by the calls inside it. Give
   the helper a signature with `HasCircuitContext`.
 - The instances made by a class method, and by a function with an
-  annotation other than `NoCircuitScope`.
+  annotation other than `NoCircuitScope`. The plugin does not split these
+  functions. They keep the call sites as an argument, and Clash makes a
+  variant of a function for each constant argument: in HDL, such a
+  function with `OPAQUE` becomes one module for each call site (see [How to generate HDL](../how-to/hdl.md)).
 
 For how signals and scopes are ordered and named in a waveform, see
 [Waveform files](../reference/waveform-files.md#the-waveform).
