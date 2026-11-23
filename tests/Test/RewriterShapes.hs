@@ -11,6 +11,11 @@
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE NoStarIsType #-}
+-- One pragma: the plugins run in the order given, and a formatter sorts
+-- separate pragmas.
+{-# OPTIONS_GHC -fplugin=GHC.TypeLits.Normalise
+  -fplugin=GHC.TypeLits.KnownNat.Solver
+  -fplugin=Clash.CircuitContext.Plugin #-}
 
 {- | Shapes from a downstream design (bittide) where the oracle must NOT
 decide in GHC's rewriter. In each, a given holds the same flag as the

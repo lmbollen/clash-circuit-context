@@ -3,6 +3,11 @@
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE NoStarIsType #-}
+-- One pragma: the plugins run in the order given, and a formatter sorts
+-- separate pragmas.
+{-# OPTIONS_GHC -fplugin=GHC.TypeLits.Normalise
+  -fplugin=GHC.TypeLits.KnownNat.Solver
+  -fplugin=Clash.CircuitContext.Plugin #-}
 
 {- |
 Copyright  :  (C) 2026, QBayLogic B.V.

@@ -23,7 +23,10 @@ run cabal test adt-sidecar -j1 "$@"
 # compile-time diagnostics (grepped from the build log below).
 runlog cabal test plugin-diagnostics -j1 "$@"
 # The plugin after the typelits solver plugins: compiling this suite is the
-# test that the oracle leaves GHC's rounds of plugin progress to them.
+# test that the oracle leaves GHC's rounds of plugin progress to them. Each
+# module is held to the rounds it takes without the plugin, and one more
+# where the oracle declines in its solver stage (see the suite's
+# ghc-options), so a change that adds one does not compile.
 run cabal test typelits-plugins -j1 "$@"
 # The Example level (usage, kept honest by running) and the Test level
 # (recorder properties, the capture contract, and the tasty-sequenced tests

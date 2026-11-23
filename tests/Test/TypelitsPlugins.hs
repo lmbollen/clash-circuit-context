@@ -6,16 +6,24 @@
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE NoStarIsType #-}
+-- One pragma: the plugins run in the order given, and a formatter sorts
+-- separate pragmas.
+{-# OPTIONS_GHC -fplugin=GHC.TypeLits.Normalise
+  -fplugin=GHC.TypeLits.KnownNat.Solver
+  -fplugin=Clash.CircuitContext.Plugin #-}
 
 {- | The plugin beside the typelits solver plugins, enabled in the order a
 design usually lists them: @ghc-typelits-natnormalise@, then
-@ghc-typelits-knownnat@, then this plugin (see the suite's @ghc-options@).
+@ghc-typelits-knownnat@, then this plugin. "Test.ExtraSolverFirst" and
+"Test.DeclinedWidths" enable @ghc-typelits-extra@'s solver first.
 
 GHC stops after four rounds in which a plugin made progress
 (@-fconstraint-solver-iterations@). The oracle used to take two of them for
 each binding that the typelits plugins had to rewrite first, and @ptr@ below
-then failed to compile with @solveWanteds: too many iterations@. The
-compile is the regression test; the run checks that the bindings are traced.
+then failed to compile with @solveWanteds: too many iterations@. Without
+this plugin every module of the suite compiles in two rounds, and the suite
+is held to that (see its @ghc-options@): the compile is the regression test.
+The run checks that the bindings are traced.
 
 "Test.RewriterShapes" holds the shapes where the oracle must not decide
 early, and @check.sh@ checks its warnings. The run checks the one of them
@@ -37,8 +45,11 @@ import Clash.CircuitContext.Recording (
   discardRecording,
   recordedChanges,
   recordedSignals,
+  signalDescribed,
  )
 
+import qualified Test.DeclinedWidths as DeclinedWidths
+import Test.ExtraSolverFirst (ptrExtra)
 import Test.RewriterShapes (stepped)
 import qualified Test.SideConditions as SideConditions
 
@@ -113,6 +124,27 @@ main = do
   check "addr is not recorded without 1 <= n" ("unchecked" `P.notElem` scopes)
   check "a Log2 width is not recorded" ("logarithm" `P.notElem` scopes)
   discardRecording rec3
+
+  -- The same pointer, with ghc-typelits-extra's solver first; and the
+  -- payloads that the oracle declines in its solver stage.
+  (r4, rec4) <-
+    withRecording
+      "waveforms/typelits-plugins-extra-first.spill"
+      ( evaluate
+          ( P.sum (P.map P.toInteger (sampleN 6 (ptrExtra @2 (pure True))))
+              P.+ P.toInteger (P.length (sampleN 2 (DeclinedWidths.foos @3 (pure 0))))
+              P.+ P.sum (P.map P.toInteger (sampleN 2 (DeclinedWidths.bars @3 (pure 0))))
+          )
+      )
+  check "the extra-first run finished" (P.either (P.const False) (P.const True) r4)
+  let
+    leaves4 = [(leaf (signalKey s), s) | s <- recordedSignals rec4]
+  check "next is traced with the extra solver first" ("next" `P.elem` P.map P.fst leaves4)
+  check
+    "a payload without Waveform is recorded, as raw bits"
+    (P.map (signalDescribed . P.snd) (P.filter ((P.== "foo") . P.fst) leaves4) P.== [P.False])
+  check "a payload without BitPack is not recorded" ("bar" `P.notElem` P.map P.fst leaves4)
+  discardRecording rec4
  where
   -- A key is @scope\@ordinal\@callsite.name\@ordinal\@callsite@.
   leaf = P.takeWhile (P./= '@') . P.reverse . P.takeWhile (P./= '.') . P.reverse

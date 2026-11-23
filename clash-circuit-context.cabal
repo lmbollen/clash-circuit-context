@@ -241,14 +241,19 @@ test-suite plugin-diagnostics
 
   ghc-options: -fplugin=Clash.CircuitContext.Plugin
 
--- The plugin beside the typelits solver plugins, in the order a design
--- usually lists them. Compiling the suite is the regression test: the oracle
--- must not use up GHC's rounds of plugin progress.
+-- The plugin beside the typelits solver plugins, in the orders designs list
+-- them; each module enables them in its own OPTIONS_GHC. Compiling the suite
+-- is the regression test: the oracle must not use up GHC's rounds of plugin
+-- progress. Every module here compiles in two rounds without this plugin, so
+-- the suite is held to two; Test.DeclinedWidths, where the oracle takes a
+-- round of its own, says why it is held to three.
 test-suite typelits-plugins
   import: common-options
   type: exitcode-stdio-1.0
   main-is: Test/TypelitsPlugins.hs
   other-modules:
+    Test.DeclinedWidths
+    Test.ExtraSolverFirst
     Test.RewriterShapes
     Test.SideConditions
 
@@ -258,14 +263,12 @@ test-suite typelits-plugins
     clash-circuit-context,
     clash-prelude,
     directory,
+    ghc-typelits-extra,
     ghc-typelits-knownnat,
     ghc-typelits-natnormalise,
     tagged,
 
-  ghc-options:
-    -fplugin=GHC.TypeLits.Normalise
-    -fplugin=GHC.TypeLits.KnownNat.Solver
-    -fplugin=Clash.CircuitContext.Plugin
+  ghc-options: -fconstraint-solver-iterations=2
 
 -- Both halves of the combined output from one simulation: this package's
 -- hierarchy and the clash-shockwaves ADT sidecar, with no manual tracing calls.
