@@ -45,10 +45,13 @@ module Clash.CircuitContext.Internal.Waveform (
   simulate,
   record,
   Origin (..),
+  Unsaved (..),
+  unsavedReason,
   save,
   discard,
   removeFailureWaveform,
   announce,
+  noWaveform,
   recover,
 ) where
 
@@ -322,9 +325,9 @@ waveform's ABSOLUTE path: a relative path is relative to the working
 directory, which differs between ways of running a suite. 'Left', with the
 reason, and nothing written, when the run recorded nothing in the window (the
 reason names the window, and the end of the run, in the window's cycles) or
-the files could not be written; an earlier file is then left alone. The
-spill file of a run that recorded cycles is then kept, for 'recover', and
-the reason says where it is.
+the files could not be written ('Unsaved'); an earlier file is then left
+alone. The spill file of a run that recorded cycles is then kept, for
+'recover', and the reason says where it is.
 -}
 save ::
   Origin ->
@@ -332,16 +335,40 @@ save ::
   FilePath ->
   Window ->
   Recording ->
-  IO (Either String FilePath)
+  IO (Either Unsaved FilePath)
 save origin opts path window rec = do
   written <- case windowShown rec (tickWindow rec (windowPs window)) of
-    Left why -> pure (Left (unshownInCycles window why))
-    Right _ -> writeWaveformFiles origin opts path (windowPs window) rec
+    Left why -> pure (Left (NothingShown (unshownInCycles window why)))
+    Right _ ->
+      either (Left . Unwritable) Right
+        <$> writeWaveformFiles origin opts path (windowPs window) rec
   case (written, recordingSpill rec) of
-    (Left err, Just spillFile) | holdsCycles rec -> do
+    (Left unsaved, Just spillFile) | holdsCycles rec -> do
       kept <- makeAbsolute spillFile
-      pure (Left (err <> "; what the run recorded is kept in " <> kept))
+      let keep why = why <> "; what the run recorded is kept in " <> kept
+      pure . Left $ case unsaved of
+        NothingShown why -> NothingShown (keep why)
+        Unwritable why -> Unwritable (keep why)
     _ -> discard rec >> pure written
+
+{- | Why 'save' wrote no waveform, in words: nothing to write, or files that
+could not be written. A caller that asked for the waveform (@writeWaveform@)
+throws for the second; nothing to write is a message.
+-}
+data Unsaved
+  = {- | The run recorded nothing in the window: nothing was traced or
+    probed, no cycle was evaluated, or the window shows none.
+    -}
+    NothingShown String
+  | {- | The files could not be written: a file system error, or a name
+    that the format does not allow.
+    -}
+    Unwritable String
+
+-- | Why 'save' wrote no waveform.
+unsavedReason :: Unsaved -> String
+unsavedReason (NothingShown why) = why
+unsavedReason (Unwritable why) = why
 
 -- | 'save', but keep the spill file.
 writeWaveformFiles ::
@@ -408,7 +435,11 @@ announce :: FilePath -> Either String FilePath -> IO ()
 announce path written =
   say $ case written of
     Right absolute -> "wrote " <> absolute
-    Left err -> path <> ": no waveform written: " <> err
+    Left err -> noWaveform path err
+
+-- | That the waveform of this path was not written, and why.
+noWaveform :: FilePath -> String -> String
+noWaveform path err = path <> ": no waveform written: " <> err
 
 {- | Write the waveform of a run that was stopped, from its spill file
 @\<path\>.spill@, in the options' format: everything it recorded. Deletes

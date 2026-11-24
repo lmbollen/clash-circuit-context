@@ -450,6 +450,13 @@ run left (one written by `writeWaveform` is kept). The check therefore runs
 twice on a failure (assertions and forcing, not one-shot IO), and gets the
 samples lazily: the waveform has the cycles it evaluated.
 
+`writeWaveform` is called for its waveform, so when the waveform cannot be
+written (a full disk, a directory where the file should go) it throws, with
+either `spill` option; with `OnDisk` the spill file stays, and the error names
+it. A run that recorded nothing in the window is not an error: a message on
+stderr says why there is no waveform. `withWaveform` fails a test with the
+check's own exception, and says on stderr why there is no waveform.
+
 There is no switch to turn waveforms on or off. A test that should always
 leave its waveform uses `writeWaveform`; one that should leave it only on a
 failure uses `withWaveform`. To record nothing, sample the design under

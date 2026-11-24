@@ -1193,14 +1193,31 @@ tests =
         assertBool ("exited " <> P.show code <> ", said: " <> err) (code P.== ExitSuccess)
     , testCase "a long recording on disk keeps its memory flat"
         $ assertChild "formats-flat-memory" []
-    , -- A waveform that cannot be written must not cost the recording: the
-      -- spill file stays, for recoverWaveform.
-      testCase "a spill file stays when its waveform cannot be written" $ do
+    , -- writeWaveform is called for its waveform: when that cannot be
+      -- written, it throws, in both spill modes. Before, it said so on
+      -- stderr and returned, and a test passed without its waveform. A
+      -- waveform that cannot be written must not cost the recording: the
+      -- spill file stays, for recoverWaveform, and the error names it.
+      testCase "writeWaveform throws when its waveform cannot be written; the spill file stays" $ do
         let name = "formats-blocked"
         scrub [name]
+        absolute <- makeAbsolute (pathOf name)
+        spillFile <- makeAbsolute (file name "spill")
         -- A directory where the waveform should go makes the write fail.
         createDirectoryIfMissing True (file name "vcd")
-        _ <- writeWaveform vcdOnDisk (pathOf name) (0, 8) counter
+        let thrown opts expect = do
+              r <- try @ErrorCall (writeWaveform opts (pathOf name) (0, 8) counter)
+              case r of
+                P.Left (ErrorCall err) ->
+                  assertBool ("said: " <> err) (P.all (`isInfixOf` err) expect)
+                P.Right _ -> assertFailure (P.show opts <> ": writeWaveform returned")
+        thrown vcd ["clash-circuit-context: " <> absolute <> ": no waveform written: "]
+        existing name ["spill"] >>= (@?= [False])
+        thrown
+          vcdOnDisk
+          [ "clash-circuit-context: " <> absolute <> ": no waveform written: "
+          , "what the run recorded is kept in " <> spillFile
+          ]
         existing name ["spill"] >>= (@?= [True])
         removeDirectory (file name "vcd")
         recovered <- recoverWaveform vcd (pathOf name)

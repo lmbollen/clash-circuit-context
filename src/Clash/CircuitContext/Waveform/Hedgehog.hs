@@ -134,7 +134,7 @@ simulateWaveform opts capture path0 window@(_, stop) sig = do
       Just sized -> do
         (xs, rec) <- recordRun @dom opts sized window sig
         save Requested opts sized (cycleWindow @dom window) rec
-          >>= either (announce sized . Left) (const (pure ()))
+          >>= either (announce sized . Left . unsavedReason) (const (pure ()))
         either throwIO pure xs
       Nothing -> simulate stop sig
   footnote (onPrint (recordCounterexample @dom opts path window sig))
@@ -171,7 +171,7 @@ recordCounterexample opts path window sig = do
     save Failure opts path (cycleWindow @dom window) rec
   pure $ case result of
     Right (Right absolute) -> "waveform: " <> absolute
-    Right (Left err) -> "no waveform for " <> path <> ": " <> err
+    Right (Left err) -> "no waveform for " <> path <> ": " <> unsavedReason err
     Left (err :: SomeException) -> "no waveform for " <> path <> ": " <> displayException err
 
 {- | A string whose evaluation runs an action: the footnote text above.

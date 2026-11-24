@@ -58,6 +58,7 @@ module Clash.CircuitContext.Waveform (
 ) where
 
 import Control.Exception (
+  ErrorCall (ErrorCall),
   SomeAsyncException,
   SomeException,
   displayException,
@@ -88,6 +89,15 @@ Cycles before @start@ are simulated, but not recorded. If nothing in the
 window was recorded, no file is written, and a message on stderr says why,
 in the cycles of the window. If the simulation throws, the waveform up to there is written, and the
 exception goes on.
+
+The waveform is what this function is called for, so when it cannot be
+written, the function throws, with either 'Spill' option: an 'ErrorCall'
+that names the waveform and says why (a full disk, a directory where the
+file should go). With 'OnDisk', the spill file of the run is kept, for
+'recoverWaveform', and the error names it. A directory that cannot hold the
+waveform is refused before the design runs. When the simulation threw as
+well, its exception goes on, and why the waveform was not written is said
+on stderr.
 -}
 writeWaveform ::
   forall dom a.
@@ -113,7 +123,13 @@ writeWaveform opts path0 window@(_, stop) sig = do
     let xs = sampleN stop sig
     evaluate (xs `deepseqX` xs)
   written <- save Requested opts path win rec
-  either (const (announce path written)) (const (pure ())) written
+  case (written, out) of
+    -- The waveform is what this was called for. A run that threw goes on
+    -- with its own exception, which says more.
+    (Left (Unwritable why), Right _) ->
+      throwIO (ErrorCall ("clash-circuit-context: " <> noWaveform path why))
+    (Left unsaved, _) -> announce path (Left (unsavedReason unsaved))
+    (Right _, _) -> pure ()
   either throwIO pure out
  where
   win = cycleWindow @dom window
@@ -188,7 +204,7 @@ withWaveform opts path0 window@(_, stop) sig check = do
       recorded <- try $ do
         (again, rec) <- record opts path (fst (windowPs win)) (check (sampleN stop sig))
         case again of
-          Left _ -> save Failure opts path win rec >>= announce path
+          Left _ -> save Failure opts path win rec >>= announce path . either (Left . unsavedReason) Right
           Right _ -> do
             discard rec
             say
