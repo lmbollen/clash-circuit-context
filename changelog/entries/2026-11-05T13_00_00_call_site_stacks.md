@@ -24,8 +24,10 @@ same order, but from 0, and a single evaluated instance gets no number.
 
 `HasCircuitContext` is now `(CallSitesOnly, CircuitContextOnly,
 TurnOnTheCircuitContextPlugin)`. The call sites are an implicit parameter
-`?circuitCallSites :: CallStack` of their own: a function's own
-`HasCallStack`, `error`, and `withFrozenCallStack` are not touched. The
+`?circuitCallSites :: CallStack` of their own, which `error` and
+`withFrozenCallStack` do not see. A function that also asks for
+`HasCallStack` gets one more frame in its own call stack: the wrapper's call
+of the worker `$wf`, at the function's definition. The
 context is a `SimOnly CircuitContext`; `noCircuitContext` is one too, so
 `let ?circuitContext = noCircuitContext in …` still supplies it. Only the
 plugin solves `TurnOnTheCircuitContextPlugin`: compiling a call of an

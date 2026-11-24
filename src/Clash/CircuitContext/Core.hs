@@ -277,7 +277,9 @@ data CircuitContext = CircuitContext
 in simulation, and its call sites, a 'CallStack' to which GHC adds the site
 of every call ('CallSitesOnly'). It is not the 'HasCallStack' of the
 function: 'error' and 'GHC.Stack.withFrozenCallStack' do not see it, and do
-not change it.
+not change it. A function that also asks for 'HasCallStack' sees one more
+frame in that call stack: its wrapper's call of its worker (see
+'callContext').
 
 The third constraint, 'TurnOnTheCircuitContextPlugin', only the plugin
 solves. The plugin gives each function it instruments a signature without it
