@@ -22,7 +22,7 @@ import qualified Prelude as P
 import Control.Exception (ErrorCall, SomeException, evaluate, try)
 import Control.Monad (when)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
-import Data.List (isPrefixOf)
+import Data.List (isInfixOf, isPrefixOf)
 import qualified Data.Map.Strict as Map
 import System.Directory (doesFileExist, removeFile, removePathForcibly)
 import System.Posix.Files (accessModes, fileMode, getFileStatus, intersectFileModes)
@@ -108,6 +108,10 @@ end of the run reaches the stages after it, without end.
 endless :: (HasCircuitContext) => Unsigned 8 -> Signal System (Unsigned 8)
 endless n = traceSignalC "stim" (n :- endless (n P.+ 1))
 {-# OPAQUE endless #-}
+
+-- | A design that must not run: sampling it throws.
+ran :: Signal System (Unsigned 8)
+ran = P.error "the design ran"
 
 {- | The options of the tests that read a waveform back as text. The FST and
 spill tests below use their own.
@@ -407,6 +411,26 @@ tests =
         _ <- Report.renderResult DisableColor Nothing report >>= evaluate . P.length
         after <- readIORef evaluated
         after @?= 1
+    , -- A path that cannot be the path of a waveform without extension is
+      -- refused before the design runs (see Test.Formats for the others).
+      testCase "simulateWaveform refuses a path with the extension of a waveform" $ do
+        seed <- Seed.random
+        let Property config test =
+              Hedgehog.withTests 1
+                . Hedgehog.property
+                $ ()
+                <$ simulateWaveform vcdOptions Counterexample "waveforms/capture-bad.vcd" (0, 8) ran
+        report <- checkReport config 0 seed test (\_ -> pure ())
+        text <- Report.renderResult DisableColor Nothing report
+        -- The exception the report shows (its source excerpt has this test's
+        -- own lines, so the whole text would say anything).
+        let thrown = P.drop 1 (P.dropWhile (P.not . ("Exception (ErrorCall)" `isInfixOf`)) (P.lines text))
+        assertBool
+          ("reported: " <> text)
+          ( P.any
+              ("clash-circuit-context: the path \"waveforms/capture-bad.vcd\" ends in .vcd" `isInfixOf`)
+              (P.take 1 thrown)
+          )
     , testCase "a passing property never evaluates a footnote" $ do
         evaluated <- newIORef 0
         ok <-

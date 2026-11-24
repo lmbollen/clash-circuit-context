@@ -24,7 +24,10 @@ A waveform is a pair of files at the path you give, which has no extension:
 @\<path\>.fst@ (or @.vcd@, see 'Format') and the @\<path\>.json@ sidecar a
 typed viewer reads. The path is relative to the working directory, or
 absolute (@\"waveforms\/counter\"@, @\"\/tmp\/out\/counter\"@), and missing
-directories are made; messages name the absolute path. One path is one
+directories are made; messages name the absolute path. A path that cannot be
+meant is refused before anything runs, with an error that says what to give
+instead: an empty path, one that names a directory (it ends in a separator,
+@.@ or @..@), and one that ends in @.fst@, @.vcd@, @.json@ or @.spill@. One path is one
 waveform: writing it in one format deletes a waveform of the other format
 at that path, and two tests must not share a path (a recording with the
 spill file of one that is running is refused, see 'OnDisk'). While a
@@ -85,7 +88,10 @@ writeWaveform ::
   forall dom a.
   (KnownDomain dom, NFDataX a) =>
   WaveformOptions ->
-  -- | The path of the waveform, without extension: @\<path\>.fst@ or @.vcd@
+  {- | The path of the waveform, without extension: @\<path\>.fst@ or @.vcd@.
+  An empty path, a directory, or a path that ends in @.fst@, @.vcd@,
+  @.json@ or @.spill@ is refused, before anything runs
+  -}
   FilePath ->
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
   (Int, Int) ->
@@ -93,6 +99,7 @@ writeWaveform ::
   (HasCircuitContext => Signal dom a) ->
   IO [a]
 writeWaveform opts path0 window@(_, stop) sig = do
+  checkPath path0
   path <- resolvePath path0
   checkWindow path window
   (out, rec) <- record opts path (fst ps) $ do
@@ -136,7 +143,10 @@ withWaveform ::
   forall dom a b.
   (KnownDomain dom, NFDataX a) =>
   WaveformOptions ->
-  -- | The path of the waveform, without extension: @\<path\>.fst@ or @.vcd@
+  {- | The path of the waveform, without extension: @\<path\>.fst@ or @.vcd@.
+  An empty path, a directory, or a path that ends in @.fst@, @.vcd@,
+  @.json@ or @.spill@ is refused, before anything runs
+  -}
   FilePath ->
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
   (Int, Int) ->
@@ -146,6 +156,7 @@ withWaveform ::
   ([a] -> IO b) ->
   IO b
 withWaveform opts path0 window@(_, stop) sig check = do
+  checkPath path0
   path <- resolvePath path0
   checkWindow path window
   first <- try (check (withoutCircuitContext (sampleN stop sig)))
@@ -182,6 +193,11 @@ process) with its values in a spill file ('OnDisk'): from @\<path\>.spill@,
 as the options' format, everything the run recorded up to where it stopped.
 Deletes the spill file once the waveform is written. Returns the waveform's
 absolute path, or why there is none.
+
+The path is the waveform's, without extension, as the other functions take
+it: @\"waveforms\/counter\"@ for @waveforms\/counter.spill@. A path that ends
+in @.spill@ (or @.fst@, @.vcd@, @.json@), an empty path, and a directory are
+refused, with a 'Left' that says what to give.
 
 > recoverWaveform defaultOptions "waveforms/counter" >>= print
 -}

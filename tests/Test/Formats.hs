@@ -127,6 +127,10 @@ noise =
     (fromList (P.iterate (\x -> x P.* 6364136223846793005 P.+ 1442695040888963407) 1))
 {-# OPAQUE noise #-}
 
+-- | A design that must not run: sampling it throws.
+ran :: Signal System (Unsigned 8)
+ran = P.error "the design ran"
+
 -- | 300 traced signals that each change every 64 cycles.
 quietMany :: (HasCircuitContext) => Signal System (Unsigned 16)
 quietMany =
@@ -701,6 +705,49 @@ tests =
             whole l = P.length (P.filter (`says` l) [1 .. 16 :: Int]) P.== 1
         assertBool ("said:\n" <> err) (P.all whole (P.lines err))
         [i | i <- [1 .. 16 :: Int], P.any (says i) (P.lines err)] @?= [1 .. 16]
+    , -- A path that cannot be meant is refused before anything runs: an
+      -- empty one (it wrote <parent>/<name of the working directory>.fst), a
+      -- directory (hidden files ".fst"), and one with the extension of a
+      -- file of the waveform already (x.fst.fst; recoverWaveform "x.spill"
+      -- looked for x.spill.spill).
+      testCase "a path that is not of a waveform without extension is refused" $ do
+        let refusal p err = case p of
+              "" -> "the path of the waveform is empty" `isInfixOf` err
+              _
+                | P.any (`isSuffixOf` p) [".fst", ".vcd", ".json", ".spill"] ->
+                    ("the path " <> P.show p <> " ends in ") `isInfixOf` err
+                      P.&& ("give " <> P.show (P.reverse (P.drop 1 (P.dropWhile (P./= '.') (P.reverse p)))))
+                        `isInfixOf` err
+                | P.otherwise ->
+                    ("the path " <> P.show p <> " names a directory, not a waveform") `isInfixOf` err
+            refused what p act = do
+              r <- try @SomeException act
+              case r of
+                P.Left err ->
+                  assertBool
+                    (what <> " of " <> P.show p <> " said: " <> P.show err)
+                    (refusal p (P.show err))
+                P.Right _ -> assertFailure (what <> " of " <> P.show p <> " was not refused")
+            paths =
+              [ ""
+              , "waveforms/formats-bad-path/"
+              , "waveforms/formats-bad-path/."
+              , "waveforms/formats-bad-path/.."
+              , "waveforms/formats-bad-path.fst"
+              , "waveforms/formats-bad-path.vcd"
+              , "waveforms/formats-bad-path.json"
+              , "waveforms/formats-bad-path.spill"
+              ]
+        forM_ paths $ \p -> do
+          refused "writeWaveform" p (writeWaveform defaultOptions p (0, 8) ran)
+          refused
+            "withWaveform"
+            p
+            (withWaveform defaultOptions p (0, 8) ran (\_ -> P.error "the check ran"))
+          recovered <- recoverWaveform defaultOptions p
+          case recovered of
+            P.Left err -> assertBool ("recoverWaveform of " <> P.show p <> " said: " <> err) (refusal p err)
+            P.Right _ -> assertFailure ("recoverWaveform of " <> P.show p <> " was not refused")
     , testCase "a spill file on disk gives the waveform a spill in memory gives" $ do
         let (onDisk, inMemory) = ("formats-on-disk", "formats-in-memory")
         scrub [onDisk, inMemory]

@@ -425,7 +425,10 @@ The path is the waveform's, without extension: `"waveforms/counter"` writes
 `waveforms/counter.fst` and its `waveforms/counter.json` sidecar. A relative
 path is relative to the working directory, which is not the same under every
 way of running a suite, so the messages give absolute paths. An absolute path
-(`"/tmp/out/counter"`) works too, and missing directories are made. One path
+(`"/tmp/out/counter"`) works too, and missing directories are made. A path
+that cannot be meant is refused before anything runs, with an error that says
+what to give instead: an empty path, a directory (`"waveforms/"`), and a path
+that ends in `.fst`, `.vcd`, `.json` or `.spill`. One path
 is one waveform: a VCD written at a path deletes an FST at that path, and the
 other way round, because the sidecar describes the waveform written last. Give
 each test its own path. With `spill = OnDisk`, a recording locks its spill

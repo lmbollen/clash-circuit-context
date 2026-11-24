@@ -31,6 +31,8 @@ module Clash.CircuitContext.Internal.Waveform (
   Spill (..),
   defaultOptions,
   resolvePath,
+  checkPath,
+  pathProblem,
   waveformPath,
   spillPath,
   checkWindow,
@@ -53,12 +55,20 @@ import Control.Exception (
   throwIO,
  )
 import Control.Monad (when)
+import Data.Char (toLower)
+import Data.Maybe (listToMaybe)
 import System.Directory (
   doesFileExist,
   makeAbsolute,
   removePathForcibly,
  )
-import System.FilePath ((<.>))
+import System.FilePath (
+  dropExtension,
+  hasTrailingPathSeparator,
+  takeExtension,
+  takeFileName,
+  (<.>),
+ )
 
 import Clash.Explicit.Signal (Signal, sampleN)
 import Clash.Prelude (KnownDomain, NFDataX, deepseqX, snatToNum)
@@ -163,6 +173,46 @@ whatever the working directory, and two spellings of one path (@a\/b@,
 -}
 resolvePath :: FilePath -> IO FilePath
 resolvePath = makeAbsolute
+
+{- | Why this path, as the caller gave it, cannot be the path of a waveform
+without extension, if it cannot: it is empty, it names a directory (it ends
+in a separator, @.@ or @..@), or it ends in the extension of a file of a
+waveform (@.fst@, @.vcd@, @.json@, @.spill@), which would be added again.
+-}
+pathProblem :: FilePath -> Maybe String
+pathProblem path
+  | null path =
+      Just
+        ( "the path of the waveform is empty: give the path of the waveform without"
+            <> " extension, such as \"waveforms/counter\""
+        )
+  | hasTrailingPathSeparator path || takeFileName path `elem` ["", ".", ".."] =
+      Just
+        ( "the path "
+            <> show path
+            <> " names a directory, not a waveform: give the path of the waveform"
+            <> " without extension, such as \"waveforms/counter\""
+        )
+  | Just ext <- listToMaybe [e | e <- extensions, map toLower (takeExtension path) == e] =
+      Just
+        ( "the path "
+            <> show path
+            <> " ends in "
+            <> ext
+            <> ", but the path of a waveform has no extension (the files are"
+            <> " <path>.fst or .vcd, <path>.json and <path>.spill): give "
+            <> show (dropExtension path)
+        )
+  | otherwise = Nothing
+ where
+  extensions = [".fst", ".vcd", ".json", ".spill"]
+
+{- | Throw, as 'checkWindow' does, unless this path (as the caller gave it)
+can be the path of a waveform without extension (see 'pathProblem').
+-}
+checkPath :: FilePath -> IO ()
+checkPath path =
+  mapM_ (throwIO . ErrorCall . ("clash-circuit-context: " <>)) (pathProblem path)
 
 -- | The spill file of a waveform's path: @\<path\>.spill@.
 spillPath :: FilePath -> FilePath
@@ -300,10 +350,16 @@ announce path written =
 {- | Write the waveform of a run that was stopped, from its spill file
 @\<path\>.spill@, in the options' format: everything it recorded. Deletes
 the spill file once the waveform is written, and keeps it otherwise.
-Returns the waveform's absolute path, or why there is none.
+Returns the waveform's absolute path, or why there is none; also why a path
+cannot be the path of a waveform without extension ('pathProblem').
 -}
 recover :: WaveformOptions -> FilePath -> IO (Either String FilePath)
-recover opts path0 = do
+recover opts path0
+  | Just problem <- pathProblem path0 = pure (Left problem)
+  | otherwise = recoverFrom opts path0
+
+recoverFrom :: WaveformOptions -> FilePath -> IO (Either String FilePath)
+recoverFrom opts path0 = do
   path <- resolvePath path0
   let spillFile = spillPath path
   there <- doesFileExist spillFile

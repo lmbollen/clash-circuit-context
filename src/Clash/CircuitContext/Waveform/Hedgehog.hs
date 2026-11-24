@@ -106,7 +106,10 @@ simulateWaveform ::
   (KnownDomain dom, NFDataX a) =>
   WaveformOptions ->
   Capture ->
-  -- | The path of the waveform, without extension: @\<path\>.fst@ or @.vcd@
+  {- | The path of the waveform, without extension: @\<path\>.fst@ or @.vcd@.
+  An empty path, a directory, or a path that ends in @.fst@, @.vcd@,
+  @.json@ or @.spill@ is refused, before anything runs
+  -}
   FilePath ->
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
   (Int, Int) ->
@@ -114,6 +117,7 @@ simulateWaveform ::
   (HasCircuitContext => Signal dom a) ->
   PropertyT IO [a]
 simulateWaveform opts capture path0 window@(_, stop) sig = do
+  liftIO (checkPath path0)
   path <- liftIO (resolvePath path0)
   liftIO (checkWindow path window)
   keepThis <- case capture of
