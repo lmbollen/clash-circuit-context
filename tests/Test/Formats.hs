@@ -2,8 +2,12 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImplicitParams #-}
+{-# LANGUAGE KindSignatures #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE TypeFamilies #-}
+{-# OPTIONS_GHC -Wno-orphans #-}
 -- 'slow' waits with 'threadDelay', whose 'onException' rethrows a timeout
 -- synchronously, which stores it in the thunk that waited. Floated to the
 -- top level, that thunk would be shared, and the next test would get the
@@ -102,6 +106,22 @@ import Clash.CircuitContext.Recording (
   writeVCD,
  )
 import Clash.CircuitContext.Waveform
+
+-- | A domain of 15 ns: with System (10 ns), the timescale is 5 ns.
+createDomain vSystem{vName = "Formats15", vPeriod = 15000}
+
+{- | A counter of the domain of 15 ns, and one of System that it samples:
+the recording's timescale, 5 ns, is a cycle of neither.
+-}
+twoDomains :: (HasCircuitContext) => Signal Formats15 (Unsigned 8)
+twoDomains =
+  (+)
+    <$> traceSignalSW "slow" (fromList (P.cycle [0 .. 255]))
+    <*> unsafeSynchronizer
+      (clockGen @System)
+      (clockGen @Formats15)
+      (traceSignalSW "fast" (fromList (P.cycle [0 .. 255])))
+{-# OPAQUE twoDomains #-}
 
 -- | A traced counter, described in the sidecar; it runs as long as it is sampled.
 counter :: (HasCircuitContext) => Signal System (Unsigned 8)
@@ -463,6 +483,21 @@ children =
         P.mapM_ takeMVar ends
     )
   ,
+    ( "formats-window-cycles"
+    , do
+        -- Windows that show nothing, of a design whose cycles are not the
+        -- units of its recording's timescale.
+        let name = "formats-window-cycles"
+        scrub [name]
+        _ <- writeWaveform defaultOptions (pathOf name) (5, 5) twoDomains
+        _ <-
+          try @SomeException
+            ( withWaveform defaultOptions (pathOf name) (6, 8) twoDomains $ \xs ->
+                evaluate (P.sum (P.take 3 xs)) >> assertFailure "fails after 3 cycles"
+            )
+        existing name ["fst", "json"] >>= (@?= [False, False])
+    )
+  ,
     ( "formats-killed"
     , do
         -- Records, says how far, and waits to be killed (see the test).
@@ -748,6 +783,19 @@ tests =
           case recovered of
             P.Left err -> assertBool ("recoverWaveform of " <> P.show p <> " said: " <> err) (refusal p err)
             P.Right _ -> assertFailure ("recoverWaveform of " <> P.show p <> " was not refused")
+    , -- A window that shows nothing is named in the cycles the caller gave,
+      -- not in units of the recording's timescale ([15, 15) for (5, 5)).
+      testCase "a window that shows nothing is named in the caller's cycles" $ do
+        (code, _, err) <- inChild "formats-window-cycles" []
+        assertBool ("exited " <> P.show code <> ", said: " <> err) (code P.== ExitSuccess)
+        assertBool
+          ("said: " <> err)
+          ("no waveform written: the window (5,5) is empty" `isInfixOf` err)
+        assertBool
+          ("said: " <> err)
+          ( "no waveform written: the window (6,8) starts at or after the end of the run, at cycle 3"
+              `isInfixOf` err
+          )
     , testCase "a spill file on disk gives the waveform a spill in memory gives" $ do
         let (onDisk, inMemory) = ("formats-on-disk", "formats-in-memory")
         scrub [onDisk, inMemory]

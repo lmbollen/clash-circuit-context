@@ -127,7 +127,7 @@ simulateWaveform opts capture path0 window@(_, stop) sig = do
     liftIO $ case keepThis of
       Just sized -> do
         (xs, rec) <- recordRun @dom opts sized window sig
-        save Requested opts sized (psWindow @dom window) rec
+        save Requested opts sized (cycleWindow @dom window) rec
           >>= either (announce sized . Left) (const (pure ()))
         either throwIO pure xs
       Nothing -> simulate stop sig
@@ -162,7 +162,7 @@ recordCounterexample ::
 recordCounterexample opts path window sig = do
   result <- try $ do
     (_, rec) <- recordRun @dom opts path window sig
-    save Failure opts path (psWindow @dom window) rec
+    save Failure opts path (cycleWindow @dom window) rec
   pure $ case result of
     Right (Right absolute) -> "waveform: " <> absolute
     Right (Left err) -> "no waveform for " <> path <> ": " <> err

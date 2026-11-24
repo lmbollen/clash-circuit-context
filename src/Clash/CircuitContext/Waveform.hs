@@ -80,8 +80,8 @@ import Clash.CircuitContext.Internal.Waveform
 >   print out
 
 Cycles before @start@ are simulated, but not recorded. If nothing in the
-window was recorded, no file is written, and a message on stderr says why.
-If the simulation throws, the waveform up to there is written, and the
+window was recorded, no file is written, and a message on stderr says why,
+in the cycles of the window. If the simulation throws, the waveform up to there is written, and the
 exception goes on.
 -}
 writeWaveform ::
@@ -102,14 +102,14 @@ writeWaveform opts path0 window@(_, stop) sig = do
   checkPath path0
   path <- resolvePath path0
   checkWindow path window
-  (out, rec) <- record opts path (fst ps) $ do
+  (out, rec) <- record opts path (fst (windowPs win)) $ do
     let xs = sampleN stop sig
     evaluate (xs `deepseqX` xs)
-  written <- save Requested opts path ps rec
+  written <- save Requested opts path win rec
   either (const (announce path written)) (const (pure ())) written
   either throwIO pure out
  where
-  ps = psWindow @dom window
+  win = cycleWindow @dom window
 
 {- | Run a test's check on @stop@ cycles of a design, and write the waveform
 of cycles @[start, stop)@ only when the check fails.
@@ -168,9 +168,9 @@ withWaveform opts path0 window@(_, stop) sig check = do
     Left err -> do
       -- A fresh instantiation of the signal, under a recording context: an
       -- independent simulation, recorded as far as the check forces it.
-      (again, rec) <- record opts path (fst ps) (check (sampleN stop sig))
+      (again, rec) <- record opts path (fst (windowPs win)) (check (sampleN stop sig))
       case again of
-        Left _ -> save Failure opts path ps rec >>= announce path
+        Left _ -> save Failure opts path win rec >>= announce path
         Right _ -> do
           discard rec
           say
@@ -181,7 +181,7 @@ withWaveform opts path0 window@(_, stop) sig check = do
             )
       throwIO err
  where
-  ps = psWindow @dom window
+  win = cycleWindow @dom window
 
   isAsync :: SomeException -> Bool
   isAsync err = case fromException err of

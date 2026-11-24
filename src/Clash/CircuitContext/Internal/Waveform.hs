@@ -37,6 +37,9 @@ module Clash.CircuitContext.Internal.Waveform (
   spillPath,
   checkWindow,
   domainPeriod,
+  Window,
+  cycleWindow,
+  windowPs,
   psWindow,
   simulate,
   record,
@@ -89,7 +92,7 @@ import Clash.CircuitContext.Internal.Recorder (
   timescale,
  )
 import Clash.CircuitContext.Internal.Sidecar (Origin (..), failureWaveform)
-import Clash.CircuitContext.Internal.Vcd (writeFiles)
+import Clash.CircuitContext.Internal.Vcd (Unshown (..), windowShown, writeFiles)
 
 -- | How a waveform is recorded and written.
 data WaveformOptions = WaveformOptions
@@ -237,17 +240,36 @@ domainPeriod :: forall dom. (KnownDomain dom) => Int
 domainPeriod = case knownDomain @dom of
   SDomainConfiguration{sPeriod} -> snatToNum sPeriod
 
-{- | A window of cycles of a domain, in ps. Saturates at 'maxBound', so a
-window that ends at @maxBound@ cycles (\"as long as the check runs\") stays
-the end of time instead of overflowing.
+{- | A window of cycles @(start, stop)@ of a domain, as the caller gave it,
+and the domain's clock period in ps: a message names the window in these
+cycles, not in units of a recording's timescale, which can be a fraction of
+a cycle when the design has more than one domain.
 -}
-psWindow :: forall dom. (KnownDomain dom) => (Int, Int) -> (Int, Int)
-psWindow (start, stop) = (toPs start, toPs stop)
+data Window
+  = Window
+      (Int, Int)
+      -- ^ The cycles, as the caller gave them.
+      Int
+      -- ^ The domain's clock period, in ps.
+
+-- | A window of cycles of a domain.
+cycleWindow :: forall dom. (KnownDomain dom) => (Int, Int) -> Window
+cycleWindow cycles = Window cycles (domainPeriod @dom)
+
+{- | A window in ps. Saturates at 'maxBound', so a window that ends at
+@maxBound@ cycles (\"as long as the check runs\") stays the end of time
+instead of overflowing.
+-}
+windowPs :: Window -> (Int, Int)
+windowPs (Window (start, stop) period) = (toPs start, toPs stop)
  where
-  period = domainPeriod @dom
   toPs c
     | c > maxBound `div` period = maxBound
     | otherwise = c * period
+
+-- | A window of cycles of a domain, in ps (see 'windowPs').
+psWindow :: forall dom. (KnownDomain dom) => (Int, Int) -> (Int, Int)
+psWindow = windowPs . cycleWindow @dom
 
 {- | @n@ samples of the signal, forced, without recording: every recorder is
 the identity under 'withoutCircuitContext', so nothing registers and nothing
@@ -272,13 +294,14 @@ record opts path start =
   withRecordingFrom start (if spill opts == OnDisk then Just (spillPath path) else Nothing)
 
 {- | Write a recording as the options' waveform, @\<path\>.vcd@ or @.fst@ and
-its @.json@ sidecar (making missing directories), over the window
-@[start, stop)@ in ps, and then delete its spill file. One path is one
+its @.json@ sidecar (making missing directories), over the window of
+cycles, and then delete its spill file. One path is one
 waveform: a waveform of the other format at the path is deleted, as the
 sidecar now describes this one. Returns the
 waveform's ABSOLUTE path: a relative path is relative to the working
 directory, which differs between ways of running a suite. 'Left', with the
-reason, and nothing written, when the run recorded nothing in the window or
+reason, and nothing written, when the run recorded nothing in the window (the
+reason names the window, and the end of the run, in the window's cycles) or
 the files could not be written; an earlier file is then left alone. The
 spill file of a run that recorded cycles is then kept, for 'recover', and
 the reason says where it is.
@@ -287,11 +310,13 @@ save ::
   Origin ->
   WaveformOptions ->
   FilePath ->
-  (Int, Int) ->
+  Window ->
   Recording ->
   IO (Either String FilePath)
 save origin opts path window rec = do
-  written <- writeWaveformFiles origin opts path window rec
+  written <- case windowShown rec (tickWindow rec (windowPs window)) of
+    Left why -> pure (Left (unshownInCycles window why))
+    Right _ -> writeWaveformFiles origin opts path (windowPs window) rec
   case (written, recordingSpill rec) of
     (Left err, Just spillFile) | holdsCycles rec -> do
       kept <- makeAbsolute spillFile
@@ -317,10 +342,28 @@ writeWaveformFiles origin opts path (start, stop) rec = do
  where
   other VCD = FST
   other FST = VCD
-  window = (start `div` timescale rec, ticks rec stop)
+  window = tickWindow rec (start, stop)
   writer = case format opts of
     VCD -> writeFiles
     FST -> writeFst
+
+-- | A window in ps, in units of the recording's timescale.
+tickWindow :: Recording -> (Int, Int) -> (Int, Int)
+tickWindow rec (start, stop) = (start `div` timescale rec, ticks rec stop)
+
+{- | Why a window of cycles shows nothing of a recording, in words, with the
+window, and the end of the run, in its cycles.
+-}
+unshownInCycles :: Window -> Unshown -> String
+unshownInCycles (Window cycles period) why = case why of
+  NothingRecorded -> "nothing was traced or probed in this run"
+  NoCycle -> "the run evaluated no cycle"
+  EmptyWindow -> "the window " <> show cycles <> " is empty"
+  AfterEnd endPs ->
+    "the window "
+      <> show cycles
+      <> " starts at or after the end of the run, at cycle "
+      <> show ((endPs + period - 1) `div` period)
 
 -- | Delete a recording's spill file, if it has one, without writing a waveform.
 discard :: Recording -> IO ()

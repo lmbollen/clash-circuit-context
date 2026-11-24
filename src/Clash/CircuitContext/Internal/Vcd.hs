@@ -26,6 +26,8 @@ module Clash.CircuitContext.Internal.Vcd (
   -- * Shared with the FST writer
   Origin (..),
   originComment,
+  Unshown (..),
+  windowShown,
   shownWindow,
   placeWithSidecar,
   ioLeft,
@@ -158,28 +160,51 @@ originComment :: Origin -> String
 originComment Requested = "No comment"
 originComment Failure = "clash-circuit-context: the run of a failing test"
 
+-- | Why a window shows nothing of a recording.
+data Unshown
+  = -- | Nothing was traced or probed.
+    NothingRecorded
+  | -- | The run evaluated no cycle.
+    NoCycle
+  | -- | The window is empty.
+    EmptyWindow
+  | -- | The window starts at or after the end of the run, in ps.
+    AfterEnd Int
+
 {- | The part of a window @[start, stop)@, in units of the recording's
 'timescale', that a waveform shows: it ends where the simulation stopped, at
 the latest. 'Left', with the reason, when it shows nothing.
 -}
-shownWindow :: Recording -> (Int, Int) -> Either String (Int, Int)
-shownWindow rec (start, stop)
-  | null (recordingSignals rec) = Left "nothing was traced or probed in this run"
-  | end <= 0 = Left "the run evaluated no cycle"
-  | start < 0 || stop <= start = Left ("the window " <> shown <> " is empty")
-  | start >= end =
-      Left
-        ( "the window "
-            <> shown
-            <> " starts after the end of the run, at "
-            <> show end
-            <> " (in units of the timescale, "
-            <> show (timescale rec)
-            <> " ps)"
-        )
+windowShown :: Recording -> (Int, Int) -> Either Unshown (Int, Int)
+windowShown rec (start, stop)
+  | null (recordingSignals rec) = Left NothingRecorded
+  | end <= 0 = Left NoCycle
+  | start < 0 || stop <= start = Left EmptyWindow
+  | start >= end = Left (AfterEnd (recordingEndPs rec))
   | otherwise = Right (start, min stop end)
  where
   end = ticks rec (recordingEndPs rec)
+
+{- | 'windowShown', with the reason in words, and the window and the end of
+the run in units of the timescale.
+-}
+shownWindow :: Recording -> (Int, Int) -> Either String (Int, Int)
+shownWindow rec window@(start, stop) = case windowShown rec window of
+  Right inUnits -> Right inUnits
+  Left NothingRecorded -> Left "nothing was traced or probed in this run"
+  Left NoCycle -> Left "the run evaluated no cycle"
+  Left EmptyWindow -> Left ("the window " <> shown <> " is empty")
+  Left (AfterEnd endPs) ->
+    Left
+      ( "the window "
+          <> shown
+          <> " starts at or after the end of the run, at "
+          <> show (ticks rec endPs)
+          <> " (in units of the timescale, "
+          <> show (timescale rec)
+          <> " ps)"
+      )
+ where
   shown = "[" <> show start <> ", " <> show stop <> ")"
 
 -- | An action's 'IOException' as a 'Left'.
