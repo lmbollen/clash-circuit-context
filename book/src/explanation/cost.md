@@ -72,7 +72,9 @@ the blocks go:
   file. The values are written to the disk twice: to the spill file, and
   to the waveform. The spill file is beside the waveform. If that place is
   a file system in RAM (tmpfs), the spill file is in RAM too, and the
-  memory of the computer grows with the length of the run again.
+  memory of the computer grows with the length of the run again. On Linux,
+  the spill file is mapped into memory: each signal has one region of at
+  most 16 KiB mapped at a time, and the kernel writes it to the disk.
 
 The waveform is written by a merge of the changes of all signals by time,
 straight to the file, so the text of a VCD is never in memory.

@@ -80,6 +80,11 @@ is `z` in each cycle in which the simulation does not need its value. For
 example, a value that only the untaken branch of an `if` reads is not
 computed in that cycle.
 
+A value can also be computed later than the cycle it belongs to: a value
+that the machine keeps in its state and puts out a few cycles later is
+computed when the output needs it. The probe records such a value at its
+own cycle, so the waveform shows it where it belongs.
+
 ## A Moore machine
 
 Use `mooreProbed`. It takes two functions: the transition function and the

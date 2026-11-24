@@ -87,13 +87,18 @@ Inside an instrumented function, each named local binding is wrapped in
 | A function with arguments, `f x = …` | not wrapped |
 | A name that starts with `_` | not wrapped |
 | A name that contains `:` (made by a code generator) | not wrapped |
-| A closed binding (no free local variables) without its own signature | not wrapped, and not reported |
+| A closed binding (no free local variables) without its own signature | not wrapped. Warning: `x-circuit-context-untraced`, if GHC did not generalise it (see below) |
 | A closed binding with its own signature | wrapped |
 | A closed binding that refers to itself, such as a free-running counter `cnt = register clockGen resetGen enableGen 0 (cnt + 1)` | wrapped, with or without a signature |
 | A binding with a higher-rank type | not wrapped, and not reported |
 
 A binding is closed when its right-hand side uses no local variable other
-than itself. An unconstrained binding that refers to itself and is not
+than itself. GHC can generalise a closed binding without a signature (give
+it a type with a type variable of its own, such as `forall a. Signal dom
+(Maybe a)` for `none = pure Nothing`), and a recorder would stop that. So
+the plugin leaves such a binding alone. After type checking, it reports
+each one that GHC did not generalise, with the signature to add. A binding
+that GHC did generalise has no single waveform, and is not reported. An unconstrained binding that refers to itself and is not
 `NonTranslatable`, such as `s = Nothing :- s`, becomes monomorphic when it is
 wrapped.
 

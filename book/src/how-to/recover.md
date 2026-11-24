@@ -104,9 +104,13 @@ What the waveform has:
 
 - A run that was cancelled: all the values that it recorded before it
   stopped.
-- A process that was killed: the values up to about one second before it was
-  killed. A recording writes the new values of all signals to the spill file
-  once each second.
+- A process that was killed, on Linux: all the values that it recorded. A
+  value is in the spill file as soon as it is recorded.
+- A process that was killed, on other platforms or where the spill file
+  could not be mapped into memory: the values up to the last region of each
+  signal. Up to 16 KiB of the newest values of each signal are lost, and
+  all values of a signal that changes rarely (see [The spill
+  file](../reference/waveform-files.md#the-spill-file)).
 
 In both cases the last cycles of the signals can end at different times,
 over a few cycles: a signal that the simulation did not evaluate in a cycle

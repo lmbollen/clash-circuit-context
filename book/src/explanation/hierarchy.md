@@ -93,6 +93,11 @@ argument, and Clash makes a variant of a function for each constant
 argument: such a function with `OPAQUE` becomes one module for each call
 site (see [How to generate HDL](../how-to/hdl.md)).
 
+A number never makes a name that the scope already has. If `name_0` is
+taken, for example by the first element of a pair `name`, the instances get
+two underscores: `name__0`, `name__1`, … (see [Names that are
+taken](../reference/waveform-files.md#names-that-are-taken)).
+
 For how signals and scopes are ordered and named in a waveform, see
 [Waveform files](../reference/waveform-files.md#the-waveform).
 

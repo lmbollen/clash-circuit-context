@@ -41,6 +41,23 @@ Warn.hs:24:3: warning: [-Wx-circuit-context-untraced]
     Add that constraint to the enclosing signature to record this binding.
 ```
 
+A closed binding without a signature, which GHC did not generalise:
+
+```haskell
+pulses :: (HasCircuitContext) => Signal System Bool -> Signal System Bool
+pulses inp = (&&) <$> inp <*> pulse
+ where
+  pulse = riseEvery clockGen resetGen enableGen d4
+{-# OPAQUE pulses #-}
+```
+
+```text
+Warn.hs:36:3: warning: [-Wx-circuit-context-untraced]
+    not traced: pulse :: Signal System Bool
+    It uses no local variable and has no type signature, and such a binding is left alone: GHC can generalise it, and recording it would stop that.
+    GHC did not generalise this one. Give it its type signature to record it: pulse :: Signal System Bool
+```
+
 ### `-Wx-circuit-context-undecided`
 
 The `BitPack` instance of `Awkward n` has the context `1 <= n`, and the
