@@ -439,9 +439,11 @@ what is in the way by its absolute path (`<dir> is a file, not a directory`,
 bad path fails a test that passes too. One path
 is one waveform: a VCD written at a path deletes an FST at that path, and the
 other way round, because the sidecar describes the waveform written last. Give
-each test its own path. With `spill = OnDisk`, a recording locks its spill
-file: a second recording with the spill file of one that is running (in the
-same process, or in another) fails at once with an error that names the file.
+each call its own path, also two calls in one test: two calls with one path
+write the same files, and one waveform is lost. With `spill = OnDisk`, a
+recording locks its spill file: a second recording with the spill file of one
+that is running (in the same process, or in another) fails at once with an
+error that names the file.
 
 `withWaveform` runs the simulation without recording. When the check throws,
 it runs it again with recording, writes the waveform, prints its absolute path
@@ -560,12 +562,15 @@ Every case simulates without recording. Each case also leaves a footnote that,
 when Hedgehog prints it, simulates that case again with recording and writes
 the waveform. Hedgehog prints footnotes only for the case it reports, so the
 waveform is of the **shrunk counterexample**, recorded once, and the report
-ends with its path. `AtSize s` additionally keeps the first passing case of at
-least size `s` (once per waveform path), as `<path>_<s>.fst`: a small size
-gives a short waveform you can read end to end. Each case, a discarded one
-too, is one size larger than the one before, so a property of `n` tests and
-`d` discarded cases reaches sizes below `min (n + d) 100` (Hedgehog starts
-again at size 0 after 99).
+ends with its path. Give each call of `simulateWaveform` its own path, not
+only each property: of two calls with one path (in one property, however the
+path is spelled), one waveform is lost, and the report names the same file
+twice. Nothing checks this. `AtSize s` additionally keeps the first passing
+case of at least size `s` (once per waveform path), as `<path>_<s>.fst`: a
+small size gives a short waveform you can read end to end. Each case, a
+discarded one too, is one size larger than the one before, so a property of
+`n` tests and `d` discarded cases reaches sizes below `min (n + d) 100`
+(Hedgehog starts again at size 0 after 99).
 
 A worked version of all of this is the Example level of the test suite,
 which `check.sh` builds and runs:

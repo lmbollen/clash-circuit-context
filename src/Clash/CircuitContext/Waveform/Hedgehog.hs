@@ -25,6 +25,11 @@ nothing extra. When it fails, Hedgehog's report ends with
 reports, the smallest counterexample. The options are those of
 "Clash.CircuitContext.Waveform", re-exported here.
 
+Give each call of 'simulateWaveform' its own path, also two calls in one
+property: one path is one pair of files, so of two calls with one path
+(however it is spelled) one waveform is lost, and the report names the same
+file for both. Nothing checks this.
+
 == How the counterexample is recorded
 
 A property does not know which of its cases Hedgehog will report: every case
@@ -88,7 +93,9 @@ data Capture
     property of @n@ tests and @d@ discarded cases reaches sizes below
     @min (n + d) 100@. The waveform of this case has the size in its path:
     @\<path\>_\<size\>.fst@ for @AtSize \<size\>@, so the counterexample's
-    waveform does not replace it, nor it the counterexample's.
+    waveform does not replace it, nor it the counterexample's. Give each call
+    of 'simulateWaveform' its own path: two calls with one path keep one
+    case between them.
     -}
     AtSize Size
   deriving (Show, Eq)
@@ -99,11 +106,14 @@ except as 'Capture' asks; see the module header. A waveform shows the cycles
 
 The counterexample's waveform is @\<path\>.fst@ or @.vcd@ (and its @.json@
 sidecar), and the case of an 'AtSize' capture's @\<path\>_\<size\>.fst@ or
-@.vcd@; give each property its own path. A relative path is relative to the
-working directory, and missing directories are made, before the case runs:
-a directory that cannot hold the waveform (a part of the path is a file, or
-a directory is not writable) fails the property at once, with an error that
-names it.
+@.vcd@. Give each CALL its own path, not only each property: two calls with
+one path (in one property, also spelled two ways, such as @a\/b@ and
+@.\/a\/b@) write the same files, so the waveform of one of them is lost, and
+the report names the one file twice. This is not checked. A relative path is
+relative to the working directory, and missing directories are made, before
+the case runs: a directory that cannot hold the waveform (a part of the path
+is a file, or a directory is not writable) fails the property at once, with
+an error that names it.
 -}
 simulateWaveform ::
   forall dom a.

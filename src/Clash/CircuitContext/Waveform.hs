@@ -33,8 +33,9 @@ functions make the directory, and create a file in it, before the design
 runs, and the error names the absolute path of what is in the way
 (@\<dir\> is a file, not a directory@, @\<dir\> is not writable@). One path is one
 waveform: writing it in one format deletes a waveform of the other format
-at that path, and two tests must not share a path (a recording with the
-spill file of one that is running is refused, see 'OnDisk'). While a
+at that path, and two calls (in one test or in two) must not share a path
+(a recording with the spill file of one that is running is refused, see
+'OnDisk'). While a
 simulation records, its values are kept as compact records, in memory or in
 @\<path\>.spill@ (see 'Spill'); a spill file is
 deleted when the waveform is written, and kept when a recording run is
