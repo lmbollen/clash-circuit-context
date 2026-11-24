@@ -44,6 +44,8 @@ data AbiNames = AbiNames
   {- ^ The DATA constructor, which is what an @ANN@ pragma's expression
   mentions.
   -}
+  , abiNonTranslatable :: GHC.Name
+  -- ^ The @NonTranslatable@ family.
   , abiExplicitRecorders :: [GHC.Name]
   {- ^ The recording combinators a designer writes BY HAND. A binding whose
   right-hand side already applies one of these under the binder's own name
@@ -78,6 +80,7 @@ lookupAbiNames = do
           ["traceSignalC", "traceSignalSW", "probe", "probeSW"]
       -- 'Traceable''s own method, so it lives in Auto rather than Core.
       traceNamedN <- GHC.lookupOrig am (GHC.mkVarOcc "traceNamed")
+      nonTranslatableN <- GHC.lookupOrig am (GHC.mkTcOcc "NonTranslatable")
       pure
         ( Just
             AbiNames
@@ -92,6 +95,7 @@ lookupAbiNames = do
               , abiHasCircuitContext = hasCircuitContextN
               , abiHasProbe = hasProbeN
               , abiNoCircuitScope = noCircuitScopeN
+              , abiNonTranslatable = nonTranslatableN
               , abiExplicitRecorders = traceNamedN : explicitNs
               }
         )

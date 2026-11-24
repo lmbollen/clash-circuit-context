@@ -27,6 +27,7 @@ module Clash.CircuitContext.Plugin (plugin) where
 import qualified GHC.Plugins as GHC
 import qualified GHC.TcPlugin.API as API
 
+import Clash.CircuitContext.Plugin.Closed (reportClosedSkips)
 import Clash.CircuitContext.Plugin.Oracle (oracle)
 import Clash.CircuitContext.Plugin.Rename (renamePass)
 
@@ -34,6 +35,7 @@ plugin :: GHC.Plugin
 plugin =
   GHC.defaultPlugin
     { GHC.renamedResultAction = renamePass
+    , GHC.typeCheckResultAction = reportClosedSkips
     , GHC.tcPlugin = \_opts -> Just (API.mkTcPlugin oracle)
     , GHC.pluginRecompile = GHC.purePlugin
     }

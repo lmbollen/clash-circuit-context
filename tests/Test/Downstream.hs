@@ -6,6 +6,7 @@
 {-# LANGUAGE ImplicitParams #-}
 {-# LANGUAGE LiberalTypeSynonyms #-}
 {-# LANGUAGE RankNTypes #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeOperators #-}
 {-# LANGUAGE UndecidableInstances #-}
@@ -54,6 +55,9 @@ module Test.Downstream (
   -- * F6: the closed-binding silence, and double registration
   signedClosed,
   selfRecursive,
+  unsignedClosed,
+  unsignedClosedHiddenOut,
+  unsignedClosedScopedOut,
   handWritten,
 
   -- * Higher-rank signatures
@@ -323,6 +327,58 @@ selfRecursive inp = out
 
   nothings = Nothing : nothings
 {-# OPAQUE selfRecursive #-}
+
+{- | Unsigned closed bindings, which are still left alone (they may be
+generalised), but are no longer silent: after type checking, the ones GHC
+did NOT generalise are reported, with the signature that records them.
+
+@check.sh@ asserts a @-Wx-circuit-context-untraced@ warning for @pulse@,
+@konst@ and (with the hint about the enclosing type variable) @hiddenPulse@,
+and none for @nothings@: GHC generalised that one (it is polymorphic in its
+payload, used at two types below), so it has no single waveform.
+-}
+unsignedClosed :: (HasCircuitContext) => Signal System Int -> Signal System Int
+unsignedClosed inp = out
+ where
+  out =
+    inp
+      + (fromEnum <$> pulse)
+      + (fromEnum <$> konst)
+      + (maybe 0 fromEnum <$> (nothings :: Signal System (Maybe Bool)))
+      + (fromMaybe 0 <$> (nothings :: Signal System (Maybe Int)))
+  pulse = E.riseEvery clockGen resetGen enableGen d4
+  konst = pure True :: Signal System Bool
+  nothings = pure Nothing
+{-# OPAQUE unsignedClosed #-}
+
+-- | The same with a hidden clock: its type names the enclosing @dom@.
+unsignedClosedHidden ::
+  (HasCircuitContext, HiddenClockResetEnable dom) => Signal dom Bool
+unsignedClosedHidden = hiddenPulse
+ where
+  hiddenPulse = riseEvery d4
+{-# OPAQUE unsignedClosedHidden #-}
+
+-- | 'unsignedClosedHidden' in the system domain.
+unsignedClosedHiddenOut :: (HasCircuitContext) => Signal System Bool
+unsignedClosedHiddenOut =
+  withClockResetEnable clockGen resetGen enableGen unsignedClosedHidden
+
+{- | The same, with @dom@ bound by an explicit forall under
+ScopedTypeVariables: the signature to add can name it as it is, so the
+warning does not say to bind it.
+-}
+unsignedClosedScoped ::
+  forall dom. (HasCircuitContext, HiddenClockResetEnable dom) => Signal dom Bool
+unsignedClosedScoped = scopedPulse
+ where
+  scopedPulse = riseEvery d4
+{-# OPAQUE unsignedClosedScoped #-}
+
+-- | 'unsignedClosedScoped' in the system domain.
+unsignedClosedScopedOut :: (HasCircuitContext) => Signal System Bool
+unsignedClosedScopedOut =
+  withClockResetEnable clockGen resetGen enableGen unsignedClosedScoped
 
 -- | The same counter, written with a hidden clock, reset and enable.
 hiddenCounter ::

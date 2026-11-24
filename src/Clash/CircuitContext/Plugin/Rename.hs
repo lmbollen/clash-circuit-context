@@ -79,7 +79,7 @@ Supports GHC 9.6 to 9.12 (CPP at the few AST churn points).
 -}
 module Clash.CircuitContext.Plugin.Rename (renamePass) where
 
-import Control.Monad (filterM)
+import Control.Monad (filterM, when)
 import qualified Data.Generics as SYB
 import Data.List (isPrefixOf)
 import Data.Maybe (fromMaybe, mapMaybe)
@@ -93,6 +93,7 @@ import qualified GHC.Data.Bag as GHC
 import qualified GHC.Core.ConLike as GHC (ConLike (RealDataCon))
 import GHC.Hs
 import qualified GHC.Iface.Env as GHC (newGlobalBinder)
+import qualified GHC.LanguageExtensions as LangExt
 import qualified GHC.Plugins as GHC
 import qualified GHC.Tc.Types as GHC
 import qualified GHC.Tc.Utils.Env as GHC (tcLookupGlobal, tcLookupTyCon)
@@ -103,6 +104,7 @@ import GHC.Types.SrcLoc (GenLocated (..), unLoc)
 import qualified GHC.Types.TyThing as GHC (TyThing (AConLike, AnId))
 import GHC.Types.Unique.Supply (MonadUnique (getUniqueM))
 
+import Clash.CircuitContext.Plugin.Closed (noteClosedSkip)
 import qualified Clash.CircuitContext.Plugin.Diagnostics as Diag
 import Clash.CircuitContext.Plugin.Names (AbiNames (..), lookupAbiNames)
 
@@ -118,6 +120,11 @@ data Ctx = Ctx
   , ctxSyns :: [(GHC.Name, LHsType GhcRn)]
   , ctxSynParams :: [(GHC.Name, [GHC.Name])]
   -- ^ The parameters of each of 'ctxSyns', to expand an application of it.
+  , ctxScoped :: [GHC.OccName]
+  {- ^ The type variables in scope in the body of the top-level function
+  being rewritten: those its signature binds with an explicit @forall@,
+  under @ScopedTypeVariables@. A local signature can name them.
+  -}
   }
 
 {- | One thing to say, and where. Rendered by
@@ -141,6 +148,7 @@ renamePass _opts env grp =
             { ctxAbi = abi
             , ctxSyns = localSynonyms grp
             , ctxSynParams = localSynonymParams grp
+            , ctxScoped = []
             }
       topEntityErrors ctx grp
       (grp', notes) <- rewriteGroup ctx grp
@@ -665,7 +673,15 @@ onTopBind ::
 onTopBind ctx modes opaques sigTypes lb@(L l b) = case b of
   FunBind{fun_id = L _ nm}
     | Just mode <- lookup nm modes -> do
-        mg1 <- rewriteInside ctx mode (fun_matches b)
+        scopedTyVars <- GHC.xopt LangExt.ScopedTypeVariables <$> GHC.getDynFlags
+        let scoped =
+              [ GHC.occName v
+              | scopedTyVars
+              , Just (HsWC _ (L _ (HsSig _ HsOuterExplicit{hso_bndrs = bndrs} _))) <-
+                  [lookup nm sigTypes]
+              , v <- hsLTyVarNames bndrs
+              ]
+        mg1 <- rewriteInside ctx{ctxScoped = scoped} mode (fun_matches b)
         if mode == TraceMode && nm `elem` opaques
           then do
             arity <-
@@ -749,6 +765,24 @@ rewriteInside ctx mode0 = goM mode0
   wrappable nm localSigned rankN fvs =
     nm `notElem` rankN && signedOrOpen nm localSigned fvs
 
+  -- A binder the closed-binding skip ALONE leaves alone, and that would have
+  -- been wrapped otherwise: reported after type checking if GHC did not
+  -- generalise it (see "Clash.CircuitContext.Plugin.Closed"). Not one whose
+  -- right-hand side already records it by hand.
+  closedSkip spn inferred nm localSigned rankN fvs rhss =
+    wantedBinder nm spn
+      && not inferred
+      && nm `notElem` rankN
+      && not (signedOrOpen nm localSigned fvs)
+      && not
+        ( or
+            [ alreadyInjected recorders (GHC.getOccString nm) body
+            | GRHSs _ grhss _ <- rhss
+            , L _ (GRHS _ _ body) <- grhss
+            ]
+        )
+  recorders = abiAutoTrace abi : abiAutoProbe abi : abiExplicitRecorders abi
+
   -- A bind that expands (pattern binders renamed + sibling trace binds)
   -- makes the group recursive: the extra binds reference binders of their
   -- own group. Their free-variable sets are precise, so the typechecker's
@@ -786,6 +820,11 @@ rewriteInside ctx mode0 = goM mode0
       let m = fromMaybe inherited (lookup nm localModes)
       ms <- goM m (fun_matches b)
       inferred <- inferredHigherRank localSigned nm (zeroArgGRHSs ms)
+      when
+        ( all (null . matchPats . unLoc) (mgEquations ms)
+            && closedSkip (locA l) inferred nm localSigned rankN (fun_ext b) (zeroArgGRHSs ms)
+        )
+        (noteClosedSkip nm (locA l) (m == TraceMode) (ctxScoped ctx))
       pure
         ( L
             l
@@ -803,6 +842,9 @@ rewriteInside ctx mode0 = goM mode0
       let m = fromMaybe inherited (lookup nm localModes)
       rhs <- goM m (pat_rhs b)
       inferred <- inferredHigherRank localSigned nm [rhs]
+      when
+        (closedSkip (locA l) inferred nm localSigned rankN (pat_ext b) [rhs])
+        (noteClosedSkip nm (locA l) (m == TraceMode) (ctxScoped ctx))
       pure
         ( L
             l
@@ -1198,11 +1240,15 @@ wantedBinder nm spn =
 ('GHC.isExternalName') names and itself? Closed bindings are the ones GHC
 generalizes even under @MonoLocalBinds@ (polymorphic local helpers:
 @noWrite = pure Nothing@, shared configs, …). They must NOT be wrapped in
-@autoTrace@: the injected constraint carries a @CanTrace@ type-family
-application, which GHC refuses to quantify over in an inferred type, so the
-binder would be monomorphized at its first use — and a second use at a
-different type becomes a baffling type error (found on bittide's @timeWb@,
+@autoTrace@: the binding has no arguments and no signature, so the
+Monomorphism Restriction keeps GHC from generalising any type variable that
+a constraint mentions, and the injected @AutoTrace (CanTrace t) t@ mentions
+every type variable of @t@. The binder becomes monomorphic, and a second use
+at a different type is a baffling type error (found on bittide's @timeWb@,
 whose @noWrite@ is used at two register types; F9 in the dogfooding notes).
+(With @NoMonomorphismRestriction@ GHC does quantify over the constraint: the
+binder then stays polymorphic, but takes the recorder's evidence as an
+argument, so it is no longer one value shared by its uses.)
 
 A closed binding is not a constant, though: @clockGen@, @resetGen@ and
 @enableGen@ are top-level names, so @cnt = register clockGen resetGen
@@ -1226,7 +1272,9 @@ at two different types. The wrap makes it monomorphic, and the second use
 does not compile. A register loop cannot be such a binding. Give it a
 signature, or start its name with @_@.
 
-Any other closed binding is still skipped, and not reported.
+Any other closed binding is still skipped. It is reported after type
+checking when GHC did not generalise it, which the renamer cannot know: see
+"Clash.CircuitContext.Plugin.Closed".
 -}
 closedBind :: GHC.Name -> GHC.NameSet -> Bool
 closedBind self fvs =

@@ -165,8 +165,11 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
    the code is untouched. A *closed* binding — one with no free local
    variables — is traced only if it carries its own type signature or refers
    to itself (a register loop such as `cnt = register clockGen resetGen
-   enableGen 0 (cnt + 1)`); otherwise it is skipped, because GHC generalises
-   it and the injected constraint cannot be quantified in an inferred type. Untraceable types (no `BitPack`,
+   enableGen 0 (cnt + 1)`); otherwise it is skipped, because GHC may
+   generalise it, and under the Monomorphism Restriction the injected
+   constraint would stop that. A skipped binding that GHC did *not*
+   generalise is reported (`-Wx-circuit-context-untraced`), with the
+   signature that records it. Untraceable types (no `BitPack`,
    unknown domain, missing evidence for a polymorphic type) fall back to
    identity — by
    design, decided by a typechecker-plugin oracle (`CanTrace`), so
@@ -306,7 +309,7 @@ Five categories, because they differ in how likely each is to be a defect:
 | `-Wx-circuit-context` | The plugin could not honour something the source unambiguously asked for. Nothing benign lands here. |
 | `-Wx-circuit-context-uninstrumented` | A signature asks for instrumentation somewhere the pass does not reach or does not scope: `HasCircuitContext` without `OPAQUE`, `OPAQUE` without a signature, both constraints at once, a class or instance method body. |
 | `-Wx-circuit-context-undecided` | The oracle could not decide, and fell back to not tracing. **The one that matters**: this is the approximation admitting it may be wrong, not a fact about your types. |
-| `-Wx-circuit-context-untraced` | The oracle found no instance for something that could have been recorded, and the message names the instance or constraint to add. Bindings no recorder could ever take are not reported (see below). |
+| `-Wx-circuit-context-untraced` | The oracle found no instance for something that could have been recorded, and the message names the instance or constraint to add. Also an unsigned closed local binding that the plugin left alone and GHC did not generalise; the message names the signature to add. Bindings no recorder could ever take are not reported (see below). |
 | `-Wx-circuit-context-undescribed` | The signal is recorded, but as raw bits: its payload has no `clash-shockwaves` `Waveform` instance, so a typed viewer cannot name its constructors and fields. Nothing is lost; derive the instance, or silence the category if bits are what you want. |
 
 What counts as "could have been recorded" depends on the mode. A trace
@@ -744,13 +747,18 @@ actually collects a waveform.
   The `cabal.project` here pins the 1.11 upstream commit this package is
   developed against (1.11 is not yet on Hackage).
 * An **unsigned closed** local binding that does not refer to itself is
-  skipped before the oracle is consulted, so it produces neither a wire nor
-  a warning — the one path that is silent in both channels. Give it a type
-  signature to have it traced. A self-referring one is traced, with one
-  exception: an unconstrained self-referring binding of a type that is not
-  `NonTranslatable` (`s = Nothing :- s`, an infinite stream of your own
-  type) becomes monomorphic, so it cannot be used at two types. Give it a
-  signature, or start its name with `_`.
+  skipped before the oracle is consulted, so it produces no wire. When GHC
+  did not generalise it (its type has no type variable of its own, such as
+  `pulse = riseEvery clockGen resetGen enableGen d4`), the plugin says so
+  after type checking, in `-Wx-circuit-context-untraced`, and names the
+  signature to add. One that GHC did generalise (`noWrite = pure Nothing`,
+  of type `forall a. Signal dom (Maybe a)`) has no single waveform and is
+  not reported. Give it a type signature to have it traced. A
+  self-referring one is traced, with one exception: an unconstrained
+  self-referring binding of a type that is not `NonTranslatable`
+  (`s = Nothing :- s`, an infinite stream of your own type) becomes
+  monomorphic, so it cannot be used at two types. Give it a signature, or
+  start its name with `_`.
 * Instance-method and class-default bodies are not instrumented: the
   renamer pass rewrites value bindings only. A signature there carrying the
   constraint is reported (`-Wx-circuit-context-uninstrumented`) rather than

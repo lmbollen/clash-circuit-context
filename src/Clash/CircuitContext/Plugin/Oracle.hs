@@ -55,7 +55,7 @@ missing with nothing said about it. Two things separate those:
 They report in separate warning categories; see
 "Clash.CircuitContext.Plugin.Diagnostics".
 -}
-module Clash.CircuitContext.Plugin.Oracle (oracle) where
+module Clash.CircuitContext.Plugin.Oracle (oracle, recordableShape) where
 
 import Data.IORef (IORef, newIORef, readIORef, writeIORef)
 import Data.Maybe (isJust)
@@ -63,7 +63,7 @@ import Data.Maybe (isJust)
 import qualified GHC.Builtin.Names as GHC
 import qualified GHC.Builtin.Types as GHC
 import qualified GHC.Core.DataCon as GHC
-import qualified GHC.Core.FamInstEnv as GHC (normaliseType)
+import qualified GHC.Core.FamInstEnv as GHC (normaliseType, reduceTyFamApp_maybe)
 import qualified GHC.Core.InstEnv as GHC
 import qualified GHC.Core.Predicate as GHC
 import qualified GHC.Core.Reduction as GHC (reductionReducedType)
@@ -82,6 +82,7 @@ import qualified GHC.Plugins as GHC (
   nameModule_maybe,
   text,
  )
+import qualified GHC.Tc.Instance.Family as GHC (tcGetFamInstEnvs)
 {- FOURMOLU_DISABLE -}
 #if __GLASGOW_HASKELL__ >= 912
 import qualified GHC.Tc.Types.CtLoc as GHC (ctLocSpan)
@@ -674,6 +675,34 @@ nonTranslatable env ty = do
         GHC.mkTyConApp (nonTranslatableTyCon env) [ty]
   pure (reduced `GHC.eqType` boolTy True)
 
+{- | Whether a binding of this type is one the recorder of this mode takes,
+as far as the type's shape and @NonTranslatable@ tell: 'neverRecordable'
+without a requirement to blame. For a binding the type checker has finished
+with, outside the solver (see "Clash.CircuitContext.Plugin.Closed").
+-}
+recordableShape ::
+  -- | the @NonTranslatable@ family
+  API.TyCon ->
+  -- | 'True' for a trace, 'False' for a probe
+  Bool ->
+  API.Type ->
+  GHC.TcM Bool
+recordableShape nonTranslatableTc tracing t = do
+  famEnvs <- GHC.tcGetFamInstEnvs
+  let
+    reduce tc args =
+      pure (GHC.reductionReducedType <$> GHC.reduceTyFamApp_maybe famEnvs GHC.Nominal tc args)
+    reach = reachesWith (layerWith reduce)
+    declined =
+      GHC.reductionReducedType
+        (GHC.normaliseType famEnvs GHC.Nominal (GHC.mkTyConApp nonTranslatableTc [t]))
+        `GHC.eqType` boolTy True
+  target <-
+    if tracing
+      then reach True (\case Wire -> True; _ -> False) t
+      else not <$> reach False (\case Wire -> True; ClockLine -> True; _ -> False) t
+  pure (target && not declined)
+
 -- | What a type is made of, one constructor layer down.
 data Layer
   = -- | A function or a polymorphic value: a computation, not data.
@@ -697,7 +726,12 @@ data Layer
     Opaque
 
 layer :: (API.MonadTcPlugin m) => API.Type -> m Layer
-layer = go (10 :: Int)
+layer = layerWith reduceFamily
+
+-- | 'layer', reducing type families with the given function.
+layerWith ::
+  (Monad m) => (API.TyCon -> [API.Type] -> m (Maybe API.Type)) -> API.Type -> m Layer
+layerWith reduce = go (10 :: Int)
  where
   go fuel ty
     | GHC.isFunTy ty || GHC.isForAllTy ty = pure Computation
@@ -708,7 +742,7 @@ layer = go (10 :: Int)
     | GHC.isTypeFamilyTyCon tc =
         if fuel <= 0
           then pure Opaque
-          else maybe (pure Opaque) (go (fuel - 1)) =<< reduceFamily tc args
+          else maybe (pure Opaque) (go (fuel - 1)) =<< reduce tc args
     | clashSignal "Signal" = pure Wire
     | clashSignal "Clock" = pure ClockLine
     | GHC.isPrimTyCon tc = pure Primitive
@@ -742,14 +776,19 @@ family can choose a field's type by it (@X 'True@ holding a signal where
 @X 'False@ does not), so the two are different types to the walk.
 -}
 reaches :: (API.MonadTcPlugin m) => Bool -> (Layer -> Bool) -> API.Type -> m Bool
-reaches blind hit t0 = go walkFuel [] [t0]
+reaches = reachesWith layer
+
+-- | 'reaches', reading each layer with the given function.
+reachesWith ::
+  (Monad m) => (API.Type -> m Layer) -> Bool -> (Layer -> Bool) -> API.Type -> m Bool
+reachesWith layerOf blind hit t0 = go walkFuel [] [t0]
  where
   go _ _ [] = pure False
   go fuel seen (t : rest)
     | fuel <= 0 = pure blind
     | Just k <- key t, any (sameKey k) seen = go (fuel - 1) seen rest
     | otherwise = do
-        l <- layer t
+        l <- layerOf t
         let seen' = maybe seen (: seen) (key t)
         case l of
           _ | hit l -> pure True

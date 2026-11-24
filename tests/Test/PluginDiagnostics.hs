@@ -457,7 +457,11 @@ main = do
                 , Downstream.f2Out
                 , Downstream.runHarness
                 , Downstream.runHarnessUnvouched
-                , Downstream.signedClosed (pure 1) + Downstream.selfRecursive (pure 1)
+                , Downstream.signedClosed (pure 1)
+                    + Downstream.selfRecursive (pure 1)
+                    + Downstream.unsignedClosed (pure 1)
+                    + (fromEnum <$> Downstream.unsignedClosedHiddenOut)
+                    + (fromEnum <$> Downstream.unsignedClosedScopedOut)
                 , Downstream.handWritten (pure 1)
                 , Downstream.rankN (pure 1)
                 , Downstream.rankNArg id (pure 1)

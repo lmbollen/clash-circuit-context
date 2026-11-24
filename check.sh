@@ -139,7 +139,12 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     "the oracle could not decide: 1 <= n" \
     "the oracle could not decide: KnownNat (n + 1)" \
     "the oracle could not decide: BitPack (Overlapped tag)" \
-    "Name the binding with traceNamed, which takes Traceable"
+    "Name the binding with traceNamed, which takes Traceable" \
+    "not traced: pulse :: Signal System Bool" \
+    "not traced: konst :: Signal System Bool" \
+    "not traced: hiddenPulse :: Signal dom Bool" \
+    "bind them there with an explicit forall" \
+    "Give it its type signature to record it: pulse :: Signal System Bool"
   do
     if grep -qF "$want" "$log"; then
       echo "ok: diagnostic fired: $want"
@@ -174,6 +179,27 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
       fi
     done
     [ -n "$quiet" ] && echo "ok: higher-rank bindings are instrumented or left alone, without a word"
+  fi
+  # A closed binding GHC generalised has no single waveform, and is not
+  # reported (Test/Downstream.hs unsignedClosed.nothings).
+  if grep -qF "nothings ::" "$log"; then
+    echo "FAIL: reported a closed binding that GHC generalised"; fail=1
+  else
+    echo "ok: a generalised closed binding is not reported"
+  fi
+  # The signature a closed-binding warning names needs no forall hint when
+  # the enclosing signature already binds its type variables with an
+  # explicit forall under ScopedTypeVariables (Test/Downstream.hs
+  # unsignedClosedScoped.scopedPulse). The warning ends at GHC's excerpt.
+  if grep -q "Compiling Test.Downstream" "$log"; then
+    scoped=$(awk '/not traced: scopedPulse ::/ {p = 1} p && /^ *[0-9]* *\|/ {exit} p' "$log")
+    if [ -z "$scoped" ]; then
+      echo "FAIL: no warning for the closed binding scopedPulse"; fail=1
+    elif grep -q "explicit forall" <<<"$scoped"; then
+      echo "FAIL: the warning for scopedPulse says to bind a type variable already in scope"; fail=1
+    else
+      echo "ok: a closed-binding warning gives no forall hint for a scoped type variable"
+    fi
   fi
   # Integer inside a composite: no BitPack, and the fix is Signed 64, never a
   # NonTranslatable declaration (that would silence every later real fix).

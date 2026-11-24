@@ -40,6 +40,9 @@ Five categories, because they differ in how likely each is to be a defect:
 [@x-circuit-context-untraced@] The oracle
   found no instance for a binding that could have been recorded. A real
   answer, and the message names the instance or constraint that would fix it.
+  Also a closed local binding without a signature that the renamer left
+  alone and GHC did not generalise: the message names the signature that
+  records it (see "Clash.CircuitContext.Plugin.Closed").
   A binding no recorder could ever take (a plain value in a traced component,
   a signal in a probed step, a type declared @NonTranslatable@) is not
   reported at all: see @neverRecordable@ in
