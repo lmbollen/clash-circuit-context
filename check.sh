@@ -269,6 +269,24 @@ if grep -q "Compiling Test.RewriterShapes" "$log" 2>/dev/null; then
   fi
 fi
 
+# A step function given to mealyProbed (or a friend) whose type has no
+# HasProbe probes nothing, and the plugin says so: in Test/ProbedSteps.hs on
+# each line marked "-- warns", and nowhere else. The other step functions
+# there probe or ask for probes. Same fresh-build caveat.
+if grep -q "Compiling Test.ProbedSteps" "$log" 2>/dev/null; then
+  steps=tests/Test/ProbedSteps.hs
+  gotLines=$(awk -v f="$steps" '
+    index($0, f ":") == 1 && / warning/ { split($0, p, ":"); at = p[2]; next_is = 1; next }
+    next_is { if ($0 ~ /probes nothing/) print at; next_is = 0 }
+  ' "$log" | sort -nu | tr '\n' ' ')
+  wantLines=$(awk '/-- warns$/ { print NR }' "$steps" | tr '\n' ' ')
+  if [ "$gotLines" = "$wantLines" ]; then
+    echo "ok: a step function without HasProbe is reported, and no other (lines $gotLines)"
+  else
+    echo "FAIL: probes-nothing warnings of $steps at lines [$gotLines], want [$wantLines]"; fail=1
+  fi
+fi
+
 # A payload without Waveform is still traced and probed, as raw bits. That
 # is reported -- it asks for the instance -- but as undescribed, never as
 # untraced/undecided: those mean a LOST signal, and

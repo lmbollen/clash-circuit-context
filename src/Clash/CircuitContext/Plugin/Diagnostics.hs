@@ -28,8 +28,11 @@ Five categories, because they differ in how likely each is to be a defect:
 [@x-circuit-context-uninstrumented@] A signature asks for instrumentation
   somewhere the plugin does not reach, or does not scope: @HasCircuitContext@
   without @OPAQUE@, @OPAQUE@ without a signature, both constraints at once,
-  an instance or class-default body. Often intended (a small helper flattening
-  into its caller), which is why it is its own category.
+  an instance or class-default body. Also the reverse: a step function
+  without @HasProbe@ given to @mealyProbed@ (or a friend), which probes
+  nothing (see "Clash.CircuitContext.Plugin.Steps"). Often intended (a small
+  helper flattening into its caller, a step function with nothing to probe),
+  which is why it is its own category.
 
 [@x-circuit-context-undecided@] The traceability oracle could not decide, and
   fell back to NOT tracing. This is the category that matters most: the oracle

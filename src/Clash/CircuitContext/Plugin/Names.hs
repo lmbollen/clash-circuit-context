@@ -46,6 +46,12 @@ data AbiNames = AbiNames
   -}
   , abiNonTranslatable :: GHC.Name
   -- ^ The @NonTranslatable@ family.
+  , abiProbedCombinators :: [(GHC.Name, String)]
+  {- ^ The functions that take a step function of the type
+  @(HasProbe) => …@ (@mealyProbed@ and friends), each with the function of
+  clash-prelude that does the same without probes (see
+  "Clash.CircuitContext.Plugin.Steps").
+  -}
   , abiExplicitRecorders :: [GHC.Name]
   {- ^ The recording combinators a designer writes BY HAND. A binding whose
   right-hand side already applies one of these under the binder's own name
@@ -78,6 +84,15 @@ lookupAbiNames = do
         mapM
           (GHC.lookupOrig cm . GHC.mkVarOcc)
           ["traceSignalC", "traceSignalSW", "probe", "probeSW"]
+      probedNs <-
+        mapM
+          (\(f, plain) -> flip (,) plain <$> GHC.lookupOrig cm (GHC.mkVarOcc f))
+          [ ("mealyProbed", "mealy")
+          , ("mooreProbed", "moore")
+          , ("mealyBProbed", "mealyB")
+          , ("mooreBProbed", "mooreB")
+          , ("probeFmap", "fmap")
+          ]
       -- 'Traceable''s own method, so it lives in Auto rather than Core.
       traceNamedN <- GHC.lookupOrig am (GHC.mkVarOcc "traceNamed")
       nonTranslatableN <- GHC.lookupOrig am (GHC.mkTcOcc "NonTranslatable")
@@ -96,6 +111,7 @@ lookupAbiNames = do
               , abiHasProbe = hasProbeN
               , abiNoCircuitScope = noCircuitScopeN
               , abiNonTranslatable = nonTranslatableN
+              , abiProbedCombinators = probedNs
               , abiExplicitRecorders = traceNamedN : explicitNs
               }
         )

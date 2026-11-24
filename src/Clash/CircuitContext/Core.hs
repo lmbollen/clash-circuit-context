@@ -1251,6 +1251,12 @@ generation, and in probe-free simulation, this reduces to a plain
 plumbing (so no extra hardware in the netlist, and no per-cycle cost in a
 simulation that isn't collecting waveforms). The counter and probe binding
 appear only when a live context is actually recording (see 'simMealyProbed').
+
+The step function probes only when its type has 'HasProbe': a signature with
+'HasProbe' (the plugin then probes its local bindings), or calls of 'probe'.
+A step function without it probes nothing, and the plugin reports it in
+@-Wx-circuit-context-uninstrumented@. The same holds for 'mooreProbed',
+'mealyBProbed', 'mooreBProbed' and 'probeFmap'.
 -}
 mealyProbed ::
   forall dom s i o.

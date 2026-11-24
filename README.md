@@ -185,7 +185,10 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
    inside e.g. a mealy step function. A probe carries its type's
    `clash-shockwaves` description wherever the type has a `Waveform`
    instance, and is recorded as plain bits where it does not — see
-   [Typed waveforms](#typed-waveforms).
+   [Typed waveforms](#typed-waveforms). A step function whose type has no
+   `HasProbe` probes nothing: given to `mealyProbed`, `mooreProbed`,
+   `mealyBProbed`, `mooreBProbed` or `probeFmap`, it is reported in
+   `-Wx-circuit-context-uninstrumented`.
 4. **Innermost signature wins** — a local signature switches the mode for
    its subtree, so a `HasProbe` step function nested in a
    `HasCircuitContext` component probes rather than traces.
@@ -308,7 +311,7 @@ Five categories, because they differ in how likely each is to be a defect:
 | Flag | Fires when |
 | --- | --- |
 | `-Wx-circuit-context` | The plugin could not honour something the source unambiguously asked for. Nothing benign lands here. |
-| `-Wx-circuit-context-uninstrumented` | A signature asks for instrumentation somewhere the pass does not reach or does not scope: `HasCircuitContext` without `OPAQUE`, `OPAQUE` without a signature, both constraints at once, a class or instance method body. |
+| `-Wx-circuit-context-uninstrumented` | A signature asks for instrumentation somewhere the pass does not reach or does not scope: `HasCircuitContext` without `OPAQUE`, `OPAQUE` without a signature, both constraints at once, a class or instance method body. Also a step function without `HasProbe` given to `mealyProbed` (or `mooreProbed`, `mealyBProbed`, `mooreBProbed`, `probeFmap`): it probes nothing. |
 | `-Wx-circuit-context-undecided` | The oracle could not decide, and fell back to not tracing. **The one that matters**: this is the approximation admitting it may be wrong, not a fact about your types. |
 | `-Wx-circuit-context-untraced` | The oracle found no instance for something that could have been recorded, and the message names the instance or constraint to add. Also an unsigned closed local binding of a traced function that the plugin left alone and GHC did not generalise; the message names the signature to add. Bindings no recorder could ever take are not reported (see below). |
 | `-Wx-circuit-context-undescribed` | The signal is recorded, but as raw bits: its payload has no `clash-shockwaves` `Waveform` instance, so a typed viewer cannot name its constructors and fields. Nothing is lost; derive the instance, or silence the category if bits are what you want. |
