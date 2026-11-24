@@ -23,6 +23,7 @@ import qualified Prelude as P
 
 import Control.Exception (evaluate, throwIO)
 import Control.Monad.IO.Class (liftIO)
+import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
@@ -260,6 +261,42 @@ prop_declarationsAreSorted = property $ do
         _ -> []
     ]
 
+{- | Every signal has a name of its own in the VCD, whatever names its scope
+has: a name that the numbering of duplicates makes (@x_0@ for the first of
+two @x@) is never a name that is already there. A name used once is kept.
+The generator picks names that collide in each of the ways that numbering
+can: with a name used once (@x_0@), and with a number made for another
+name (@x__0@ for @x_@, and for @x@ when @x_0@ is taken). Before, the VCD
+kept one of two signals with the same name, and the other was not there.
+-}
+prop_namesAreUnique :: Property
+prop_namesAreUnique = property $ do
+  names <-
+    forAll
+      (Gen.list (Range.linear 1 8) (Gen.element ["x", "x_0", "x_1", "x_", "x__0", "x_0_0"]))
+  let n = P.length names
+  (_, _, vcd) <- recorded 0 1 $ do
+    let sampled =
+          component
+            "top"
+            [ sampleN 1 (traceSignalC nm (pure (P.fromIntegral i) :: Signal System (Unsigned 8)))
+            | (i, nm) <- P.zip [0 :: Int ..] names
+            ]
+    evaluate (sampled `deepseqX` sampled)
+  let waves = decodeVCDPaths 1 vcd
+  annotate (P.show (Map.keys waves))
+  Map.size waves === n
+  P.concatMap asInts (Map.elems waves)
+    `sameElements` model (P.map P.fromIntegral [0 .. n P.- 1])
+  [ nm
+    | nm <- names
+    , P.length (P.filter (P.== nm) names) P.== 1
+    , ("top." P.<> nm) `Map.notMember` waves
+    ]
+    === []
+ where
+  sameElements a b = List.sort a === List.sort b
+
 tests :: TestTree
 tests =
   testGroup
@@ -277,4 +314,5 @@ tests =
     , testProperty
         "a scope declares its signals in source order, its scopes by name"
         prop_declarationsAreSorted
+    , testProperty "every signal has a name of its own" prop_namesAreUnique
     ]

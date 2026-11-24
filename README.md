@@ -244,6 +244,15 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
   component, because the plugin writes `component "f"` inside `f`. To fix
   the names, use `imapComponents` (structural position) or call
   `component` by hand at each site.
+* Every signal and scope in a scope has a name of its own. A name that is
+  used once is kept as it is. The duplicates of a name (instances, or the
+  signals that the calls of a helper record) are numbered `name_0`,
+  `name_1`, … only if none of these names is already in the scope;
+  otherwise they get two underscores (`name__0`, …), or as many more as it
+  takes. So two `x` of a helper beside the elements `x_0` and `x_1` of a
+  pair `x` are `x__0` and `x__1`. The names of one scope are numbered in
+  name order, so the same signals always get the same names, and the VCD,
+  the FST and the sidecar use the same names.
 
 ### When something isn't traced
 

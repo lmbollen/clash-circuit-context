@@ -45,6 +45,7 @@ import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isNothing)
 import Data.Ord (Down (..))
+import qualified Data.Set as Set
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import System.Directory (
@@ -415,10 +416,22 @@ name with a single instance keeps its clean name; a name with several gets
 falling back to first-registration order only for instances born at the
 same call site (bare 'fmap' replication; use
 'Clash.CircuitContext.Core.imapComponents' instead).
+
+Every name in a scope is unique, also when a suffix makes a name that the
+scope already has (two @x@ beside the elements @x_0@ and @x_1@ of a pair
+@x@). The instances of a name get @name_i@ only when none of these names is
+in the scope yet; otherwise they get @name__i@ (two underscores), or as many
+underscores as it takes. Only a clean name, or a name that another group got
+with more underscores, can take such a name: two groups with one underscore
+never make the same name, as the digits after the last underscore are the
+suffix. The groups of a scope get their names in name order, after all clean
+names, so the names depend only on the keys. Two signals with one name would
+leave one of them out of the map, so that is an error.
 -}
 disambiguate :: forall v. Map.Map String v -> Map.Map String v
 disambiguate m =
-  Map.fromList
+  Map.fromListWithKey
+    (\k _ _ -> error ("clash-circuit-context: two signals are named " <> k <> " (a bug)"))
     [ (intercalate "." path, v)
     | (path, v) <- go [(map parseSeg (splitPath k), v) | (k, v) <- Map.toList m]
     ]
@@ -428,13 +441,27 @@ disambiguate m =
     concat
       [ [([name'], v) | ([], v) <- grp]
           ++ [(name' : p, v) | (p, v) <- go [(t, v) | (t@(_ : _), v) <- grp]]
-      | (name, byOrd) <- Map.toAscList grouped
-      , let idents = sortOn identKey (Map.toAscList byOrd)
-      , let n = length idents
-      , (i, (_ord, (_loc, grp))) <- zip [(0 :: Int) ..] idents
-      , let name' = if n <= 1 then name else name <> "_" <> show i
+      | (name', grp) <- concat (snd (List.mapAccumL named clean instances))
       ]
    where
+    -- Each name with the groups of its instances, in identKey order.
+    instances =
+      [ (name, map snd (sortOn identKey (Map.toAscList byOrd)))
+      | (name, byOrd) <- Map.toAscList grouped
+      ]
+    clean = Set.fromList [name | (name, [_]) <- instances]
+
+    -- A name's instances with their names, and the names taken after them.
+    named taken (name, [(_, grp)]) = (taken, [(name, grp)])
+    named taken (name, insts) = (foldr Set.insert taken names, zip names (map snd insts))
+     where
+      names = free (1 :: Int)
+      free k
+        | all (`Set.notMember` taken) ns = ns
+        | otherwise = free (k + 1)
+       where
+        ns = [name <> replicate k '_' <> show i | i <- [0 .. length insts - 1]]
+
     -- Call site first (design order); located instances before unlocated;
     -- registration ordinal as the last resort.
     identKey (ord', (loc, _)) =
