@@ -76,8 +76,27 @@ the blocks go:
   the spill file is mapped into memory: each signal has one region of at
   most 16 KiB mapped at a time, and the kernel writes it to the disk.
 
+The samples of the simulation are not part of the recording. `writeWaveform`
+and `simulateWaveform` return all samples, so they keep them in memory until
+they return. Their memory therefore grows with the length of the run, also
+with `OnDisk`. For a long run, evaluate the samples one at a time and keep
+none of them (see [How to keep waveforms from a test
+suite](../how-to/test-suite.md#record-a-long-run)).
+
 The waveform is written by a merge of the changes of all signals by time,
 straight to the file, so the text of a VCD is never in memory.
+
+An FST file also needs memory outside the Haskell heap. The FST library
+collects the value changes in a buffer of up to 128 MiB, and then
+compresses them into a block of the file. While an FST file is written, the
+memory of the process can therefore be up to about 200 MB more than the
+heap, also with a spill file. Each FST file that is written at the same
+time has its own buffer. The statistics of the GHC runtime (`+RTS -s`) show
+only the heap. A VCD file is written without such a buffer. For example, a
+run of 8 million cycles of one 16-bit counter, with a spill file, had a
+maximum residency of 0.2 MB. The peak memory of the process was 193 MB when
+it wrote an FST file, and 18 MB when it wrote a VCD file (measured with GHC
+9.10.3 in November 2026).
 
 On the AXI firmware test of bittide-hardware (237,000 cycles, 162 signals),
 the maximum residency was 167 MB in memory and 58 MB with the spill file. The

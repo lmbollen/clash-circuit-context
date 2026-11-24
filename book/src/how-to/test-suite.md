@@ -122,7 +122,8 @@ module Suite where
 import Clash.Explicit.Prelude
 import Clash.CircuitContext
 import Clash.CircuitContext.Waveform
-import Control.Exception (ErrorCall, try)
+import Clash.CircuitContext.Recording (discardRecording, recordingEnd, writeFST)
+import Control.Exception (ErrorCall, evaluate, throwIO, try)
 import Control.Monad (unless)
 import System.Directory (doesFileExist, removePathForcibly)
 import qualified Prelude as P
@@ -246,7 +247,7 @@ vcdOnDisk = defaultOptions{format = VCD, spill = OnDisk}
 | `format` | `FST` (default) | writes `<path>.fst`: compressed, often tens of times smaller than a VCD file |
 | | `VCD` | writes `<path>.vcd`: text |
 | `spill` | `InMemory` (default) | keeps the recorded values in memory until the waveform is written. Nothing is written to the disk but the waveform. A run that is stopped leaves nothing |
-| | `OnDisk` | writes the recorded values to `<path>.spill`, beside the waveform, while the simulation runs. The memory does not grow with the recorded history. A recording that is stopped after it recorded a cycle leaves the spill file, and you can write its waveform (see [How to keep the waveform of a stopped run](recover.md)). `withWaveform` records only when it runs a failed check again |
+| | `OnDisk` | writes the recorded values to `<path>.spill`, beside the waveform, while the simulation runs. The recorded values do not stay in memory, but the samples that a function returns do: see [Record a long run](#record-a-long-run). A recording that is stopped after it recorded a cycle leaves the spill file, and you can write its waveform (see [How to keep the waveform of a stopped run](recover.md)). `withWaveform` records only when it runs a failed check again |
 
 Surfer and GTKWave open both formats. Use one value for the whole suite: for
 example, define it once and give it to each function.
@@ -257,6 +258,37 @@ and the working directory of some CI containers. A spill file there uses
 as much RAM as it has bytes, so `spill = OnDisk` does not save memory. The
 spill file is always beside the waveform, so give such a test a path on a
 disk.
+
+## Record a long run
+
+`writeWaveform` returns all `stop` samples, and keeps them in memory until
+it returns. So its memory grows with `stop`, also with `spill = OnDisk`.
+`simulateWaveform` does the same. `withWaveform` gives the samples to the
+check, and the check decides which samples stay in memory.
+
+For a long run whose samples you do not need, record with `withRecording`,
+evaluate the samples one at a time, and keep none of them:
+
+```haskell,clash group=suite
+-- | Record n cycles into a spill file, and keep no sample.
+recordLong :: Int -> IO ()
+recordLong n = do
+  (result, rec) <- withRecording (Just "waveforms/long.spill") $
+    mapM_ (evaluate . rnfX) (sampleN n (accumulate (pure 1)))
+  written <- writeFST (0, recordingEnd rec) rec "waveforms/long.fst"
+  discardRecording rec
+  either throwIO pure result
+  either fail pure written
+
+>>> recordLong 1000
+```
+
+With a spill file, the memory of this run does not grow with `n`.
+`withRecording` takes the path of the spill file with its extension, and
+`writeFST` takes the path of the waveform with its extension. Its window is
+in units of the timescale: for one domain, one unit is one cycle. For more
+than one domain, see [How to record a design with more than one
+domain](multi-domain.md#record-a-long-run).
 
 ## Write no waveforms at all
 
