@@ -72,15 +72,18 @@ The renamer-stage rewrite ('GHC.renamedResultAction'):
   without @OPAQUE@ (traces, but into the caller's scope), @OPAQUE@ without a
   signature (never instrumented, because the mode is read from the
   signature), a signature carrying both constraints (probe wins, and a probed
-  function never becomes a component), and a class or instance method (this
-  pass rewrites value bindings only, so it never reaches the body).
+  function never becomes a component), and the body of an instance method or
+  a class default that loses something (this pass rewrites value bindings
+  only, so it never reaches the body; see 'noteMethodBodies' and
+  "Clash.CircuitContext.Plugin.Methods").
 
 Supports GHC 9.6 to 9.12 (CPP at the few AST churn points).
 -}
 module Clash.CircuitContext.Plugin.Rename (renamePass) where
 
-import Control.Monad (filterM, when)
+import Control.Monad (filterM, forM_, when)
 import qualified Data.Generics as SYB
+import Data.IORef (IORef, modifyIORef', newIORef, readIORef)
 import Data.List (isPrefixOf)
 import Data.Maybe (fromMaybe, mapMaybe)
 
@@ -98,6 +101,7 @@ import qualified GHC.Plugins as GHC
 import qualified GHC.Tc.Types as GHC
 import qualified GHC.Tc.Utils.Env as GHC (tcLookupGlobal, tcLookupTyCon)
 import qualified GHC.Tc.Utils.Monad as GHC (getGblEnv, tryTcDiscardingErrs)
+import qualified GHC.Tc.Utils.TcType as GHC (tcSplitSigmaTy)
 import GHC.Types.Basic (Origin)
 import GHC.Types.Fixity (LexicalFixity (Prefix))
 import GHC.Types.SrcLoc (GenLocated (..), unLoc)
@@ -106,6 +110,7 @@ import GHC.Types.Unique.Supply (MonadUnique (getUniqueM))
 
 import Clash.CircuitContext.Plugin.Closed (noteClosedSkip)
 import qualified Clash.CircuitContext.Plugin.Diagnostics as Diag
+import Clash.CircuitContext.Plugin.Methods (MethodBody (..), noteMethodBody)
 import Clash.CircuitContext.Plugin.Names (AbiNames (..), lookupAbiNames)
 
 data Mode = TraceMode | ProbeMode
@@ -124,6 +129,11 @@ data Ctx = Ctx
   {- ^ The type variables in scope in the body of the top-level function
   being rewritten: those its signature binds with an explicit @forall@,
   under @ScopedTypeVariables@. A local signature can name them.
+  -}
+  , ctxClosedSkips :: Maybe (IORef [GHC.Name])
+  {- ^ Where a rewrite that is thrown away collects the closed binders it
+  leaves alone, in place of noting them for the report (see
+  'noteMethodBodies').
   -}
   }
 
@@ -149,12 +159,13 @@ renamePass _opts env grp =
             , ctxSyns = localSynonyms grp
             , ctxSynParams = localSynonymParams grp
             , ctxScoped = []
+            , ctxClosedSkips = Nothing
             }
       topEntityErrors ctx grp
       (grp', notes) <- rewriteGroup ctx grp
       tyclds <- mapM (methodSigsWrittenOut ctx) (hs_tyclds grp')
-      methods <- methodNotes ctx grp
-      mapM_ (\(spn, cat, body) -> Diag.report spn cat body) (notes <> methods)
+      noteMethodBodies ctx grp
+      mapM_ (\(spn, cat, body) -> Diag.report spn cat body) notes
       pure (env, grp'{hs_tyclds = tyclds})
 
 -- | The module's own type synonyms, by name, for 'ctxMentions'.
@@ -590,61 +601,132 @@ otherAnnotated abi grp =
   mentionsMarker (HsVar _ (L _ n)) = n == abiNoCircuitScope abi
   mentionsMarker _ = False
 
-{- | Signatures on class methods and class defaults that ask for
-instrumentation the pass never performs.
+{- | Note the body of each instance method and class default of this group
+whose class gives it @HasCircuitContext@ or @HasProbe@, with what the pass
+would have recorded in it, for "Clash.CircuitContext.Plugin.Methods" to report
+after type checking.
 
-The rewrite walks value bindings ('hs_valds') only, so a class-default or
-instance-method body is never reached — its local bindings are not
-auto-traced and it never becomes a component. The CONSTRAINT still does its
-job (the body can call instrumented code); what silently does not happen is
-the instrumentation of the body itself.
+The pass does not reach such a body (it rewrites value bindings only), so
+its local bindings are not recorded, and an @OPAQUE@ on the method does not
+make a component. To find the local bindings that it would have recorded in
+a top-level function, the body is rewritten as one, and the rewrite is
+thrown away: the binders it records, and the closed binders it leaves alone,
+are what the body loses. Whether a recorder takes them is a question of
+their types, which "Clash.CircuitContext.Plugin.Methods" answers.
+
+The mode is the class signature's, read from this group when the class is
+declared here, and from the type of the method otherwise.
 -}
-methodNotes :: Ctx -> HsGroup GhcRn -> GHC.TcM [Note]
-methodNotes ctx grp =
-  concat
-    <$> mapM
-      ( \(nm, spn, sigTy) -> do
-          (isProbe, isTrace) <- sigModesT ctx sigTy
-          pure
-            [ ( spn
-              , Diag.Uninstrumented
-              ,
-                [ "'"
-                    <> GHC.getOccString nm
-                    <> "' is a class method or a class default."
-                , "This pass instruments value bindings only, so the body is"
-                    <> " not reached:"
-                , "its local bindings are not auto-traced and it never becomes"
-                    <> " a component."
-                , "Move the body to a top-level binding to instrument it."
-                ]
-              )
-            | isProbe || isTrace
-            ]
-      )
-      methodSigs
+noteMethodBodies :: Ctx -> HsGroup GhcRn -> GHC.TcM ()
+noteMethodBodies ctx grp = do
+  classModes <-
+    mapM
+      (\(nm, sigTy) -> (,) nm <$> sigModesT ctx sigTy)
+      [ (nm, sigTy)
+      | tyclGroup <- hs_tyclds grp
+      , L _ ClassDecl{tcdSigs = sigs} <- group_tyclds tyclGroup
+      , L _ (ClassOpSig _ _ ns sigTy) <- sigs
+      , L _ nm <- ns
+      ]
+  forM_ methodBinds $ \(isDefault, sigs, L l b) -> case b of
+    FunBind{fun_id = L _ nm, fun_matches = mg}
+      | let opaque = nm `elem` opaqueNames sigs
+      , opaque || hasLocalBinds mg -> do
+          (isProbe, isTrace) <- case [m | (n, m) <- classModes, n == nm] of
+            [] -> methodModes nm
+            ms -> pure (or (map fst ms), or (map snd ms))
+          when (isProbe || isTrace) $ do
+            let mode = if isProbe then ProbeMode else TraceMode
+            collected <- GHC.liftIO (newIORef [])
+            mg' <- rewriteInside ctx{ctxClosedSkips = Just collected} mode mg
+            closed <- GHC.liftIO (readIORef collected)
+            let before = recordedBinders (ctxAbi ctx) mg
+            noteMethodBody
+              MethodBody
+                { mbName = nm
+                , mbSpan = locA l
+                , mbDefault = isDefault
+                , mbTrace = mode == TraceMode
+                , mbWrapped = filter (`notElem` before) (recordedBinders (ctxAbi ctx) mg')
+                , mbClosed = closed
+                , mbOpaque = opaque
+                }
+    _ -> pure ()
  where
-  -- Generic rather than constructor-by-constructor: class-method and
-  -- instance-method signatures do not share a Sig constructor across the
-  -- supported GHCs, and both live somewhere under a TyClGroup.
-  methodSigs =
-    [ (nm, locA l, sigTy)
-    | L l sig <- SYB.listify isLSig (hs_tyclds grp)
-    , (nm, sigTy) <- named sig
+  -- Each method binding, with whether it is a class default and the
+  -- signatures (and pragmas) beside it.
+  methodBinds =
+    [ (True, sigs, bind)
+    | tyclGroup <- hs_tyclds grp
+    , L _ ClassDecl{tcdMeths = binds, tcdSigs = sigs} <- group_tyclds tyclGroup
+    , bind <- bindsToList binds
     ]
+      <> [ (False, sigs, bind)
+         | tyclGroup <- hs_tyclds grp
+         , L _ (ClsInstD _ ClsInstDecl{cid_binds = binds, cid_sigs = sigs}) <-
+             group_instds tyclGroup
+         , bind <- bindsToList binds
+         ]
 
-  isLSig :: LSig GhcRn -> Bool
-  isLSig _ = True
+  opaqueNames sigs =
+    [n | L _ (InlineSig _ (L _ n) prag) <- sigs, isOpaqueSpec (GHC.inl_inline prag)]
 
-  named = \case
-    TypeSig _ ns (HsWC _ body) -> [(n, body) | L _ n <- ns]
-    ClassOpSig _ _ ns body -> [(n, body) | L _ n <- ns]
-    _ -> []
+  hasLocalBinds :: MatchGroup GhcRn (LHsExpr GhcRn) -> Bool
+  hasLocalBinds = not . null . SYB.listify isBind
+
+  isBind :: HsBind GhcRn -> Bool
+  isBind _ = True
+
+{- | The modes the type of a class method asks for, @(HasProbe,
+HasCircuitContext)@: for a method of a class that is not declared in this
+group, whose type is known. Its class signature has @HasCircuitContext@
+written out as its constraints when the plugin compiled the class (see
+'keptSig'), so the implicit parameters are what is looked for.
+-}
+methodModes :: GHC.Name -> GHC.TcM (Bool, Bool)
+methodModes nm =
+  GHC.tryTcDiscardingErrs (pure (False, False)) $
+    GHC.tcLookupGlobal nm >>= \case
+      GHC.AnId i -> do
+        let theta = spineTheta (GHC.expandTypeSynonyms (GHC.idType i))
+        pure (any (coreMentions probeIP) theta, any (coreMentions circuitContextIP) theta)
+      _ -> pure (False, False)
+ where
+  -- The constraints of each forall and context on the spine: the class's,
+  -- then the method's own.
+  spineTheta ty = case GHC.tcSplitSigmaTy ty of
+    ([], [], _) -> []
+    (_, theta, rho) -> theta <> spineTheta rho
+
+{- | The local binders that a rewrite records under their own name: a
+binding whose every right-hand side is @autoTrace "x" …@ (or @autoProbe@),
+also the alias a pattern binder gets.
+-}
+recordedBinders :: AbiNames -> MatchGroup GhcRn (LHsExpr GhcRn) -> [GHC.Name]
+recordedBinders abi mg = [nm | b <- SYB.listify isBind mg, Just nm <- [recorded b]]
+ where
+  isBind :: HsBind GhcRn -> Bool
+  isBind _ = True
+
+  recorded = \case
+    FunBind{fun_id = L _ nm, fun_matches = MG _ (L _ ms@(_ : _))}
+      | all (\(L _ m) -> null (matchPats m) && injected nm (m_grhss m)) ms -> Just nm
+    PatBind{pat_lhs = L _ (VarPat _ (L _ nm)), pat_rhs = grhss}
+      | injected nm grhss -> Just nm
+    _ -> Nothing
+
+  injected :: GHC.Name -> GRHSs GhcRn (LHsExpr GhcRn) -> Bool
+  injected nm (GRHSs _ grhss _) =
+    not (null grhss)
+      && and
+        [ alreadyInjected [abiAutoTrace abi, abiAutoProbe abi] (GHC.getOccString nm) body
+        | L _ (GRHS _ _ body) <- grhss
+        ]
 
 {- | The class declarations and instances of a group with the method
 signatures ('keptSig'): those of the class (also of a default method), and
 those that an instance gives with @InstanceSigs@. A method is not split, as
-the pass does not reach its body (see 'methodNotes').
+the pass does not reach its body (see 'noteMethodBodies').
 -}
 methodSigsWrittenOut :: Ctx -> TyClGroup GhcRn -> GHC.TcM (TyClGroup GhcRn)
 methodSigsWrittenOut ctx g = do
@@ -816,6 +898,10 @@ rewriteInside ctx mode0 = goM mode0
         )
   recorders = abiAutoTrace abi : abiAutoProbe abi : abiExplicitRecorders abi
 
+  skipClosed nm spn = case ctxClosedSkips ctx of
+    Just collected -> GHC.liftIO (modifyIORef' collected (nm :))
+    Nothing -> noteClosedSkip nm spn (ctxScoped ctx)
+
   -- A bind that expands (pattern binders renamed + sibling trace binds)
   -- makes the group recursive: the extra binds reference binders of their
   -- own group. Their free-variable sets are precise, so the typechecker's
@@ -858,7 +944,7 @@ rewriteInside ctx mode0 = goM mode0
             && all (null . matchPats . unLoc) (mgEquations ms)
             && closedSkip (locA l) inferred nm localSigned rankN (fun_ext b) (zeroArgGRHSs ms)
         )
-        (noteClosedSkip nm (locA l) (ctxScoped ctx))
+        (skipClosed nm (locA l))
       pure
         ( L
             l
@@ -878,7 +964,7 @@ rewriteInside ctx mode0 = goM mode0
       inferred <- inferredHigherRank localSigned nm [rhs]
       when
         (m == TraceMode && closedSkip (locA l) inferred nm localSigned rankN (pat_ext b) [rhs])
-        (noteClosedSkip nm (locA l) (ctxScoped ctx))
+        (skipClosed nm (locA l))
       pure
         ( L
             l

@@ -287,6 +287,34 @@ if grep -q "Compiling Test.ProbedSteps" "$log" 2>/dev/null; then
   fi
 fi
 
+# The plugin does not instrument the body of an instance method or a class
+# default. It warns at such a body when that loses something (a local binding
+# it would trace or probe in a top-level function, or a component that OPAQUE
+# asks for): in Test/MethodBodies.hs on each line marked "-- warns", and
+# nowhere else. Not at a class signature, and not at a body that calls a
+# top-level function. Same fresh-build caveat.
+if grep -q "Compiling Test.MethodBodies" "$log" 2>/dev/null; then
+  bodies=tests/Test/MethodBodies.hs
+  gotLines=$(awk -v f="$bodies" '
+    index($0, f ":") == 1 && / warning/ { split($0, p, ":"); at = p[2]; next_is = 1; next }
+    next_is { if ($0 ~ /instance method|class default|class method/) print at; next_is = 0 }
+  ' "$log" | sort -nu | tr '\n' ' ')
+  wantLines=$(awk '/-- warns$/ { print NR }' "$bodies" | tr '\n' ' ')
+  if [ "$gotLines" = "$wantLines" ]; then
+    echo "ok: a method body is reported where it loses something, and nowhere else (lines $gotLines)"
+  else
+    echo "FAIL: method warnings of $bodies at lines [$gotLines], want [$wantLines]"; fail=1
+  fi
+  for want in "not traced here: doubled" "not traced here: pulse" "not probed here: next" \
+    "OPAQUE does not make 'thing' a component"; do
+    if grep -qF "$want" "$log"; then
+      echo "ok: method diagnostic fired: $want"
+    else
+      echo "FAIL: expected method diagnostic missing: $want"; fail=1
+    fi
+  done
+fi
+
 # A payload without Waveform is still traced and probed, as raw bits. That
 # is reported -- it asks for the instance -- but as undescribed, never as
 # untraced/undecided: those mean a LOST signal, and

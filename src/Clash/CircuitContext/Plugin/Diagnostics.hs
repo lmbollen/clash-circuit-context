@@ -28,7 +28,9 @@ Five categories, because they differ in how likely each is to be a defect:
 [@x-circuit-context-uninstrumented@] A signature asks for instrumentation
   somewhere the plugin does not reach, or does not scope: @HasCircuitContext@
   without @OPAQUE@, @OPAQUE@ without a signature, both constraints at once,
-  an instance or class-default body. Also the reverse: a step function
+  the body of an instance method or a class default that has a local binding
+  the plugin would record in a top-level function, or @OPAQUE@ (see
+  "Clash.CircuitContext.Plugin.Methods"). Also the reverse: a step function
   without @HasProbe@ given to @mealyProbed@ (or a friend), which probes
   nothing (see "Clash.CircuitContext.Plugin.Steps"). Often intended (a small
   helper flattening into its caller, a step function with nothing to probe),

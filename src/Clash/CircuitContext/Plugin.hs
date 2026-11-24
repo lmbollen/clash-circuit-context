@@ -20,7 +20,9 @@ Two cooperating actions:
 
 After type checking, the plugin reports what only the types show: a closed
 local binding that GHC did not generalise
-("Clash.CircuitContext.Plugin.Closed"), and a step function without
+("Clash.CircuitContext.Plugin.Closed"), a local binding of an instance method
+or a class default that the renamer pass does not reach
+("Clash.CircuitContext.Plugin.Methods"), and a step function without
 @HasProbe@ given to @mealyProbed@ ("Clash.CircuitContext.Plugin.Steps").
 
 Neither half takes options. What the plugin does not instrument it reports
@@ -33,6 +35,7 @@ import qualified GHC.Plugins as GHC
 import qualified GHC.TcPlugin.API as API
 
 import Clash.CircuitContext.Plugin.Closed (reportClosedSkips)
+import Clash.CircuitContext.Plugin.Methods (reportMethodBodies)
 import Clash.CircuitContext.Plugin.Oracle (oracle)
 import Clash.CircuitContext.Plugin.Rename (renamePass)
 import Clash.CircuitContext.Plugin.Steps (reportUnprobedSteps)
@@ -42,7 +45,9 @@ plugin =
   GHC.defaultPlugin
     { GHC.renamedResultAction = renamePass
     , GHC.typeCheckResultAction = \opts ms env ->
-        reportClosedSkips opts ms env >>= reportUnprobedSteps opts ms
+        reportClosedSkips opts ms env
+          >>= reportMethodBodies opts ms
+          >>= reportUnprobedSteps opts ms
     , GHC.tcPlugin = \_opts -> Just (API.mkTcPlugin oracle)
     , GHC.pluginRecompile = GHC.purePlugin
     }

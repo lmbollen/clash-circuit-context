@@ -32,6 +32,7 @@ depend on the state or the input: its probe would be the same value in every
 cycle (@limit = 5 :: Index 8@, @start = minBound@), so no signal is lost.
 -}
 module Clash.CircuitContext.Plugin.Closed (
+  closedReported,
   noteClosedSkip,
   reportClosedSkips,
 ) where
@@ -98,35 +99,45 @@ reportClosedSkips _ _ env = do
         -- plugin is enabled twice); 'Diag.report' says each message once.
         forM_ mine $ \(Skip nm spn scoped) ->
           forM_ (Map.lookup nm types) $ \ty -> do
-            let (tvs, theta, rho) = GHC.tcSplitSigmaTy ty
-            when (null tvs && null theta && not (GHC.isFunTy rho)) $ do
-              recordable <- recordableShape nonTranslatableTc True ty
-              when recordable $
-                Diag.report spn Diag.Untraced $
-                  [ "not traced: "
-                      <> GHC.getOccString nm
-                      <> " :: "
-                      <> Diag.renderPlain ty
-                  , "It uses no local variable and has no type signature, and such a"
-                      <> " binding is left alone: GHC can generalise it, and recording"
-                      <> " it would stop that."
-                  , "GHC did not generalise this one. Give it its type signature to"
-                      <> " record it: "
-                      <> GHC.getOccString nm
-                      <> " :: "
-                      <> Diag.renderPlain ty
-                  ]
-                    -- Only for a type variable the signature cannot name as
-                    -- it is: one the enclosing signature does not bind with an
-                    -- explicit forall under ScopedTypeVariables (by name: the
-                    -- type checker may have renumbered it).
-                    <> [ "The type names type variables of the enclosing signature: bind"
-                           <> " them there with an explicit forall (ScopedTypeVariables)."
-                       | any
-                           ((`notElem` scoped) . GHC.occName)
-                           (GHC.tyCoVarsOfTypeList ty)
-                       ]
+            reported <- closedReported nonTranslatableTc ty
+            when reported $
+              Diag.report spn Diag.Untraced $
+                [ "not traced: "
+                    <> GHC.getOccString nm
+                    <> " :: "
+                    <> Diag.renderPlain ty
+                , "It uses no local variable and has no type signature, and such a"
+                    <> " binding is left alone: GHC can generalise it, and recording"
+                    <> " it would stop that."
+                , "GHC did not generalise this one. Give it its type signature to"
+                    <> " record it: "
+                    <> GHC.getOccString nm
+                    <> " :: "
+                    <> Diag.renderPlain ty
+                ]
+                  -- Only for a type variable the signature cannot name as
+                  -- it is: one the enclosing signature does not bind with an
+                  -- explicit forall under ScopedTypeVariables (by name: the
+                  -- type checker may have renumbered it).
+                  <> [ "The type names type variables of the enclosing signature: bind"
+                         <> " them there with an explicit forall (ScopedTypeVariables)."
+                     | any
+                         ((`notElem` scoped) . GHC.occName)
+                         (GHC.tyCoVarsOfTypeList ty)
+                     ]
   pure env
+
+{- | Is a closed binder of this final type one to report? Only when GHC did
+not generalise it (no @forall@, no constraint), it is not a function, and a
+recorder in trace mode would take it (see the module header).
+-}
+closedReported :: GHC.TyCon -> GHC.Type -> GHC.TcM Bool
+closedReported nonTranslatableTc ty
+  | null tvs && null theta && not (GHC.isFunTy rho) =
+      recordableShape nonTranslatableTc True ty
+  | otherwise = pure False
+ where
+  (tvs, theta, rho) = GHC.tcSplitSigmaTy ty
 
 {- | The final type of every local binder, by name: a generalised binder's
 (its poly 'GHC.Id' in an @AbsBinds@ export), and a binder that was not
