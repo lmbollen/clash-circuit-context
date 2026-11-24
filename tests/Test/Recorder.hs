@@ -21,7 +21,17 @@ module Test.Recorder (tests) where
 
 import qualified Prelude as P
 
-import Control.Exception (evaluate, throwIO)
+import Control.Concurrent (forkIO, threadDelay)
+import Control.Concurrent.MVar (
+  MVar,
+  modifyMVar_,
+  newEmptyMVar,
+  newMVar,
+  putMVar,
+  readMVar,
+  takeMVar,
+ )
+import Control.Exception (evaluate, finally, throwIO)
 import Control.Monad.IO.Class (liftIO)
 import Data.IORef (newIORef)
 import qualified Data.List as List
@@ -31,6 +41,7 @@ import qualified Data.Text.IO as TextIO
 import System.Directory (createDirectoryIfMissing, removePathForcibly)
 import System.FilePath ((-<.>))
 import System.IO (hClose, openTempFile)
+import System.IO.Unsafe (unsafePerformIO)
 
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.Hedgehog (testProperty)
@@ -360,6 +371,61 @@ prop_probesWithOneKey = property $ do
   Map.toList (P.fmap asInts waves)
     === [("p_0", model [1]), ("p_1", model [2]), ("t", model [0])]
 
+{- | The first firings of one probe on several threads at once register one
+signal. Each thread fires cycle 0 of probe @p@ of one instance (one
+'pcPath', one cache); each spells the name for itself ('waitingName'), and
+a name, when forced, waits for the other threads to force theirs. The
+recorder forces the name when it registers the probe, after it found the
+probe missing from the cache, so without a lock all threads find it missing
+and each registers one: @p_0@, @p_1@, … Then cycle 1 fires.
+
+The suite runs without @-threaded@, so the threads take turns on one
+capability, but a thread that waits lets the others run, and a thread can
+be switched out at any allocation. Without the waits, 8 threads registered
+two signals in 33 of 2000 runs.
+-}
+prop_probeFirstFiringsRace :: Property
+prop_probeFirstFiringsRace = Hedgehog.withTests 20 $ property $ do
+  (_, _, vcd) <- recorded 0 2 $ do
+    cache <- newIORef Map.empty
+    gate <- newMVar ([], False)
+    let path = [HierSeg "machine" ""]
+        fire nm c v = let ?probe = ProbeCtx ?circuitContext period path c cache in probe nm v
+    dones <-
+      P.mapM
+        ( \i -> do
+            done <- newEmptyMVar
+            _ <-
+              forkIO
+                ( (evaluate (fire (waitingName gate threads i) 0 (7 :: Unsigned 8)) *> pure ())
+                    `finally` putMVar done ()
+                )
+            pure done
+        )
+        [1 .. threads]
+    P.mapM_ takeMVar dones
+    _ <- evaluate (fire "p" 1 8)
+    evaluate (sampleN 2 (traceSignalC "t" (stim @System [0, 0])) `deepseqX` ())
+  let waves = decodeVCD 2 vcd
+  annotate (P.show (Map.keys waves))
+  Map.toList (P.fmap asInts waves) === [("p", model [7, 8]), ("t", model [0, 0])]
+ where
+  threads = 4
+
+{- | The name @p@, as thread @i@ spells it. Forcing it waits until @n@
+threads have forced theirs, or until a wait of about 20 ms ran out: from
+then on, no name waits.
+-}
+waitingName :: MVar ([Int], Bool) -> Int -> Int -> String
+waitingName gate n i = unsafePerformIO (arrive *> wait (20 :: Int)) `P.seq` "p"
+ where
+  arrive = modifyMVar_ gate (\(is, open) -> pure (i : is, open))
+  wait 0 = modifyMVar_ gate (\(is, _) -> pure (is, True))
+  wait t = do
+    (is, open) <- readMVar gate
+    if open P.|| P.length is P.>= n then pure () else threadDelay 1000 *> wait (t P.- 1)
+{-# NOINLINE waitingName #-}
+
 tests :: TestTree
 tests =
   testGroup
@@ -380,4 +446,7 @@ tests =
     , testProperty "every signal has a name of its own" prop_namesAreUnique
     , testProperty "the stock logic scope keeps its name" prop_rootScopeHasItsName
     , testProperty "two probes with one key are two signals" prop_probesWithOneKey
+    , testProperty
+        "the first firings of a probe on several threads register one signal"
+        prop_probeFirstFiringsRace
     ]

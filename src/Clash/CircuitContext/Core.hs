@@ -140,6 +140,7 @@ import Clash.CircuitContext.Internal.Recorder (
  )
 
 import Control.Concurrent (myThreadId, throwTo)
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (
   SomeAsyncException,
   SomeException,
@@ -182,6 +183,10 @@ finished when it stops (see 'withRecording').
 data Live = Live
   { liveRecorder :: Recorder
   , liveTaps :: IORef [(Sig, IORef TraceTap)]
+  , liveProbes :: MVar ()
+  {- ^ Held while a probe registers, so that the first firings of one probe
+  on several threads register it once (see 'simProbe').
+  -}
   }
 
 {- | The state of one trace's tap: @TraceTap touched next rest@. Cycles
@@ -406,11 +411,12 @@ withRecordingFrom start spill k = Exception.mask $ \restore -> do
   -- its own thread's last write, cannot be.
   rec <- newRecorder spill start
   taps <- newIORef []
+  probes <- newMVar ()
   ords <- newIORef emptyOrdinals
   r <-
     try
       ( restore
-          ( let ?circuitContext = CircuitContext [] (Just (Live rec taps)) (Just ords) []
+          ( let ?circuitContext = CircuitContext [] (Just (Live rec taps probes)) (Just ords) []
              in k
           )
       )
@@ -967,10 +973,22 @@ simProbe adt nm a = case (ccRecorder ctx, ccOrdinals ctx) of
           segs <- resolveHier ordRef (ccHier ctx)
           mI <- ordinalFor ordRef (pcPath ?probe)
           let qual = intercalate "." (reverse (taggedLoc nm mLoc mI : segs))
-          rsig <- newSig (liveRecorder live) qual ProbeKind per w adt
-          atomicModifyIORef' (pcCache ?probe) $ \c ->
-            (Map.insert nm rsig c, ())
-          pure rsig
+          -- The name is forced before the lock is taken: a name is the
+          -- design's, and if forcing it fired another probe for the first
+          -- time, that probe would wait for the lock that this thread holds.
+          _ <- evaluate (foldr seq () qual)
+          -- Another thread can fire this probe for the first time too: it
+          -- found it missing before this one registered it. The lock makes
+          -- the look-up and the registration one step.
+          withMVar (liveProbes live) $ \() -> do
+            again <- readIORef (pcCache ?probe)
+            case Map.lookup nm again of
+              Just rsig -> pure rsig
+              Nothing -> do
+                rsig <- newSig (liveRecorder live) qual ProbeKind per w adt
+                atomicModifyIORef' (pcCache ?probe) $ \c ->
+                  (Map.insert nm rsig c, ())
+                pure rsig
       -- Force the packed value NOW, releasing the design value 'a'. A cycle
       -- that fires after a later one is not recorded (see 'recordCycle'),
       -- and a cycle the probed expression never reaches leaves a gap; both
