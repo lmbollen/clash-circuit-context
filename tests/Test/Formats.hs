@@ -331,6 +331,18 @@ children =
         assertFailure "the child was not killed"
     )
   ,
+    ( "formats-killed-unmapped"
+    , do
+        -- The same, written without mappings.
+        let name = "formats-killed-unmapped"
+        _ <- withoutMappings $ withRecording (Just (file name "spill")) $ do
+          _ <- evaluate (P.sum (P.map P.toInteger (sampleN 3000 busyAndQuiet)))
+          P.putStrLn "recorded 3000 cycles"
+          hFlush stdout
+          threadDelay 60000000
+        assertFailure "the child was not killed"
+    )
+  ,
     ( "formats-full-disk"
     , do
         -- A file system that takes no more than 256 KiB per file: the spill
@@ -654,6 +666,27 @@ tests =
             let values = [l | l <- body, P.take 1 l P.== "b"]
             assertBool "both signals have values" (P.length values P.> 2)
             assertBool "no signal is z" (P.not (P.any ('z' `P.elem`) values))
+            discardRecording rec
+    , -- Without mappings, a killed run loses what it had not written yet:
+      -- the newest records of a signal, and all of one that changes rarely.
+      testCase "a killed run's spill file written without mappings lacks the unwritten records" $ do
+        let name = "formats-killed-unmapped"
+        scrub [name]
+        (out, process) <- startChild name
+        line <- hGetLine out
+        line @?= "recorded 3000 cycles"
+        getPid process >>= P.maybe (assertFailure "the child has no pid") (signalProcess sigKILL)
+        _ <- waitForProcess process
+        killed <- recoverRecording (file name "spill")
+        case killed of
+          Left err -> assertFailure err
+          Right rec -> do
+            -- "busy" wrote its first region (4 KiB, about 1300 cycles), not
+            -- the one it was filling; "quiet" never filled its first.
+            let end = recordingEnd rec
+            assertBool ("recovered " <> P.show end <> " cycles") (end P.> 1000 P.&& end P.< 2999)
+            changes <- P.mapM (recordedChanges rec) (recordedSignals rec)
+            P.map P.null changes @?= [False, True]
             discardRecording rec
     , -- A cancelled run writes everything it recorded: also the progress of a
       -- signal that has not changed since its first cycle.

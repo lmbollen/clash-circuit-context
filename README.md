@@ -458,7 +458,8 @@ opts = defaultOptions {format = VCD, spill = OnDisk}
     A full disk stops the recording, not the run: a message says so, and the
     waveform ends where the recording stopped. Where the file cannot be mapped
     (some network or FUSE file systems, Windows), it is written a region at a
-    time instead.
+    time instead, and says so; a killed run then loses what was not written
+    yet (see below).
 
 ### A run that was stopped
 
@@ -467,9 +468,10 @@ or killed leaves `<path>.spill`, and a cancelled one says where on
 stderr. A cancelled run that recorded no cycle leaves nothing and says
 nothing, as there is nothing to recover. A cancelled run keeps everything it recorded, and so
 does a killed one (a second Ctrl-C, SIGKILL, the out-of-memory killer, a crash): a value is in the
-file as soon as it is recorded. Only a crash of the machine itself can lose the newest values, and
-where the file cannot be mapped (see `OnDisk`), a killed run loses up to 16 KiB of each signal's
-newest values. Only a run that records can leave one: a run of `writeWaveform`, or
+file as soon as it is recorded. Only a crash of the machine itself can lose the newest values.
+Where the file cannot be mapped (see `OnDisk`), a killed run loses up to 16 KiB of each signal's
+newest values, and a signal that changes rarely (that never filled its first 4 KiB) loses everything:
+it shows as not evaluated. A cancelled run loses nothing either way. Only a run that records can leave one: a run of `writeWaveform`, or
 the rerun of a failed check of `withWaveform` or `simulateWaveform`. Their
 first runs do not record, so a test that hangs and is cancelled in its first
 run leaves nothing; to keep the waveform of such a test, simulate it with

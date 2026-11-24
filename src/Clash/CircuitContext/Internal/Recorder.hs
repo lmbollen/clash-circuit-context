@@ -77,9 +77,11 @@ A signal's block comes before its records, in a region before its first.
 
 Where a region cannot be mapped (a file system without shared writable
 mappings, more mappings than the system allows, Windows), it is a buffer
-in memory instead, written to the file when it is full: a killed process
-then loses each signal's last region. A metadata block is written at once
-either way. A buffer's disk space is not reserved: when the
+in memory instead, written to the file when it is full. A killed process
+then loses each signal's last region: up to 16 KiB of its newest records,
+and, for a signal that changes rarely and never fills its first region,
+everything it recorded. Such a signal shows as not evaluated in the
+recovered waveform. A metadata block is written at once either way. A buffer's disk space is not reserved: when the
 disk is full, writing it fails, its records are lost, and the recording
 stops; the signal then ends where the lost region began.
 
