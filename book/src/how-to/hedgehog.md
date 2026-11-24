@@ -16,12 +16,15 @@ and check the samples that it returns. The first argument has the options of
 the waveform, as for `writeWaveform` (see [How to keep waveforms from a test
 suite](test-suite.md#choose-the-file-and-where-the-values-wait)). The second
 argument has the type `Capture`, with the constructors `Counterexample` and
-`AtSize Size`. The other arguments are the same as for `writeWaveform`:
+`AtSize Size`. The other arguments are the same as for `writeWaveform`: the
+path of the waveform without an extension (see [Choose the path of the
+waveform](test-suite.md#choose-the-path-of-the-waveform)), the window, and
+the design:
 
 ```haskell
 simulateWaveform ::
   (KnownDomain dom, NFDataX a) =>
-  WaveformOptions -> Capture -> String -> (Int, Int) ->
+  WaveformOptions -> Capture -> FilePath -> (Int, Int) ->
   ((CircuitContextOnly) => Signal dom a) -> PropertyT IO [a]
 ```
 
@@ -54,7 +57,7 @@ prop_accumulate :: Property
 prop_accumulate = property $ do
   xs <- forAll (Gen.list (Range.linear 1 20) (Gen.integral Range.linearBounded))
   let n = P.length xs
-  out <- simulateWaveform defaultOptions Counterexample "prop" (0, n) (accumulate (fromList xs))
+  out <- simulateWaveform defaultOptions Counterexample "waveforms/prop" (0, n) (accumulate (fromList xs))
   out === P.take n (model xs)
 
 >>> :t prop_accumulate
@@ -76,7 +79,8 @@ with the path of the file:
 
 Keep these rules in mind:
 
-- Give each property its own name. One name is one pair of files.
+- Give each property its own path. One path is one pair of files. The
+  function does not check this.
 - The second simulation must give the same result as the first. This is
   true when the property supplies all inputs of the design.
 - The waveform is written when Hedgehog prints the report. tasty-hedgehog
@@ -84,20 +88,20 @@ Keep these rules in mind:
   waveform.
 - The waveform of a counterexample stays when the property passes again
   later. `simulateWaveform` does not delete files, as `withWaveform` does.
-  Delete `waveforms/<name>.fst` yourself when you do not need it.
+  Delete `<path>.fst` and `<path>.json` yourself when you do not need them.
 
 ## Keep the waveform of a passing case too
 
 Use `AtSize size` instead of `Counterexample`. The first case whose size is
 at least `size` is recorded, and its waveform is kept, also when it passes.
-This happens once for each waveform name in a process. A small size gives a
+This happens once for each waveform path in a process. A small size gives a
 short waveform that is easy to read:
 
 ```haskell
-out <- simulateWaveform defaultOptions (AtSize 10) "prop" (0, n) (accumulate (fromList xs))
+out <- simulateWaveform defaultOptions (AtSize 10) "waveforms/prop" (0, n) (accumulate (fromList xs))
 ```
 
-The waveform of this case has the size in its name:
+The waveform of this case has the size at the end of its path:
 `waveforms/prop_10.fst`. The waveform of a counterexample is
 `waveforms/prop.fst`, so the two do not replace each other.
 
@@ -111,5 +115,5 @@ A failed property prints a `recheckAt` line with a seed. Run that line to
 run the failed case again. Hedgehog reports it again, so its waveform is
 written again.
 
-For the names and the place of the files, see [Waveform
+For the names and the life of the files, see [Waveform
 files](../reference/waveform-files.md).

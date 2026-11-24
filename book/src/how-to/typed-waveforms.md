@@ -52,7 +52,7 @@ a signal as its type: `Busy 2`, not `0b0110`.
    ```haskell,clash group=typed
    record :: IO ()
    record = do
-     _ <- writeWaveform defaultOptions "sequencer" (0, 8) (sequencer (pure True))
+     _ <- writeWaveform defaultOptions "waveforms/sequencer" (0, 8) (sequencer (pure True))
      pure ()
 
    -- | The signals that a sidecar describes.

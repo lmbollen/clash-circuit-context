@@ -123,7 +123,7 @@ runCounters :: IO [Unsigned 8]
 runCounters =
   writeWaveform
     defaultOptions{format = VCD}
-    "counters"
+    "waveforms/counters"
     (0, 8)
     (top (fromList (P.cycle [True, False, True])))
 
@@ -135,13 +135,18 @@ declarations path = do
   mapM_ putStrLn (P.takeWhile (not . ("$enddefinitions" `isPrefixOf`)) fromScopes)
 ```
 
-`writeWaveform defaultOptions{format = VCD} "counters" (0, 8)` simulates 8
-cycles of the design, writes the waveform of the cycles 0 to 7, and returns
-the 8 output values.
+`writeWaveform defaultOptions{format = VCD} "waveforms/counters" (0, 8)`
+simulates 8 cycles of the design, writes the waveform of the cycles 0 to 7,
+and returns the 8 output values.
 
 The first argument has the options of the waveform. `defaultOptions` writes
 an FST file, which is compressed and smaller. This tutorial writes a VCD
 file, because a VCD file is text, and we read it below.
+
+The second argument is the path of the waveform, without an extension.
+`writeWaveform` adds the extension: here, `.vcd`. A relative path is
+relative to the working directory. If the directory `waveforms` does not
+exist, `writeWaveform` makes it.
 
 `top` needs `HasCircuitContext`, but `runCounters` does not have that
 constraint. `writeWaveform` supplies the context: its design argument has
@@ -165,7 +170,8 @@ cycle, so the sum goes up by one in each cycle.
 
 The simulation also wrote the file `waveforms/counters.vcd`, and a file
 `waveforms/counters.json` beside it. The directory `waveforms` is in the
-working directory of the session. Look at what the VCD declares:
+working directory of the session, because the path is relative. Look at
+what the VCD declares:
 
 ```haskell,clash group=tutorial
 >>> declarations "waveforms/counters.vcd"

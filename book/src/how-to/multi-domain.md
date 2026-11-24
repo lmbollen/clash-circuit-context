@@ -87,10 +87,10 @@ recordBothSpilled = do
 
 ## Keep the waveform of a stopped run
 
-When the action of `withRecording` is cancelled, the spill file stays, and a
-message on stderr gives its absolute path. A process that is killed leaves
-the spill file too. Write its waveform with `writeSpill` of
-`Clash.CircuitContext.Recording`, or with an executable:
+When the action of `withRecording` is cancelled after it recorded a cycle,
+the spill file stays, and a message on stderr gives its absolute path. A
+process that is killed leaves the spill file too. Write its waveform with
+`writeSpill` of `Clash.CircuitContext.Recording`, or with an executable:
 
 ```haskell
 writeSpill FST Nothing "waveforms/both.spill" "waveforms/both.fst"
@@ -100,7 +100,7 @@ writeSpill FST Nothing "waveforms/both.spill" "waveforms/both.fst"
 spill2fst waveforms/both.spill
 ```
 
-`recoverWaveform` takes the name of a waveform, and reads the spill file
-`waveforms/<name>.spill`. It works for a spill file of `withRecording` only
-at that path. For more, see [How to keep the waveform of a stopped
+`recoverWaveform` takes the path of a waveform without an extension, and
+reads the spill file `<path>.spill`. For the spill file above, give it
+`"waveforms/both"`. For more, see [How to keep the waveform of a stopped
 run](recover.md).

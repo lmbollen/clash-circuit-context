@@ -15,13 +15,19 @@ opts = defaultOptions{spill = OnDisk}
 
 case_firmware :: Assertion
 case_firmware = do
-  bytes <- writeWaveform opts "firmware" (0, 1_000_000) (uartBytes design)
+  bytes <- writeWaveform opts "waveforms/firmware" (0, 1_000_000) (uartBytes design)
   takeWhile (/= '\n') (decode bytes) @?= "RESULT: OK"
 ```
 
-The recorded values then go to `waveforms/<name>.spill` while the
-simulation runs. When the waveform is written, the spill file is deleted.
-When the run stops first, the spill file stays.
+The recorded values then go to the spill file while the simulation runs.
+The spill file is beside the waveform: its path is the path of the waveform
+with the extension `.spill`, here `waveforms/firmware.spill`. When the
+waveform is written, the spill file is deleted. When the run stops first,
+the spill file stays.
+
+Put the spill file on a disk. On a file system in RAM (tmpfs), for example
+`/tmp` on many systems, a spill file uses RAM, and the system deletes it
+when it starts again.
 
 Only a run that records can leave a spill file. `writeWaveform` records its
 run. `withWaveform` and `simulateWaveform` first run without recording, and
@@ -34,8 +40,8 @@ a run that stops leaves nothing.
 
 ## When a run stops
 
-A run that is cancelled writes a message on stderr with the absolute path of
-the spill file:
+A run that is cancelled after it recorded a cycle writes a message on
+stderr with the absolute path of the spill file:
 
 ```text
 clash-circuit-context: the run was stopped; what it recorded is in
@@ -45,6 +51,13 @@ or writeSpill
 ```
 
 `withRecording` with a spill file writes the same message.
+
+A run that is cancelled before it recorded a cycle deletes its spill file,
+and writes no message. There is nothing to recover from it.
+
+A run whose waveform cannot be written, for example because the disk is
+full, also keeps its spill file. The message that gives the reason also
+gives the absolute path of the spill file.
 
 A process that is killed writes no message. Its spill file is in the same
 place. A second Ctrl-C kills the process: the first one cancels the run, and
@@ -71,15 +84,20 @@ Do one of these:
   recorded 128717 cycles.
 
 - From Haskell, use `recoverWaveform` with the options of the waveform. It
-  writes `waveforms/<name>.fst` or `.vcd`, deletes the spill file, and gives
-  the absolute path of the waveform:
+  takes the path of the waveform without an extension, as `writeWaveform`
+  does, and reads the spill file `<path>.spill`. It writes `<path>.fst` or
+  `<path>.vcd`, deletes the spill file, and gives the absolute path of the
+  waveform:
 
   ```haskell
-  recoverWaveform defaultOptions "firmware" >>= print
+  recoverWaveform defaultOptions "waveforms/firmware" >>= print
   ```
 
-  For the spill file of `withRecording`, which can have any path, use
-  `writeSpill` (see [Write the files
+  If it cannot write the waveform, it gives `Left` with the reason, and
+  keeps the spill file.
+
+  For the spill file of `withRecording` with a path that does not end in
+  `.spill`, use `writeSpill` (see [Write the files
   yourself](../reference/waveform-files.md#write-the-files-yourself)).
 
 What the waveform has:

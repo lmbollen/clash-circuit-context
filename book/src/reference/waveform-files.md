@@ -9,18 +9,28 @@ and their content.
 
 | File | Path | Life |
 |---|---|---|
-| Waveform | `waveforms/<name>.fst`, or `waveforms/<name>.vcd` with `format = VCD` | kept |
-| Waveform of the passing case of `AtSize size` | `waveforms/<name>_<size>.fst`, or `.vcd` | kept |
-| Sidecar | `waveforms/<name>.json`, beside the waveform | kept |
-| Spill file | `waveforms/<name>.spill`, only with `spill = OnDisk` | while the simulation records. Deleted when the waveform is written. Kept when a recording run stops first, or when the waveform cannot be written (the message gives its path). The first runs of `withWaveform` and `simulateWaveform` do not record |
+| Waveform | `<path>.fst`, or `<path>.vcd` with `format = VCD` | kept |
+| Waveform of the passing case of `AtSize size` | `<path>_<size>.fst`, or `.vcd` | kept |
+| Sidecar | `<path>.json`, beside the waveform | kept |
+| Spill file | `<path>.spill`, only with `spill = OnDisk` | while the simulation records. Deleted when the waveform is written. Kept when a recording run stops first after it recorded a cycle, or when the waveform cannot be written (the message gives its path). The first runs of `withWaveform` and `simulateWaveform` do not record |
 
-`<name>` is the name that you give to `writeWaveform`, `withWaveform` or
-`simulateWaveform`. One name is one pair of files: two tests must not use
-the same name. The directory `waveforms` is relative to the working
-directory of the process. The working directory of `cabal test` and of
-`cabal run` can differ. When a function writes a waveform for a failed test,
-or keeps the spill file of a stopped run, the message gives the absolute
-path. `recoverWaveform` also returns the absolute path.
+`<path>` is the path that you give to `writeWaveform`, `withWaveform`,
+`simulateWaveform` or `recoverWaveform`, without an extension. For example,
+`"waveforms/counter"` gives `waveforms/counter.fst`,
+`waveforms/counter.json` and `waveforms/counter.spill`.
+
+- A relative path is relative to the working directory of the process. The
+  working directory of `cabal test` and of `cabal run` can differ.
+- An absolute path is the same from each working directory.
+- The functions make the missing directories of the path.
+- When a function writes a waveform for a failed test, or keeps a spill
+  file, the message gives the absolute path of the file. `recoverWaveform`
+  also returns the absolute path.
+- One path is one pair of files: two tests must not use the same path. The
+  functions do not check this.
+- A spill file uses RAM when its path is on a file system in RAM (tmpfs),
+  for example `/tmp` on many systems. Then `spill = OnDisk` does not save
+  memory.
 
 ## How the files are written
 
@@ -32,6 +42,11 @@ path. `recoverWaveform` also returns the absolute path.
 - The sidecar is renamed first. If a waveform file exists, its `.json` file
   is complete. A crash between the two renames can leave a new `.json` file
   beside the waveform file of an earlier run.
+- If a file cannot be written or renamed, for example because the disk is
+  full, no new file stays. An earlier waveform and an earlier `.json` file
+  at the path stay as they were. The functions of
+  `Clash.CircuitContext.Waveform` then say why on stderr, and keep the
+  spill file; `writeFST` and `writeVCD` return the reason as `Left`.
 - The description of a signal for the sidecar is made when the signal is
   first recorded. A description that fails to render (a `Waveform` instance
   whose width is not `BitSize`) is left out of the sidecar, with a message
@@ -46,13 +61,14 @@ path. `recoverWaveform` also returns the absolute path.
 |---|---|---|
 | `writeWaveform` | always | nothing |
 | `withWaveform` | when the check fails | the waveform of an earlier failed run, when the check passes |
-| `simulateWaveform` | the counterexample, and with `AtSize size` one passing case, as `<name>_<size>` | nothing |
+| `simulateWaveform` | the counterexample, and with `AtSize size` one passing case, as `<path>_<size>` | nothing |
 | `recoverWaveform` | the waveform of a spill file | the spill file, after it wrote the waveform |
 | `spill2fst`, `spill2vcd` | the waveform of each spill file | with `--delete`, each spill file after its waveform is written |
 
-`withWaveform` knows the waveform of a failed run by its comment: the
-`$comment` line of a VCD file, or the comment of an FST file (see below). It
-does not delete a waveform without that comment, in either format.
+`withWaveform` knows the waveform of a failed run by its sidecar (see [The
+sidecar](#the-sidecar)). It reads only the sidecar, not the waveform. It
+does not delete a waveform whose sidecar does not mark it, in either format.
+When it deletes the last waveform of the path, it also deletes the sidecar.
 
 ## The waveform
 
@@ -142,6 +158,18 @@ the signal in the waveform, for example `top.counter_0.count`, or
 clash-shockwaves reads the sidecar unchanged. It finds the sidecar by the
 path of the waveform file, with the extension `.json`.
 
+The sidecar of the waveform of a failed run also has the key
+`clash-circuit-context`:
+
+```text
+"clash-circuit-context": {"origin": "failure", "waveform": "fst"}
+```
+
+`waveform` is the extension of that waveform, `fst` or `vcd`. A viewer
+ignores this key. A passing `withWaveform` reads it to find the waveform
+that it can delete. The sidecar of a waveform that was written on purpose
+does not have this key.
+
 ## The spill file
 
 A spill file describes itself, so that the file of a run that was stopped
@@ -177,11 +205,12 @@ waveform of a stopped run](../how-to/recover.md).
 
 ## Write the files yourself
 
-`Clash.CircuitContext.Recording` records a simulation and writes its files:
+`Clash.CircuitContext.Recording` records a simulation and writes its files.
+Its functions take the full path of each file, with its extension:
 
 | Function | Does |
 |---|---|
-| `withRecording spill action` | runs `action` with recording, and returns what the action returned or threw, with the `Recording`. A cancellation (an asynchronous exception, such as Ctrl-C or a test's timeout) is not returned: it goes on, after the recording stops. `spill` is `Just path` for a spill file at `path` (its directory is made), or `Nothing` to keep the values in memory. When the action is cancelled, the spill file stays, and a message on stderr gives its absolute path |
+| `withRecording spill action` | runs `action` with recording, and returns what the action returned or threw, with the `Recording`. A cancellation (an asynchronous exception, such as Ctrl-C or a test's timeout) is not returned: it goes on, after the recording stops. `spill` is `Just path` for a spill file at `path` (its directory is made), or `Nothing` to keep the values in memory. When the action is cancelled after it recorded a cycle, the spill file stays, and a message on stderr gives its absolute path. When it is cancelled before, the spill file is deleted |
 | `writeFST (start, stop) rec path` | writes the FST file at `path` and the sidecar beside it. Returns `Left` with the reason when it writes nothing: nothing was recorded, the window shows nothing, or a file cannot be written |
 | `writeVCD (start, stop) rec path` | the same, as a VCD file |
 | `recordingStart rec`, `recordingEnd rec` | the time from which the recording has cycles, and the time at which the simulation stopped, in units of the timescale |

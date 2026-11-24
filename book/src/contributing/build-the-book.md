@@ -40,7 +40,7 @@ clash-prelude commit that the package uses.
 
 ```bash
 cd book
-cabal --project-file="$PWD/cabal.project" build clash-ghc:exe:clash clash-circuit-context
+cabal --project-dir="$PWD" --project-file="$PWD/cabal.project" build clash-ghc:exe:clash clash-circuit-context
 ```
 
 The first build takes a long time. `scripts/clash` then runs this `clash`
@@ -71,5 +71,7 @@ The module `examples/BookSupport.hs` is on the search path of each example.
 It has `printWaveform`, which simulates a design and prints the scopes and
 signals of its VCD. Use it to show a waveform in a page.
 
-Examples that write files write them in `book/`, for example
-`book/waveforms/`. These files are not part of the repository.
+Examples that write files give relative paths, for example
+`"waveforms/counters"`. Their files go in the working directory of the
+check, `book/`, for example in `book/waveforms/`. These files are not part
+of the repository.

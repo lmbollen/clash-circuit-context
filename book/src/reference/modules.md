@@ -106,28 +106,33 @@ data Spill = InMemory | OnDisk
 -- FST, recorded in memory.
 defaultOptions :: WaveformOptions
 
--- Simulate stop cycles, write waveforms/<name>.fst (or .vcd) and .json, and
--- return the stop samples.
+-- Simulate stop cycles, write <path>.fst (or .vcd) and <path>.json, and
+-- return the stop samples. The path has no extension.
 writeWaveform ::
   (KnownDomain dom, NFDataX a) =>
-  WaveformOptions -> String -> (Int, Int) -> ((CircuitContextOnly) => Signal dom a) -> IO [a]
+  WaveformOptions -> FilePath -> (Int, Int) -> ((CircuitContextOnly) => Signal dom a) -> IO [a]
 
 -- Run the check without recording. If it throws, run it again with
 -- recording, write the waveform, and throw the same exception.
 withWaveform ::
   (KnownDomain dom, NFDataX a) =>
-  WaveformOptions -> String -> (Int, Int) -> ((CircuitContextOnly) => Signal dom a) ->
+  WaveformOptions -> FilePath -> (Int, Int) -> ((CircuitContextOnly) => Signal dom a) ->
   ([a] -> IO b) -> IO b
 
--- Write the waveform of a run that was stopped, from waveforms/<name>.spill.
--- Returns the path of the waveform, or why there is none.
-recoverWaveform :: WaveformOptions -> String -> IO (Either String FilePath)
+-- Write the waveform of a run that was stopped, from <path>.spill.
+-- Returns the absolute path of the waveform, or why there is none.
+recoverWaveform :: WaveformOptions -> FilePath -> IO (Either String FilePath)
 ```
 
 The design argument has the type `(CircuitContextOnly) => Signal dom a`:
 the function supplies the context. You give it the instrumented design, and
 you do not need `HasCircuitContext` yourself, or the plugin in the module of
 the call.
+
+The path of the waveform has no extension. The function adds `.fst` or
+`.vcd`, and writes the sidecar and the spill file beside the waveform. A
+relative path is relative to the working directory. The function makes the
+missing directories of the path.
 
 The window `(start, stop)` is in cycles. The simulation runs `stop` cycles,
 and the waveform has the cycles `start` to `stop - 1`.
@@ -145,7 +150,7 @@ data Capture = Counterexample | AtSize Size
 -- The same as writeWaveform, in a property. Records only as Capture says.
 simulateWaveform ::
   (KnownDomain dom, NFDataX a) =>
-  WaveformOptions -> Capture -> String -> (Int, Int) ->
+  WaveformOptions -> Capture -> FilePath -> (Int, Int) ->
   ((CircuitContextOnly) => Signal dom a) -> PropertyT IO [a]
 ```
 

@@ -42,8 +42,10 @@ how many cycles a spill file has.
 
 For each spill file that it cannot write, it prints the reason on stderr,
 and continues with the next file. Examples: the file does not exist, it is
-not a spill file, it has no recorded cycle, or the window starts after the
-end of the run. An error in the options prints the error and a line that
+not a spill file, it has no recorded cycle, the window starts after the
+end of the run, or the waveform cannot be written, for example because the
+disk is full. With `--delete`, a spill file whose waveform is not written
+stays. An error in the options prints the error and a line that
 refers to `--help`. The exit status is 0 if each file was written, and 1 if
 not.
 
