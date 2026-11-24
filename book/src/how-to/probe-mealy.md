@@ -80,6 +80,13 @@ is `z` in each cycle in which the simulation does not need its value. For
 example, a value that only the untaken branch of an `if` reads is not
 computed in that cycle.
 
+The recording itself also needs values. To record a value, the recorder
+packs all of its bits, so it computes all parts of the value. A probe of a
+composite value, for example a state record or a `Vec`, therefore computes
+the fields of that value. A probe of such a field then has a value in
+cycles in which the design alone does not compute it. So the `z` cycles of
+a probe can change when you probe another value, or stop to probe it.
+
 A value can also be computed later than the cycle it belongs to: a value
 that the machine keeps in its state and puts out a few cycles later is
 computed when the output needs it. The probe records such a value at its
@@ -109,8 +116,47 @@ blink
   n'
 ```
 
+The output function reads the state that the register of the machine
+holds. `n'` is the new state, so the value of `n'` in cycle *n* is the
+state that the output function reads in cycle *n + 1*: a probe of the
+transition function is one cycle before the output that it causes.
+
 For a machine with a bundled input and output, use `mealyBProbed` or
 `mooreBProbed`. For the types, see [Modules](../reference/modules.md#probes).
+
+## Probe a combinational function
+
+A function that you apply to a signal with `fmap` or `<$>` has no cycle of
+its own, so its bindings are not probed. Use `probeFmap` instead of `fmap`.
+It takes a clock, to count the cycles, and a function with `HasProbe`:
+
+```haskell,clash group=probe
+decode :: (HasCircuitContext) => Signal System (Unsigned 8) -> Signal System Bool
+decode byte = valid
+ where
+  valid = probeFmap clockGen check byte
+
+  check :: (HasProbe) => Unsigned 8 -> Bool
+  check b = large && small
+   where
+    large = b > 100
+    small = b < 250
+{-# OPAQUE decode #-}
+
+>>> printWaveform 4 (decode (fromList [1, 200, 201, 202]))
+decode
+  valid
+  large
+  small
+```
+
+- The named values of the function (`large`, `small`) are probes, in the
+  scope of the component that calls `probeFmap`.
+- A probe is `z` in each cycle in which nothing uses its value. Here `&&`
+  does not read `small` when `large` is `False`.
+- For a function of more than one signal, bundle the signals:
+  `probeFmap clk (\(x, y) -> f x y) (bundle (a, b))`.
+- In HDL, `probeFmap clk f` is `fmap f`. The clock is not used.
 
 ## Probe a value by hand
 

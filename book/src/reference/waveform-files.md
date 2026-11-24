@@ -94,7 +94,7 @@ These rows are true for both formats.
 | Components of a tuple | `name_0`, `name_1`, … |
 | Fields of a record | `name_field` |
 | The bindings of a local function without a scope, for each call | `v_0`, `v_1`, … in the scope of the caller |
-| A name outside all components | in the scope `logic`. A component named `logic` beside such names is `logic_0` |
+| A name outside all components | in the scope `logic`. This scope keeps the name `logic`, so a component named `logic` beside it is `logic_0`. Without names outside all components, a component named `logic` keeps its name |
 | A signal that the simulation never evaluated, for example a binding that nothing uses | not in the waveform at all. When a run ends, the recorder evaluates each trace up to the last cycle of the run (see [The cost of recording](../explanation/cost.md)), so a trace that the run evaluated once is in the waveform |
 | A cycle that was not evaluated, before the end of the run | the value `z`, for example a probe in a cycle in which nothing used its value, or a trace that the run evaluated less far than the other signals |
 | A probed value that the simulation evaluated after a later cycle | at its own cycle. A value that a mealy machine keeps in its state and uses a few cycles later is evaluated late |
@@ -177,12 +177,30 @@ not have `stop`.
 
 ## The sidecar
 
-The sidecar is in the format of clash-shockwaves. Its key `signals` has one
-entry for each described signal. The key of each entry is the full path of
-the signal in the waveform, for example `top.counter_0.count`, or
-`logic.out` for a name outside all components. The Surfer plugin of
-clash-shockwaves reads the sidecar unchanged. It finds the sidecar by the
-path of the waveform file, with the extension `.json`.
+The sidecar is a JSON file in the format of clash-shockwaves. The Surfer
+plugin of clash-shockwaves reads the sidecar unchanged. It finds the sidecar
+by the path of the waveform file, with the extension `.json`.
+
+| Key | Content |
+|---|---|
+| `signals` | one entry for each described signal. The key is the full path of the signal in the waveform, for example `top.counter_0.count`, or `logic.out` for a name outside all components. The value is the key of the type of the signal in `types`. A signal that is recorded as bits only has no entry |
+| `types` | one entry for each type of a described signal. The key is `<fingerprint>:<type>`. The value tells a viewer how to show the bits of the type: its constructors, fields and widths, from its `Waveform` instance |
+| `luts` | the lookup tables of the types whose `Waveform` instance uses one: for each recorded value, its bits and the text to show. Empty when no type uses a lookup table |
+| `clash-circuit-context` | only in the sidecar of the waveform of a failed run: see below |
+
+For example, a waveform with one described signal, `accumulate.total` of
+the type `Unsigned 8`, has this sidecar (the value in `types` is shortened):
+
+```text
+{
+  "luts": {},
+  "signals": {"accumulate.total": "b78a4dfc493b42551f787193a52a6a98:Unsigned 8"},
+  "types": {"b78a4dfc493b42551f787193a52a6a98:Unsigned 8": {"v": …, "w": 8}}
+}
+```
+
+For the format of the values in `types` and `luts`, see the [file format of
+clash-shockwaves](https://github.com/clash-lang/clash-shockwaves/blob/main/docs/reference/FILE_FORMAT.md).
 
 The sidecar of the waveform of a failed run also has the key
 `clash-circuit-context`:

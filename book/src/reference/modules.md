@@ -28,7 +28,7 @@ From `Clash.CircuitContext`.
 |---|---|
 | `HasCircuitContext` | the constraint of an instrumented function. It asks for the context, for the site of each call, and for the plugin to be on |
 | `CircuitContextOnly` | the context, without the call sites: what the functions of the package ask for, and give their arguments. Write it in code that you instrument by hand and compile without the plugin |
-| `TurnOnTheCircuitContextPlugin` | a constraint that only the plugin solves. A function defined in a module without the plugin keeps it, and a call of that function is an error that names it |
+| `TurnOnTheCircuitContextPlugin` | a constraint that only the plugin solves. A function defined in a module without the plugin keeps it. A call of that function from code without `HasCircuitContext`, in a module without the plugin, is an error that names it |
 | `HasProbe` | the constraint of a step function whose values are probed |
 | `NoCircuitScope` | an annotation, `{-# ANN f NoCircuitScope #-}`: this function deliberately has no `OPAQUE` |
 
@@ -89,6 +89,11 @@ mooreProbed ::
   (HasCallStack, CircuitContextOnly, KnownDomain dom, NFDataX s) =>
   Clock dom -> Reset dom -> Enable dom ->
   ((HasProbe) => s -> i -> s) -> (s -> o) -> s -> Signal dom i -> Signal dom o
+
+-- fmap, and probe the function. The clock counts the cycles.
+probeFmap ::
+  (HasCallStack, CircuitContextOnly, KnownDomain dom) =>
+  Clock dom -> ((HasProbe) => a -> b) -> Signal dom a -> Signal dom b
 ```
 
 `mealyBProbed` and `mooreBProbed` have the same arguments, with

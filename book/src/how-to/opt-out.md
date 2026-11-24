@@ -43,8 +43,11 @@ The plugin does not change a module without these constraints, so you do
 not need to turn it off for the module.
 
 Do not turn the plugin off for a module whose functions have
-`HasCircuitContext`: each call of such a function then fails to compile,
-with an error that names `TurnOnTheCircuitContextPlugin`.
+`HasCircuitContext`. Their bindings are then not recorded, and they are not
+components. A call of such a function from code without
+`HasCircuitContext`, in a module without the plugin, fails to compile, with
+an error that names `TurnOnTheCircuitContextPlugin` (see [If the plugin is
+not on](add-to-project.md#if-the-plugin-is-not-on)).
 
 ## One call, and everything under it
 

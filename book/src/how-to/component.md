@@ -61,9 +61,19 @@ pair
 A component can use the hidden clock, reset and enable of
 `Clash.Prelude`: give it `HiddenClockResetEnable dom` next to
 `HasCircuitContext`, and call it under `withClockResetEnable` or
-`exposeClockResetEnable`, as usual:
+`exposeClockResetEnable`, as usual. This example imports `Clash.Prelude`,
+not `Clash.Explicit.Prelude`:
 
-```haskell
+```haskell,clash group=hiddenclock hidden
+{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
+module HiddenClock where
+
+import Clash.Prelude
+import Clash.CircuitContext
+import BookSupport
+```
+
+```haskell,clash group=hiddenclock
 createDomain vSystem{vName = "Fast", vPeriod = 10000}
 
 syncFF :: (HasCircuitContext, HiddenClockResetEnable dom) => Signal dom Bool -> Signal dom Bool
@@ -75,6 +85,16 @@ syncFF inp = second
 
 pair :: (HasCircuitContext) => Clock Fast -> Reset Fast -> Signal Fast Bool -> Signal Fast Bool
 pair clk rst inp = withClockResetEnable clk rst enableGen $ syncFF inp .&&. syncFF (not <$> inp)
+{-# OPAQUE pair #-}
+
+>>> printWaveform 4 (pair clockGen resetGen (pure True))
+pair
+  syncFF_0
+    first
+    second
+  syncFF_1
+    first
+    second
 ```
 
 `createDomain` needs the extension `TemplateHaskell`.

@@ -86,8 +86,12 @@ Each module that defines a function whose signature has `HasCircuitContext`
 needs the plugin. A module that only calls such functions, for example a
 test suite, does not.
 
-If a module that defines such a function is compiled without the plugin, a
-call of the function stops the build, in the module of the call:
+If a module that defines such a function is compiled without the plugin,
+the function keeps the constraint `TurnOnTheCircuitContextPlugin`. Only the
+plugin solves this constraint. The build stops at a call of the function
+from code without `HasCircuitContext`, in a module without the plugin. For
+example, the design that you give to `writeWaveform` in a test suite, or a
+call under `withoutCircuitContext`:
 
 ```text
 Main.hs:8:69: error: [GHC-39999]
@@ -95,8 +99,18 @@ Main.hs:8:69: error: [GHC-39999]
         arising from a use of ‘counter’
 ```
 
-Turn on the plugin in the module that defines the function, here `counter`,
-not in the module of the call.
+The error can come later than the module that needs the plugin:
+
+- A function with `HasCircuitContext` in a module without the plugin passes
+  the constraint on to its callers. So the error can name a function that
+  only calls the function that was compiled without the plugin.
+- In a module with the plugin, the plugin solves the constraint. A call
+  there is not an error. The function that was compiled without the plugin
+  is then not instrumented: its bindings are not recorded, and it is not a
+  component.
+
+Turn on the plugin in each module that defines a function with
+`HasCircuitContext`, not in the module of the call.
 
 A module with an empty `Traceable` instance, compiled without the plugin,
 stops with an error that names `TurnOnThePlugin` and the flag to add.
