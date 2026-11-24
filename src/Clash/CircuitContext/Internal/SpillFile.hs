@@ -1,4 +1,5 @@
 {-# LANGUAGE CPP #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- |
@@ -18,6 +19,16 @@ mappings, more mappings than the system allows), and on every platform but
 Linux, it is a buffer in memory instead, written to the file by
 'persistBlock' and 'retire'. Elsewhere than on Linux, the file is a
 'System.IO.Handle', and nothing is mapped or reserved.
+
+A recording locks its spill file while it has it open, so that a second
+recording with the same path is refused ('inUse') instead of truncating
+the file the first one writes: a region that the first one has mapped is
+then past the end of the file, and its next store into it raises @SIGBUS@,
+which kills the process. On Linux, the lock is an exclusive @flock@, which
+two opens in one process also exclude each other with. Elsewhere, it is
+'GHC.IO.Handle.Lock.hTryLock' where the platform can lock a file, and else
+only GHC's own lock of a file that a 'System.IO.Handle' writes, which holds
+in one process.
 -}
 module Clash.CircuitContext.Internal.SpillFile (
   Fd,
@@ -43,6 +54,8 @@ import Data.Word (Word64, Word8)
 import Foreign.Marshal.Alloc (callocBytes, free)
 import Foreign.Ptr (Ptr, plusPtr)
 import Foreign.Storable (pokeByteOff)
+import GHC.IO.Exception (IOErrorType (ResourceBusy))
+import System.IO.Error (ioeSetErrorString, mkIOError)
 import System.IO.Unsafe (unsafePerformIO)
 
 import qualified Control.Exception as Exception
@@ -56,7 +69,7 @@ import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr (nullPtr)
 import Foreign.Storable (peek)
 
-foreign import ccall safe "ccc_spill_open" c_open :: CString -> IO CInt
+foreign import ccall safe "ccc_spill_open" c_open :: CString -> Ptr CInt -> IO CInt
 foreign import ccall safe "ccc_spill_reserve"
   c_reserve :: CInt -> Int64 -> Int64 -> IO CInt
 foreign import ccall safe "ccc_spill_map"
@@ -87,13 +100,17 @@ errorMessage :: FilePath -> String -> Error -> String
 errorMessage path call e =
   Exception.displayException (errnoToIOError call (Errno e) Nothing (Just path))
 
--- | Open a spill file: made, or truncated. Throws when it cannot be.
+{- | Open a spill file, and lock it: made, or truncated. Throws when it
+cannot be, and 'inUse' when another recording has it open.
+-}
 openSpill :: FilePath -> IO Fd
-openSpill path = do
-  fd <- withCString path c_open
-  if fd < 0
-    then ioError (errnoToIOError "open" (Errno (negate fd)) Nothing (Just path))
-    else pure fd
+openSpill path = withCString path $ \cpath -> alloca $ \busy -> do
+  fd <- c_open cpath busy
+  locked <- peek busy
+  if
+    | locked /= 0 -> ioError (inUse path)
+    | fd < 0 -> ioError (errnoToIOError "open" (Errno (negate fd)) Nothing (Just path))
+    | otherwise -> pure fd
 
 closeSpill :: Fd -> IO ()
 closeSpill fd = () <$ c_close fd
@@ -122,6 +139,12 @@ unmap :: Ptr Word8 -> Int -> IO (Either Error ())
 unmap p len = result <$> c_unmap p (fromIntegral len)
 #else
 import Control.Exception (IOException, try)
+import GHC.IO.Handle.Lock (
+  FileLockingNotSupported (FileLockingNotSupported),
+  LockMode (ExclusiveLock),
+  hTryLock,
+ )
+import System.IO.Error (isAlreadyInUseError)
 import System.IO (
   BufferMode (NoBuffering),
   Handle,
@@ -153,11 +176,24 @@ pageSize = 4096
 errorMessage :: FilePath -> String -> Error -> String
 errorMessage _ _ = Exception.displayException
 
--- | Open a spill file: made, or truncated. Throws when it cannot be.
+{- | Open a spill file, and lock it: made, or truncated. Throws when it
+cannot be, and 'inUse' when another recording has it open: in this process
+(GHC locks a file that a 'Handle' writes), or, where the platform can lock
+a file, in another one.
+-}
 openSpill :: FilePath -> IO Fd
 openSpill path = do
-  h <- openBinaryFile path ReadWriteMode
-  (hSetFileSize h 0 >> hSetBuffering h NoBuffering >> pure h) `Exception.onException` hClose h
+  h <-
+    openBinaryFile path ReadWriteMode `Exception.catch` \e ->
+      ioError (if isAlreadyInUseError e then inUse path else e)
+  ( do
+      locked <-
+        hTryLock h ExclusiveLock `Exception.catch` \FileLockingNotSupported -> pure True
+      if locked
+        then hSetFileSize h 0 >> hSetBuffering h NoBuffering >> pure h
+        else ioError (inUse path)
+    )
+    `Exception.onException` hClose h
 
 {- | Close the spill file. A write that failed leaves its bytes in the
 'Handle', which closing tries again; that error has been reported already.
@@ -184,6 +220,21 @@ unmap _ _ = Left <$> unavailable
 unavailable :: IO Error
 unavailable = pure (userError "a spill file is mapped on Linux only")
 #endif
+
+{- | The error of a spill file that another recording, in this process or
+another, has open: two recordings at one path at the same time.
+-}
+inUse :: FilePath -> IOError
+inUse path =
+  mkIOError
+    ResourceBusy
+    ""
+    Nothing
+    (Just path)
+    `ioeSetErrorString` ( "two recordings use one spill file: a recording that is running,"
+                            <> " in this process or another, writes it. Give each recording"
+                            <> " (each test) a path of its own"
+                        )
 
 {- | Whether a new recorder maps its regions: on Linux, unless this
 package's tests say otherwise ("Clash.CircuitContext.Internal.SpillTesting").

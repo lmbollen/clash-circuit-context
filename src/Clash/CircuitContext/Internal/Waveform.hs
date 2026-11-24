@@ -119,6 +119,11 @@ data Spill
     executables @spill2fst@ and @spill2vcd@. The values are written twice: to
     the spill file, and to the waveform.
 
+    A recording locks its spill file while it runs. A second recording with
+    the same spill file at the same time (two tests with one path, in one
+    process or in two) throws at once, with an error that names the file,
+    and leaves the first one's file alone.
+
     On Linux, a value is in the file as soon as it is recorded, also when the
     process is killed right after. The file's disk space is reserved ahead, up to 16 KiB
     per signal, so a full disk stops the recording (not the run) with a

@@ -386,6 +386,66 @@ children =
           recordingEnd rec @?= P.fromIntegral (regions P.* perRegion P.+ 1)
     )
   ,
+    ( "formats-one-spill-two-recordings"
+    , do
+        -- A recording that maps regions of its spill file, and, while it
+        -- runs, a second recording with the same spill file: in this
+        -- process, then in another. The second is refused at once and
+        -- leaves the file alone; the first records on.
+        let name = "formats-one-spill-two-recordings"
+        scrub [name]
+        spillFile <- makeAbsolute (file name "spill")
+        started <- newEmptyMVar
+        tried <- newEmptyMVar
+        firstDone <- newEmptyMVar
+        _ <-
+          forkFinally
+            ( withRecording (Just spillFile) $ do
+                let xs = sample counter
+                _ <- evaluate (P.sum (P.map P.toInteger (P.take 20000 xs)))
+                putMVar started ()
+                takeMVar tried
+                evaluate (P.sum (P.map P.toInteger (P.take 40000 xs)))
+            )
+            (putMVar firstDone)
+        takeMVar started
+        let refused err =
+              assertBool
+                ("said: " <> err)
+                ( (spillFile `isInfixOf` err)
+                    P.&& ("two recordings use one spill file" `isInfixOf` err)
+                )
+        second <-
+          try @IOException
+            (withRecording (Just spillFile) (evaluate (P.length (sampleN 100 busyAndQuiet))))
+        P.either (refused . P.show) (P.const (assertFailure "the second recording ran")) second
+        (code, out, err) <- inChild "formats-one-spill-other-process" []
+        assertBool ("the other process: " <> P.show code <> out <> err) (code P.== ExitSuccess)
+        putMVar tried ()
+        done <- takeMVar firstDone
+        (r, rec) <- P.either (assertFailure . P.show) pure done
+        P.either (Left . P.show) Right r
+          @?= Right (P.sum (P.map P.toInteger (P.take 40000 (P.cycle [0 .. 255 :: Int]))))
+        recordingEnd rec @?= 40000
+        recovered <- recoverRecording spillFile
+        P.fmap recordingEnd recovered @?= Right 40000
+        discardRecording rec
+    )
+  ,
+    ( "formats-one-spill-other-process"
+    , do
+        spillFile <- makeAbsolute (file "formats-one-spill-two-recordings" "spill")
+        second <-
+          try @IOException
+            (withRecording (Just spillFile) (evaluate (P.length (sampleN 100 busyAndQuiet))))
+        case second of
+          Left err ->
+            assertBool
+              ("said: " <> P.show err)
+              ("two recordings use one spill file" `isInfixOf` P.show err)
+          Right _ -> assertFailure "the second recording ran"
+    )
+  ,
     ( "formats-killed"
     , do
         -- Records, says how far, and waits to be killed (see the test).
@@ -695,6 +755,11 @@ tests =
           (("the run was stopped; what it recorded is in " <> spillFile) `isInfixOf` err')
         existing "formats-stopped-recorded" ["spill"] >>= (@?= [True])
         removeFile spillFile
+    , -- Two recordings with one spill file at the same time: the second
+      -- is refused, in this process and in another. Before, it truncated
+      -- the file that the first had mapped, and the first died of SIGBUS.
+      testCase "a second recording with the spill file of a running one is refused"
+        $ assertChild "formats-one-spill-two-recordings" []
     , testCase "a recording cancelled at any moment leaves no file open"
         $ assertChild "formats-cancel-storm" []
     , testCase "an FST that cannot be written whole is an error, and the spill file stays"

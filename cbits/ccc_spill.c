@@ -3,7 +3,7 @@
  * License    :  BSD2 (see the file LICENSE)
  *
  * The system calls of a spill file on Linux
- * (Clash.CircuitContext.Internal.SpillFile): open it, reserve a region's
+ * (Clash.CircuitContext.Internal.SpillFile): open and lock it, reserve a region's
  * disk space, map a region into memory, unmap it, write bytes at an offset,
  * close it. Every function returns 0 or an errno value (a file descriptor,
  * or minus an errno value, for ccc_spill_open). Compiled on Linux only.
@@ -12,12 +12,34 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
+#include <sys/file.h>
 #include <sys/mman.h>
 #include <unistd.h>
 
-int ccc_spill_open(const char *path) {
-  int fd = open(path, O_RDWR | O_CREAT | O_TRUNC | O_CLOEXEC, 0666);
-  return fd < 0 ? -errno : fd;
+/* Open a spill file, take an exclusive lock on it, and truncate it. Without
+ * the lock, a second recording with the same path truncated the file that the
+ * first had mapped: the first one's next store into a mapped region past the
+ * new end of the file raised SIGBUS. A lock that another open file holds (of
+ * this process or another) sets *busy, and leaves the file as it was. */
+int ccc_spill_open(const char *path, int *busy) {
+  *busy = 0;
+  int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0666);
+  if (fd < 0) return -errno;
+  int r;
+  do r = flock(fd, LOCK_EX | LOCK_NB); while (r != 0 && errno == EINTR);
+  if (r != 0) {
+    int e = errno;
+    close(fd);
+    if (e == EWOULDBLOCK) *busy = 1;
+    return -e;
+  }
+  do r = ftruncate(fd, 0); while (r != 0 && errno == EINTR);
+  if (r != 0) {
+    int e = errno;
+    close(fd);
+    return -e;
+  }
+  return fd;
 }
 
 /* Allocate the disk blocks of [off, off + len), so that a store into its

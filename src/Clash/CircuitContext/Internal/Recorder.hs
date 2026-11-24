@@ -408,7 +408,9 @@ spillVersion = 2
 
 {- | A recorder that records the cycles in progress at or after this time (in
 ps): into a spill file at this path (made, with its directory; an existing
-file is truncated), or, given 'Nothing', in memory.
+file is truncated), or, given 'Nothing', in memory. The spill file is locked
+until the recorder closes: a spill file that another recorder has open (in
+this process or another) throws, and is left alone.
 -}
 newRecorder :: Maybe FilePath -> Int -> IO Recorder
 newRecorder spill start = do

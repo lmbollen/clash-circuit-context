@@ -428,7 +428,9 @@ way of running a suite, so the messages give absolute paths. An absolute path
 (`"/tmp/out/counter"`) works too, and missing directories are made. One path
 is one waveform: a VCD written at a path deletes an FST at that path, and the
 other way round, because the sidecar describes the waveform written last. Give
-each test its own path.
+each test its own path. With `spill = OnDisk`, a recording locks its spill
+file: a second recording with the spill file of one that is running (in the
+same process, or in another) fails at once with an error that names the file.
 
 `withWaveform` runs the simulation without recording. When the check throws,
 it runs it again with recording, writes the waveform, prints its absolute path

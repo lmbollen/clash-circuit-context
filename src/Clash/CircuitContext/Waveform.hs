@@ -26,8 +26,10 @@ typed viewer reads. The path is relative to the working directory, or
 absolute (@\"waveforms\/counter\"@, @\"\/tmp\/out\/counter\"@), and missing
 directories are made; messages name the absolute path. One path is one
 waveform: writing it in one format deletes a waveform of the other format
-at that path, and two tests must not share a path. While a simulation records, its values are kept as compact
-records, in memory or in @\<path\>.spill@ (see 'Spill'); a spill file is
+at that path, and two tests must not share a path (a recording with the
+spill file of one that is running is refused, see 'OnDisk'). While a
+simulation records, its values are kept as compact records, in memory or in
+@\<path\>.spill@ (see 'Spill'); a spill file is
 deleted when the waveform is written, and kept when a recording run is
 stopped or its waveform cannot be written, for 'recoverWaveform'.
 
