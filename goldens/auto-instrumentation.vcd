@@ -7,12 +7,12 @@ $scope module top $end
   $var wire 64 ' accB $end
   $var wire 64 * pair_pFst $end
   $var wire 64 ' pair_pSnd $end
-  $scope module acc_0 $end
+  $scope module acc#0 $end
     $var wire 64 * total $end
     $var wire 64 , next $end
     $var wire 64 + prev $end
   $upscope $end
-  $scope module acc_1 $end
+  $scope module acc#1 $end
     $var wire 64 ' total $end
     $var wire 64 ) next $end
     $var wire 64 ( prev $end

@@ -3,11 +3,11 @@ $comment No comment $end
 $timescale 10000ps $end
 $scope module top $end
   $var wire 64 $ out $end
-  $scope module acc_0 $end
+  $scope module acc#0 $end
     $var wire 64 ( step $end
     $var wire 64 ' sum $end
   $upscope $end
-  $scope module acc_1 $end
+  $scope module acc#1 $end
     $var wire 64 & step $end
     $var wire 64 % sum $end
   $upscope $end

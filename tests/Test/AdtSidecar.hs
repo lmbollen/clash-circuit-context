@@ -265,7 +265,7 @@ main = do
       check "VCD nests a scope per component" ("$scope module top" `isInfixOf` v)
       check
         "two stage instances get sibling scopes"
-        ("stage_0" `isInfixOf` v P.&& "stage_1" `isInfixOf` v)
+        ("stage#0" `isInfixOf` v P.&& "stage#1" `isInfixOf` v)
       check "auto-traced ADT binding present" ("packet" `isInfixOf` v)
 
       -- ADT description: clash-shockwaves' contribution, same simulation.
@@ -277,13 +277,13 @@ main = do
         $ P.all (`isInfixOf` j) ["pAddr", "pPhase"]
       check
         "a descriptor is keyed by the VCD's own hierarchical path"
-        ("top.stage_0.packet" `P.elem` signalPaths meta)
+        ("top.stage#0.packet" `P.elem` signalPaths meta)
       check
         "every sidecar key is a var the VCD declares"
         (P.all (`P.elem` declaredPaths v) (signalPaths meta))
       check
         "a trace without Waveform is recorded, as bits"
-        (P.any ("stage_0.raw" `isSuffixOf`) (declaredPaths v))
+        (P.any ("stage#0.raw" `isSuffixOf`) (declaredPaths v))
       check
         "...and stays out of the sidecar"
         (P.not (P.any ("raw" `isSuffixOf`) (signalPaths meta)))

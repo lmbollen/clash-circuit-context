@@ -58,7 +58,7 @@ resolved to a small ordinal at registration time via its 'StableName' — no
 global state and no id minting in pure code. Map keys carry
 @name\@ordinal\@loc@ tags (the @\'\@\'@ character is reserved — don't use it
 in names); the VCD writer strips them and, where siblings genuinely collide,
-renames them @name_0@, @name_1@, …, ordered by their call sites in the
+renames them @name#0@, @name#1@, …, ordered by their call sites in the
 design: the calls that led to the instance ('ccCallPath'), then the call
 of 'component' (see 'callLoc'). Instances born at the same call site are
 numbered in the order the simulation first reaches them: a 'fmap' or

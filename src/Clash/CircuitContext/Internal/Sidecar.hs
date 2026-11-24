@@ -28,7 +28,7 @@ recording, as do the lookup-table entries of the values that occurred
 ('recordingLuts'). Both are in a spill file too, so a stopped run's sidecar
 is complete. The caller
 passes each signal with the full scope path the VCD declares it under, so a
-descriptor lands on exactly that var: sibling suffixes (@name_0@, @name_1@)
+descriptor lands on exactly that var: sibling suffixes (@name#0@, @name#1@)
 included, and the @logic@ scope of a dot-free name.
 
 Traces AND probes. A probe is how an FSM state is seen at all (it is state,

@@ -246,7 +246,7 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
   contexts to ordinary class constraints, as above — the oracle recognizes
   an instance by recursing on its written context.
 * Multiple instances of the same component under one parent are named
-  `name_0`, `name_1`, …, ordered by their call sites in the design. The
+  `name#0`, `name#1`, …, ordered by their call sites in the design. The
   plugin splits each function whose signature asks for `HasCircuitContext`
   into a wrapper, which keeps the name and the signature, and a worker,
   `$wf`, which keeps the body and the pragmas. `HasCircuitContext` asks for
@@ -276,16 +276,18 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
   that the method calls.
 * Every signal and scope in a scope has a name of its own. A name that is
   used once is kept as it is. The duplicates of a name (instances, or the
-  signals that the calls of a helper record) are numbered `name_0`,
-  `name_1`, … only if none of these names is already in the scope;
-  otherwise they get two underscores (`name__0`, …), or as many more as it
-  takes. So two `x` of a helper beside the elements `x_0` and `x_1` of a
-  pair `x` are `x__0` and `x__1`. The names of one scope are numbered in
-  name order, so the same signals always get the same names, and the VCD,
-  the FST and the sidecar use the same names. Signals outside every
-  component are in the stock scope `logic`, as in Clash's `dumpVCD`; a
-  component named `logic` beside them is numbered as a second `logic`
-  (`logic_0`). Two signals with the same name and instance (two probe
+  signals that the calls of a helper record) are numbered `name#0`,
+  `name#1`, …: `#`, because `_i` is a structural position (an element of a
+  `Vec` or a tuple, an `imapComponents` index), and a duplicate must not
+  look like one. So two `y` of a helper beside a vector `y` are `y#0` and
+  `y#1`, beside the elements `y_0`, `y_1`, …, whichever elements a test
+  evaluates. A name given as a string (to `component`) can contain `#`;
+  if a number would make a name the scope has, the duplicates get `##`, or
+  as many more as it takes. The names of one scope are numbered in name
+  order, so the same signals always get the same names, and the VCD, the
+  FST and the sidecar use the same names. Signals outside every component
+  are in the stock scope `logic`, as in Clash's `dumpVCD`; a component
+  named `logic` beside them is numbered as a second `logic` (`logic#0`). Two signals with the same name and instance (two probe
   contexts made by hand with one `pcPath`) are numbered too, in the order
   they were registered.
 
@@ -637,7 +639,7 @@ than chosen between:
 Every traced or probed payload with a `Waveform` instance carries its
 description. The descriptor is captured at registration, where the payload
 type is still known, and the sidecar is written with the waveform, keyed by the very scope paths
-the waveform declares — sibling `_0`/`_1` suffixes and the `logic` scope of a
+the waveform declares — sibling `#0`/`#1` suffixes and the `logic` scope of a
 top-level name included — so nothing is matched by name. The
 sidecar is in shockwaves' own format, and its
 [Surfer plugin](https://github.com/clash-lang/clash-shockwaves) reads it

@@ -453,27 +453,32 @@ parseLoc s0 = case sites s0 of
 
 {- | Strip instance tags from all keys. Groups siblings by (parent, name): a
 name with a single instance keeps its clean name; a name with several gets
-@name_i@ suffixes ordered by instantiation call site — a DESIGN property —
+@name#i@ suffixes ordered by instantiation call site — a DESIGN property —
 falling back to first-registration order only for instances born at the
 same call site (bare 'fmap' replication; use
 'Clash.CircuitContext.Core.imapComponents' instead). A signal is an
 instance of its own: two signals with one key are two instances, in the
 order of the list.
 
-Every name in a scope is unique, also when a suffix makes a name that the
-scope already has (two @x@ beside the elements @x_0@ and @x_1@ of a pair
-@x@). The instances of a name get @name_i@ only when none of these names is
-in the scope yet; otherwise they get @name__i@ (two underscores), or as many
-underscores as it takes. Only a clean name, or a name that another group got
-with more underscores, can take such a name: two groups with one underscore
-never make the same name, as the digits after the last underscore are the
-suffix. The groups of a scope get their names in name order, after all clean
-names, so the names depend only on the keys.
+The suffix is @#i@, not @_i@: @_i@ is a structural position (the element
+of a 'Clash.Sized.Vector.Vec', of a tuple, of 'imapComponents'), and a
+duplicate must not look like one. Two calls of a helper that record an @y@
+beside a vector @y@ give @y#0@, @y#1@ beside @y_0@, @y_1@, …, whichever
+elements the run evaluated. A binding or field name cannot contain @#@ (but
+for @MagicHash@ names, which end in it), so only a name given as a string
+(to 'Clash.CircuitContext.Core.component', say) can make a name that is
+taken. Every name in a scope is still unique then: the instances of a name
+get @name#i@ only when none of these names is in the scope yet; otherwise
+they get @name##i@, or as many @#@ as it takes. Only a clean name, or a
+name that another group got with more @#@, can take such a name: two groups
+with one @#@ never make the same name, as the digits after the last @#@ are
+the suffix. The groups of a scope get their names in name order, after all
+clean names, so the names depend only on the keys.
 
 The top level has one more name: the dot-free names are declared in the
 stock scope @logic@ (see 'vcdPath'), so when there are any, @logic@ is a
 name the top level has. A component named @logic@ is then numbered as a
-second instance of it (@logic_0@), and the dot-free names keep the scope
+second instance of it (@logic#0@), and the dot-free names keep the scope
 that 'Clash.Signal.Trace.dumpVCD' gives them. A dot-free signal named
 @logic@ is declared in that scope, not beside it, so it is not numbered.
 
@@ -522,7 +527,7 @@ disambiguate signals =
         | all (`Set.notMember` taken) ns = ns
         | otherwise = free (k + 1)
        where
-        ns = [name <> replicate k '_' <> show i | i <- [0 .. length insts - 1]]
+        ns = [name <> replicate k '#' <> show i | i <- [0 .. length insts - 1]]
 
     -- Call site first (design order); located instances before unlocated;
     -- registration ordinal, then the place in the list, as the last resort.
@@ -546,7 +551,7 @@ disambiguate signals =
 becomes a nested @$scope@. A dot-free name has no scope of its own, so it
 lands in the stock @logic@ scope, as in 'Clash.Signal.Trace.dumpVCD'. No
 dotted name starts with that scope when there are dot-free names: a
-component named @logic@ is then @logic_0@ (see 'disambiguate').
+component named @logic@ is then @logic#0@ (see 'disambiguate').
 
 Anything that names VCD vars from outside the file (the typed-waveform
 sidecar) must use this, not the bare name: a viewer looks a var up by its

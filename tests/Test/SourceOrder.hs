@@ -239,8 +239,7 @@ bindsX i = x + 1
 {-# ANN bindsX NoCircuitScope #-}
 
 {- | Two calls of 'bindsX' beside a pair bound as @x@. The pair records
-@x_0@ and @x_1@, the names that the two @x@ of the helper get when there is
-nothing else in the scope.
+the elements @x_0@ and @x_1@, and the helper's two @x@ are duplicates.
 -}
 collide ::
   (HasCircuitContext) => Signal System (Unsigned 8) -> Vec 4 (Signal System (Unsigned 8))
@@ -302,7 +301,7 @@ recorded n k = liftIO $ do
   dir = "waveforms/test-source-order"
 
 {- | Sample both outputs of a pair, in the order the generator picks, and
-return the waves of @prefix_0.suffix@ and @prefix_1.suffix@.
+return the waves of @prefix#0.suffix@ and @prefix#1.suffix@.
 -}
 instancesOf ::
   String ->
@@ -321,8 +320,8 @@ instancesOf prefix suffix pair = do
           (annotate (p P.<> " missing in " P.<> P.show (Map.keys waves)) *> failure)
           pure
           (Map.lookup p waves)
-  w0 <- waveAt (prefix P.<> "_0" P.<> suffix)
-  w1 <- waveAt (prefix P.<> "_1" P.<> suffix)
+  w0 <- waveAt (prefix P.<> "#0" P.<> suffix)
+  w1 <- waveAt (prefix P.<> "#1" P.<> suffix)
   pure (asInts w0, asInts w1)
 
 -- | A pair of instances, numbered by their calls.
@@ -355,10 +354,10 @@ prop_helperTraceOrder = property $ do
     if secondFirst then force b *> force a else force a *> force b
   declarations vcd
     === [ "scope twoTraceCalls"
-        , "count_0"
-        , "other_0"
-        , "count_1"
-        , "other_1"
+        , "count#0"
+        , "other#0"
+        , "count#1"
+        , "other#1"
         , "up"
         ]
 
@@ -382,7 +381,7 @@ prop_recursiveHelper = property $ do
     recorded 3
       $ P.mapM_ (\i -> evaluate (sampleN 3 (chained P.!! i) `deepseqX` ())) order
   let waves = decodeVCDPaths 3 vcd
-  [ fmap asInts (Map.lookup ("chained.acc_" P.<> P.show i P.<> ".total") waves)
+  [ fmap asInts (Map.lookup ("chained.acc#" P.<> P.show i P.<> ".total") waves)
     | i <- [0 .. 3 :: Int]
     ]
     === [Just (model [0, 0, s]) | s <- [1 .. 4]]
@@ -429,12 +428,13 @@ prop_vecOfRecords = property $ do
         , "up"
         ]
 
-{- | A name that the numbering makes is never one that the scope already
-has. The two @x@ of the helper would be @x_0@ and @x_1@, which are the
-names of the pair's elements, and the VCD then had the pair's elements and
-not the helper's @x@ (the duplicate names were dropped). Now they are
-@x__0@ and @x__1@, and every one of the four has its own values. The
-generator picks the order in which the simulation reaches them.
+{- | A duplicate never looks like an element. The two @x@ of the helper
+are @x#0@ and @x#1@, beside the elements @x_0@ and @x_1@ of the pair @x@,
+and every one of the four has its own values. Before, the helper's two @x@
+were @x_0@ and @x_1@, the names of the pair's elements: the VCD had the
+pair's elements and not the helper's @x@, and later @x__0@ and @x__1@,
+whose names depended on which elements a run evaluated. The generator
+picks the order in which the simulation reaches them.
 -}
 prop_numberingAvoidsNames :: Property
 prop_numberingAvoidsNames = property $ do
@@ -443,9 +443,9 @@ prop_numberingAvoidsNames = property $ do
     recorded 2
       $ P.mapM_ (\i -> evaluate (sampleN 2 (collide (pure 1) !! (i :: Int)) `deepseqX` ())) order
   -- In source order: the calls of the helper come before the pair's binding.
-  declarations vcd === ["scope collide", "x__0", "x__1", "x_0", "x_1", "up"]
+  declarations vcd === ["scope collide", "x#0", "x#1", "x_0", "x_1", "up"]
   let waves = decodeVCDPaths 2 vcd
-  [fmap asInts (Map.lookup ("collide." P.<> n) waves) | n <- ["x_0", "x_1", "x__0", "x__1"]]
+  [fmap asInts (Map.lookup ("collide." P.<> n) waves) | n <- ["x_0", "x_1", "x#0", "x#1"]]
     === [Just (model [v, v]) | v <- [2, 3, 101, 111]]
 
 tests :: TestTree
@@ -498,5 +498,5 @@ tests =
     , testProperty "the calls of an instance method" (numbered "xMethod.acc" ".total" xMethod)
     , testProperty "the calls of a default method" (numbered "xDefault.acc" ".total" xDefault)
     , testProperty "the calls of a function with another annotation" (numbered "xAnn.acc" ".total" xAnn)
-    , testProperty "a number never makes a name that the scope has" prop_numberingAvoidsNames
+    , testProperty "a duplicate never looks like an element" prop_numberingAvoidsNames
     ]

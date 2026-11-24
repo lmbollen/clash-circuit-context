@@ -228,7 +228,7 @@ prop_slowDomainKeepsItsTime = property $ do
 {- | Two instances of one component under one parent are numbered by where
 they are written, never by which one the simulation reaches first. The
 generator picks the evaluation order. Before the call site skipped the
-library's own frames, every instance had the same call site, and @acc_0@
+library's own frames, every instance had the same call site, and @acc#0@
 was whichever instance was evaluated first.
 -}
 prop_siblingsFollowSourceOrder :: Property
@@ -241,8 +241,8 @@ prop_siblingsFollowSourceOrder = property $ do
     if secondFirst then force b *> force a else force a *> force b
   let waves = decodeVCDPaths 3 vcd
       waveAt p = maybe (annotate (p P.<> " missing") *> failure) pure (Map.lookup p waves)
-  wave0 <- waveAt "acc_0.total"
-  wave1 <- waveAt "acc_1.total"
+  wave0 <- waveAt "acc#0.total"
+  wave1 <- waveAt "acc#1.total"
   asInts wave0 === model [0, 0, 1]
   asInts wave1 === model [0, 0, 100]
  where
@@ -307,18 +307,20 @@ prop_declarationsAreSorted = property $ do
     ]
 
 {- | Every signal has a name of its own in the VCD, whatever names its scope
-has: a name that the numbering of duplicates makes (@x_0@ for the first of
+has: a name that the numbering of duplicates makes (@x#0@ for the first of
 two @x@) is never a name that is already there. A name used once is kept.
-The generator picks names that collide in each of the ways that numbering
-can: with a name used once (@x_0@), and with a number made for another
-name (@x__0@ for @x_@, and for @x@ when @x_0@ is taken). Before, the VCD
-kept one of two signals with the same name, and the other was not there.
+A binding cannot make such a name, but a name given as a string can. The
+generator picks names that collide in each of the ways that numbering can:
+with a name used once (@x#0@), and with a number made for another name
+(@x##0@ for @x#@, and for @x@ when @x#0@ is taken), beside an element name
+(@x_0@) that a duplicate never takes. Before, the VCD kept one of two
+signals with the same name, and the other was not there.
 -}
 prop_namesAreUnique :: Property
 prop_namesAreUnique = property $ do
   names <-
     forAll
-      (Gen.list (Range.linear 1 8) (Gen.element ["x", "x_0", "x_1", "x_", "x__0", "x_0_0"]))
+      (Gen.list (Range.linear 1 8) (Gen.element ["x", "x#0", "x#1", "x#", "x##0", "x#0#0", "x_0"]))
   let n = P.length names
   (_, _, vcd) <- recorded 0 1 $ do
     let sampled =
@@ -344,7 +346,7 @@ prop_namesAreUnique = property $ do
 
 {- | The signals outside every component are in the stock scope @logic@.
 A component named @logic@ beside them is numbered as a second @logic@:
-@logic_0@. Before, the VCD had two scopes named @logic@, each with a @foo@,
+@logic#0@. Before, the VCD had two scopes named @logic@, each with a @foo@,
 the sidecar had one entry for the two (@logic.foo@), and the FST had two
 @foo@ in one scope. The generator picks which one the simulation reaches
 first.
@@ -362,12 +364,12 @@ prop_rootScopeHasItsName = property $ do
   annotate (P.show (Map.keys waves))
   P.length [() | "$scope module logic $end" <- P.lines vcd] === 1
   Map.toList (P.fmap asInts waves)
-    === [("logic.foo", model [2]), ("logic_0.foo", model [1])]
+    === [("logic#0.foo", model [1]), ("logic.foo", model [2])]
   -- Both are in the sidecar, by their own path.
   [p | p <- paths, not (("\"" P.<> p P.<> "\"") `List.isInfixOf` json)]
     === []
  where
-  paths = ["logic.foo", "logic_0.foo"]
+  paths = ["logic.foo", "logic#0.foo"]
 
 {- | Two probes with one key are two signals. The key of a probe is its
 scope, its name, and the instance ordinal and call site of its 'pcPath';
@@ -388,7 +390,7 @@ prop_probesWithOneKey = property $ do
   let waves = decodeVCD 1 vcd
   annotate (P.show (Map.keys waves))
   Map.toList (P.fmap asInts waves)
-    === [("p_0", model [1]), ("p_1", model [2]), ("t", model [0])]
+    === [("p#0", model [1]), ("p#1", model [2]), ("t", model [0])]
 
 {- | The first firings of one probe on several threads at once register one
 signal. Each thread fires cycle 0 of probe @p@ of one instance (one
@@ -396,7 +398,7 @@ signal. Each thread fires cycle 0 of probe @p@ of one instance (one
 a name, when forced, waits for the other threads to force theirs. The
 recorder forces the name when it registers the probe, after it found the
 probe missing from the cache, so without a lock all threads find it missing
-and each registers one: @p_0@, @p_1@, … Then cycle 1 fires.
+and each registers one: @p#0@, @p#1@, … Then cycle 1 fires.
 
 The suite runs without @-threaded@, so the threads take turns on one
 capability, but a thread that waits lets the others run, and a thread can
