@@ -24,7 +24,13 @@ import Control.Monad (when)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isInfixOf, isPrefixOf)
 import qualified Data.Map.Strict as Map
-import System.Directory (doesFileExist, removeFile, removePathForcibly)
+import System.Directory (
+  createDirectoryIfMissing,
+  doesFileExist,
+  makeAbsolute,
+  removeFile,
+  removePathForcibly,
+ )
 import System.Posix.Files (accessModes, fileMode, getFileStatus, intersectFileModes)
 import System.FilePath ((-<.>), (<.>), (</>))
 import System.IO.Unsafe (unsafePerformIO)
@@ -432,6 +438,26 @@ tests =
               ("clash-circuit-context: the path \"waveforms/capture-bad.vcd\" ends in .vcd" `isInfixOf`)
               (P.take 1 thrown)
           )
+    , -- A directory that cannot hold the waveform is refused before the
+      -- design runs too (see Test.Formats for the others). Before, the case
+      -- ran, and the footnote said that no waveform was written.
+      testCase "simulateWaveform refuses a directory that is a file" $ do
+        aFile <- makeAbsolute "waveforms/capture-a-file"
+        createDirectoryIfMissing True "waveforms"
+        removePathForcibly aFile
+        P.writeFile aFile ""
+        seed <- Seed.random
+        let Property config test =
+              Hedgehog.withTests 1
+                . Hedgehog.property
+                $ ()
+                <$ simulateWaveform vcdOptions Counterexample (aFile </> "x") (0, 8) ran
+        report <- checkReport config 0 seed test (\_ -> pure ())
+        text <- Report.renderResult DisableColor Nothing report
+        removeFile aFile
+        assertBool
+          ("reported: " <> text)
+          ((aFile </> "x" <> ": " <> aFile <> " is a file, not a directory") `isInfixOf` text)
     , -- AtSize reads the size of the case without a forAll: Hedgehog's
       -- report of a failure lists every forAll, and AtSize's showed as an
       -- empty "forAll0 =".

@@ -431,7 +431,12 @@ way of running a suite, so the messages give absolute paths. An absolute path
 (`"/tmp/out/counter"`) works too, and missing directories are made. A path
 that cannot be meant is refused before anything runs, with an error that says
 what to give instead: an empty path, a directory (`"waveforms/"`), and a path
-that ends in `.fst`, `.vcd`, `.json` or `.spill`. One path
+that ends in `.fst`, `.vcd`, `.json` or `.spill`. So is a path whose directory
+cannot hold the waveform, with either `spill` option: the functions make the
+directory and create a file in it before the design runs, and the error names
+what is in the way by its absolute path (`<dir> is a file, not a directory`,
+`<dir> is not writable`). `withWaveform` does this before its first run, so a
+bad path fails a test that passes too. One path
 is one waveform: a VCD written at a path deletes an FST at that path, and the
 other way round, because the sidecar describes the waveform written last. Give
 each test its own path. With `spill = OnDisk`, a recording locks its spill

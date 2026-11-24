@@ -66,6 +66,7 @@ library
   other-modules:
     Clash.CircuitContext.Internal.BitPackCompat
     Clash.CircuitContext.Internal.Bits
+    Clash.CircuitContext.Internal.Directory
     Clash.CircuitContext.Internal.Fst
     Clash.CircuitContext.Internal.FstOut
     Clash.CircuitContext.Internal.Message

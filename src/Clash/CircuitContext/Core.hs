@@ -373,10 +373,21 @@ values go to a spill file at this path while the simulation runs, so memory
 does not grow with the length of the run; given 'Nothing', they stay in
 memory, as compact records, and nothing is written to disk. Delete a spill
 file with 'Clash.CircuitContext.Recording.discardRecording' when done. The
-recording and the messages name the spill file by its absolute path. The
-spill file is locked while the action runs: a spill file that another
-recording has open, in this process or another, throws an 'IOError' that
-names it, before the action runs, and the other recording goes on.
+recording and the messages name the spill file by its absolute path.
+
+The 'Either' is the action's: what it returned, or what it threw. Making the
+spill file comes before the action, so an error there is thrown, as an
+'IOError' that names the spill file, and the action does not run (there is
+no recording to return with a 'Left'):
+
+* its directory, and the missing directories above it, are made, and a file
+  is created in it and deleted: a part of the path that is a file, or a
+  directory that is not writable, throws an error that says which, by its
+  absolute path (@\<dir\> is a file, not a directory@,
+  @\<dir\> is not writable@);
+* the spill file is locked while the action runs: a spill file that another
+  recording has open, in this process or another, throws, and the other
+  recording goes on.
 
 The action must /force/ the parts of the circuit it wants recorded (sampling
 does). When it stops, every trace is finished up to the time the furthest

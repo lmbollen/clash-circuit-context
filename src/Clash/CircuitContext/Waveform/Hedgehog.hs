@@ -100,7 +100,10 @@ except as 'Capture' asks; see the module header. A waveform shows the cycles
 The counterexample's waveform is @\<path\>.fst@ or @.vcd@ (and its @.json@
 sidecar), and the case of an 'AtSize' capture's @\<path\>_\<size\>.fst@ or
 @.vcd@; give each property its own path. A relative path is relative to the
-working directory, and missing directories are made.
+working directory, and missing directories are made, before the case runs:
+a directory that cannot hold the waveform (a part of the path is a file, or
+a directory is not writable) fails the property at once, with an error that
+names it.
 -}
 simulateWaveform ::
   forall dom a.
@@ -108,8 +111,9 @@ simulateWaveform ::
   WaveformOptions ->
   Capture ->
   {- | The path of the waveform, without extension: @\<path\>.fst@ or @.vcd@.
-  An empty path, a directory, or a path that ends in @.fst@, @.vcd@,
-  @.json@ or @.spill@ is refused, before anything runs
+  An empty path, a directory, a path that ends in @.fst@, @.vcd@, @.json@ or
+  @.spill@, and a path whose directory cannot be made or written, are
+  refused, before anything runs
   -}
   FilePath ->
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
@@ -121,6 +125,7 @@ simulateWaveform opts capture path0 window@(_, stop) sig = do
   liftIO (checkPath path0)
   path <- liftIO (resolvePath path0)
   liftIO (checkWindow path window)
+  liftIO (checkDirectory path)
   keepThis <- case capture of
     Counterexample -> pure Nothing
     AtSize size -> firstAtSize path size

@@ -201,8 +201,8 @@ import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrBytes, withForeignPtr)
 import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Ptr (Ptr, castPtr, plusPtr)
 import Foreign.Storable (pokeByteOff)
+import GHC.IO.Exception (IOErrorType (InappropriateType, PermissionDenied))
 import GHC.Natural (Natural)
-import System.Directory (createDirectoryIfMissing)
 import System.FilePath (takeDirectory)
 import System.IO (
   Handle,
@@ -213,6 +213,7 @@ import System.IO (
   hSeek,
   openBinaryFile,
  )
+import System.IO.Error (ioeSetErrorString, mkIOError)
 import System.IO.Unsafe (unsafeInterleaveIO)
 
 import qualified Control.Exception as Exception
@@ -226,6 +227,11 @@ import qualified Data.ByteString.Unsafe as ByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 
+import Clash.CircuitContext.Internal.Directory (
+  Problem (..),
+  directoryProblem,
+  problemMessage,
+ )
 import Clash.CircuitContext.Internal.Message (say)
 import Clash.CircuitContext.Internal.SpillFile (
   Fd,
@@ -409,14 +415,16 @@ spillVersion = 2
 ps): into a spill file at this path (made, with its directory; an existing
 file is truncated), or, given 'Nothing', in memory. The spill file is locked
 until the recorder closes: a spill file that another recorder has open (in
-this process or another) throws, and is left alone.
+this process or another) throws, and is left alone. A directory that cannot
+hold the spill file ('directoryProblem') throws an 'IOError' that names the
+spill file and says which part of the path is in the way.
 -}
 newRecorder :: Maybe FilePath -> Int -> IO Recorder
 newRecorder spill start = do
   store <- case spill of
     Nothing -> pure ToMemory
     Just path -> do
-      createDirectoryIfMissing True (takeDirectory path)
+      directoryProblem (takeDirectory path) >>= mapM_ (ioError . unusable path)
       fd <- openSpill path
       mapped <- readIORef mapping
       pure (ToFile (Spill fd pageSize mapped Nothing 0 pageSize False))
@@ -450,6 +458,17 @@ newRecorder spill start = do
         w <- ByteString.unsafeUseAsCString header $ \p ->
           writeAt fd (castPtr p) (ByteString.length header) 0
         pure (either (Left . errorMessage (fromMaybe "" spill) "write") Right w)
+
+{- | The error of a spill file whose directory cannot hold it: it names the
+spill file, and says which part of the path is in the way.
+-}
+unusable :: FilePath -> Problem -> IOError
+unusable path problem = case problem of
+  Other err -> err
+  NotADirectory _ -> named InappropriateType
+  NotWritable _ -> named PermissionDenied
+ where
+  named kind = mkIOError kind "" Nothing (Just path) `ioeSetErrorString` problemMessage problem
 
 {- | Record nothing more, for this reason. A full spill file counts also
 while the recorder closes, and says so on stderr, once.

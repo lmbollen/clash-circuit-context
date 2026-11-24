@@ -33,6 +33,7 @@ module Clash.CircuitContext.Internal.Waveform (
   resolvePath,
   checkPath,
   pathProblem,
+  checkDirectory,
   waveformPath,
   spillPath,
   checkWindow,
@@ -68,6 +69,7 @@ import System.Directory (
 import System.FilePath (
   dropExtension,
   hasTrailingPathSeparator,
+  takeDirectory,
   takeExtension,
   takeFileName,
   (<.>),
@@ -82,6 +84,7 @@ import Clash.CircuitContext.Core (
   withRecordingFrom,
   withoutCircuitContext,
  )
+import Clash.CircuitContext.Internal.Directory (directoryProblem, problemMessage)
 import Clash.CircuitContext.Internal.FstOut (writeFst)
 import Clash.CircuitContext.Internal.Message (say)
 import Clash.CircuitContext.Internal.Recorder (
@@ -218,6 +221,21 @@ can be the path of a waveform without extension (see 'pathProblem').
 checkPath :: FilePath -> IO ()
 checkPath path =
   mapM_ (throwIO . ErrorCall . ("clash-circuit-context: " <>)) (pathProblem path)
+
+{- | Throw, as 'checkPath' does, unless the directory of this waveform (its
+absolute path, from 'resolvePath') can hold its files: made, with its missing
+parents, and a file created in it and deleted. The error names the waveform,
+and the directory in the way: @\<dir\> is a file, not a directory@, or
+@\<dir\> is not writable@. Run before the simulation, in both spill modes, so
+that a path that cannot be written fails at once, not after the run.
+-}
+checkDirectory :: FilePath -> IO ()
+checkDirectory path =
+  directoryProblem (takeDirectory path)
+    >>= mapM_
+      ( \problem ->
+          throwIO (ErrorCall ("clash-circuit-context: " <> path <> ": " <> problemMessage problem))
+      )
 
 -- | The spill file of a waveform's path: @\<path\>.spill@.
 spillPath :: FilePath -> FilePath
@@ -396,7 +414,9 @@ announce path written =
 @\<path\>.spill@, in the options' format: everything it recorded. Deletes
 the spill file once the waveform is written, and keeps it otherwise.
 Returns the waveform's absolute path, or why there is none; also why a path
-cannot be the path of a waveform without extension ('pathProblem').
+cannot be the path of a waveform without extension ('pathProblem'), and,
+before the spill file is read, why its directory cannot hold the waveform
+(as 'checkDirectory' says it).
 -}
 recover :: WaveformOptions -> FilePath -> IO (Either String FilePath)
 recover opts path0
@@ -411,7 +431,9 @@ recoverFrom opts path0 = do
   if not there
     then pure (Left (spillFile <> " does not exist"))
     else do
-      read' <- readSpill spillFile
+      problem <- directoryProblem (takeDirectory path)
+      read' <-
+        maybe (readSpill spillFile) (pure . Left . ((path <> ": ") <>) . problemMessage) problem
       case read' of
         Left err -> pure (Left err)
         Right rec

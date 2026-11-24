@@ -38,6 +38,7 @@ import Control.Exception (
   ErrorCall (ErrorCall),
   IOException,
   SomeException,
+  displayException,
   evaluate,
   finally,
   throwIO,
@@ -49,6 +50,7 @@ import GHC.Stats (gc, gcdetails_live_bytes, getRTSStats)
 import System.Directory (
   canonicalizePath,
   createDirectoryIfMissing,
+  doesDirectoryExist,
   doesFileExist,
   getFileSize,
   listDirectory,
@@ -63,7 +65,7 @@ import System.FilePath ((<.>), (</>))
 import System.IO (hFlush, hGetLine, stdout)
 import System.IO.Unsafe (unsafePerformIO)
 import System.Mem (performMajorGC)
-import System.Posix.Files (readSymbolicLink)
+import System.Posix.Files (readSymbolicLink, setFileMode)
 import System.Posix.Resource (
   Resource (ResourceFileSize),
   ResourceLimit (ResourceLimit),
@@ -79,6 +81,7 @@ import System.Posix.Signals (
   sigXFSZ,
   signalProcess,
  )
+import System.Posix.User (getEffectiveUserID)
 import System.Process (getPid, waitForProcess)
 import System.Timeout (timeout)
 
@@ -804,6 +807,70 @@ tests =
           case recovered of
             P.Left err -> assertBool ("recoverWaveform of " <> P.show p <> " said: " <> err) (refusal p err)
             P.Right _ -> assertFailure ("recoverWaveform of " <> P.show p <> " was not refused")
+    , -- A directory that cannot hold the waveform (a part of the path is a
+      -- file, or a directory is not writable) is refused before the design
+      -- runs, in both spill modes, with the directory that is in the way.
+      -- Before, OnDisk threw createDirectory's "already exists (File
+      -- exists)", and InMemory simulated, said so on stderr and returned.
+      -- withRecording throws it as an IOError, before its action runs.
+      testCase "a directory that cannot hold the waveform is refused before anything runs" $ do
+        root <- makeAbsolute (pathOf "formats-bad-dir")
+        let readOnly = root </> "read-only"
+            aFile = root </> "a-file"
+            writable = do
+              there <- doesDirectoryExist readOnly
+              when there (setFileMode readOnly 0o755)
+        writable
+        removePathForcibly root
+        createDirectoryIfMissing True readOnly
+        P.writeFile aFile ""
+        -- A spill file to recover, in the directory that becomes read-only.
+        (_, _) <-
+          withRecording
+            (Just (readOnly </> "x.spill"))
+            (evaluate (P.sum (P.map P.toInteger (sampleN 8 counter))))
+        setFileMode readOnly 0o555
+        -- root may write anywhere: only the file is in its way.
+        uid <- getEffectiveUserID
+        let isFile = aFile <> " is a file, not a directory"
+            notWritable = readOnly <> " is not writable"
+            cases =
+              [(aFile </> "x", isFile), (aFile </> "sub" </> "x", isFile)]
+                <> if uid P.== 0
+                  then []
+                  else [(readOnly </> "x", notWritable), (readOnly </> "sub" </> "x", notWritable)]
+            said what p expect err =
+              assertBool (what <> " of " <> p <> " said: " <> err) (expect `isInfixOf` err)
+            refused what p expect act = do
+              r <- try @SomeException act
+              case r of
+                P.Left err -> said what p (p <> ": " <> expect) (displayException err)
+                P.Right _ -> assertFailure (what <> " of " <> p <> " was not refused")
+        flip finally writable $ do
+          forM_ cases $ \(p, expect) -> do
+            forM_ [defaultOptions, vcdOnDisk] $ \opts -> do
+              refused "writeWaveform" p expect (writeWaveform opts p (0, 8) ran)
+              refused
+                "withWaveform"
+                p
+                expect
+                (withWaveform opts p (0, 8) ran (\_ -> P.error "the check ran"))
+            started <-
+              try @IOException
+                (withRecording (Just (p <.> "spill")) (P.error "the action ran" :: IO ()))
+            case started of
+              P.Left err -> do
+                said "withRecording" p expect (displayException err)
+                said "withRecording" p (p <.> "spill") (displayException err)
+              P.Right _ -> assertFailure ("withRecording of " <> p <> " was not refused")
+          when (uid P./= 0) $ do
+            -- The spill file is kept.
+            recovered <- recoverWaveform defaultOptions (readOnly </> "x")
+            case recovered of
+              P.Left err -> said "recoverWaveform" (readOnly </> "x") notWritable err
+              P.Right _ -> assertFailure "recoverWaveform of a read-only directory was not refused"
+            doesFileExist (readOnly </> "x.spill") >>= (@?= True)
+        removePathForcibly root
     , -- A window that shows nothing is named in the cycles the caller gave,
       -- not in units of the recording's timescale ([15, 15) for (5, 5)).
       testCase "a window that shows nothing is named in the caller's cycles" $ do

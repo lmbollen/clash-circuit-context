@@ -27,7 +27,11 @@ absolute (@\"waveforms\/counter\"@, @\"\/tmp\/out\/counter\"@), and missing
 directories are made; messages name the absolute path. A path that cannot be
 meant is refused before anything runs, with an error that says what to give
 instead: an empty path, one that names a directory (it ends in a separator,
-@.@ or @..@), and one that ends in @.fst@, @.vcd@, @.json@ or @.spill@. One path is one
+@.@ or @..@), and one that ends in @.fst@, @.vcd@, @.json@ or @.spill@. So is
+a path whose directory cannot hold the files, in either 'Spill' mode: the
+functions make the directory, and create a file in it, before the design
+runs, and the error names the absolute path of what is in the way
+(@\<dir\> is a file, not a directory@, @\<dir\> is not writable@). One path is one
 waveform: writing it in one format deletes a waveform of the other format
 at that path, and two tests must not share a path (a recording with the
 spill file of one that is running is refused, see 'OnDisk'). While a
@@ -90,8 +94,9 @@ writeWaveform ::
   (KnownDomain dom, NFDataX a) =>
   WaveformOptions ->
   {- | The path of the waveform, without extension: @\<path\>.fst@ or @.vcd@.
-  An empty path, a directory, or a path that ends in @.fst@, @.vcd@,
-  @.json@ or @.spill@ is refused, before anything runs
+  An empty path, a directory, a path that ends in @.fst@, @.vcd@, @.json@ or
+  @.spill@, and a path whose directory cannot be made or written, are
+  refused, before anything runs
   -}
   FilePath ->
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
@@ -103,6 +108,7 @@ writeWaveform opts path0 window@(_, stop) sig = do
   checkPath path0
   path <- resolvePath path0
   checkWindow path window
+  checkDirectory path
   (out, rec) <- record opts path (fst (windowPs win)) $ do
     let xs = sampleN stop sig
     evaluate (xs `deepseqX` xs)
@@ -119,7 +125,9 @@ of cycles @[start, stop)@ only when the check fails.
 >   out @?= expected
 
 The simulation runs without recording, so a passing test costs nothing extra.
-When the check throws (a failed assertion is an exception), the simulation runs
+The waveform's directory is made, and checked, before the first run: a path
+that cannot hold the waveform fails the test at once, also a test that
+passes, and not only when it fails, when its waveform is needed. When the check throws (a failed assertion is an exception), the simulation runs
 a second time with recording, the waveform is written, its absolute path is
 printed on stderr, and the check's exception is rethrown. When the check
 passes, a waveform left by an earlier failing run is deleted (one written by
@@ -148,8 +156,9 @@ withWaveform ::
   (KnownDomain dom, NFDataX a) =>
   WaveformOptions ->
   {- | The path of the waveform, without extension: @\<path\>.fst@ or @.vcd@.
-  An empty path, a directory, or a path that ends in @.fst@, @.vcd@,
-  @.json@ or @.spill@ is refused, before anything runs
+  An empty path, a directory, a path that ends in @.fst@, @.vcd@, @.json@ or
+  @.spill@, and a path whose directory cannot be made or written, are
+  refused, before anything runs
   -}
   FilePath ->
   -- | The cycles to show, @(start, stop)@; @stop@ is the number of samples
@@ -163,6 +172,7 @@ withWaveform opts path0 window@(_, stop) sig check = do
   checkPath path0
   path <- resolvePath path0
   checkWindow path window
+  checkDirectory path
   first <- try (check (withoutCircuitContext (sampleN stop sig)))
   case first of
     Right b -> removeFailureWaveform path >> pure b
@@ -210,7 +220,9 @@ absolute path, or why there is none.
 The path is the waveform's, without extension, as the other functions take
 it: @\"waveforms\/counter\"@ for @waveforms\/counter.spill@. A path that ends
 in @.spill@ (or @.fst@, @.vcd@, @.json@), an empty path, and a directory are
-refused, with a 'Left' that says what to give.
+refused, with a 'Left' that says what to give; so is a spill file whose
+directory cannot hold the waveform (it is not writable), before the spill
+file is read. The spill file is then kept.
 
 > recoverWaveform defaultOptions "waveforms/counter" >>= print
 -}
