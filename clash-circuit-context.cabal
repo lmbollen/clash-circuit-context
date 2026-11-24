@@ -52,6 +52,8 @@ library
     Clash.CircuitContext
     Clash.CircuitContext.Auto
     Clash.CircuitContext.Core
+    -- Not part of the API: for this package's tests (hidden from Haddock).
+    Clash.CircuitContext.Internal.SpillTesting
     Clash.CircuitContext.Plugin
     Clash.CircuitContext.Plugin.Diagnostics
     Clash.CircuitContext.Plugin.Names

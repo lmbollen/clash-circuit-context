@@ -20,6 +20,7 @@ number.
 module Clash.CircuitContext.Internal.SpillFile (
   Fd,
   Region (..),
+  mapping,
   headerBytes,
   pageSize,
   errorMessage,
@@ -34,6 +35,7 @@ module Clash.CircuitContext.Internal.SpillFile (
   retire,
 ) where
 
+import Data.IORef (IORef, newIORef)
 import Data.Int (Int64)
 import Data.Word (Word64, Word8)
 import Foreign.C.Error (Errno (Errno), errnoToIOError)
@@ -59,6 +61,13 @@ foreign import ccall unsafe "ccc_spill_page_size" c_pageSize :: IO Int64
 
 -- | An open spill file.
 type Fd = CInt
+
+{- | Whether a new recorder maps its regions: 'False' only in this package's
+tests ("Clash.CircuitContext.Internal.SpillTesting").
+-}
+mapping :: IORef Bool
+mapping = unsafePerformIO (newIORef True)
+{-# NOINLINE mapping #-}
 
 {- | A region of the spill file: its offset and size, both multiples of the
 'pageSize', and the memory its bytes are in.
@@ -124,8 +133,8 @@ region there, but can have grown.
 -}
 newRegion ::
   Fd -> Bool -> Int -> Int -> Int -> IO (Either (String, CInt) (Region, Maybe CInt))
-newRegion fd mapping off size owner
-  | mapping = do
+newRegion fd mapIt off size owner
+  | mapIt = do
       reserved <- reserve fd off size
       case reserved of
         Left e -> pure (Left ("posix_fallocate", e))

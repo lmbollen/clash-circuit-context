@@ -458,7 +458,7 @@ opts = defaultOptions {format = VCD, spill = OnDisk}
     A full disk stops the recording, not the run: a message says so, and the
     waveform ends where the recording stopped. Where the file cannot be mapped
     (some network or FUSE file systems, Windows), it is written a region at a
-    time instead; `CCC_SPILL_NO_MMAP=1` asks for that everywhere.
+    time instead.
 
 ### A run that was stopped
 

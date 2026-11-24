@@ -79,8 +79,7 @@ Where a region cannot be mapped (a file system without shared writable
 mappings, more mappings than the system allows, Windows), it is a buffer
 in memory instead, written to the file when it is full: a killed process
 then loses each signal's last region. A metadata block is written at once
-either way. The environment variable @CCC_SPILL_NO_MMAP=1@ asks for these
-buffers for every region. A buffer's disk space is not reserved: when the
+either way. A buffer's disk space is not reserved: when the
 disk is full, writing it fails, its records are lost, and the recording
 stops; the signal then ends where the lost region began.
 
@@ -165,7 +164,6 @@ import Foreign.Ptr (Ptr, castPtr, plusPtr)
 import Foreign.Storable (pokeByteOff)
 import GHC.Natural (Natural)
 import System.Directory (createDirectoryIfMissing)
-import System.Environment (lookupEnv)
 import System.FilePath (takeDirectory)
 import System.IO (
   Handle,
@@ -197,6 +195,7 @@ import Clash.CircuitContext.Internal.SpillFile (
   closeSpill,
   errorMessage,
   headerBytes,
+  mapping,
   newRegion,
   openSpill,
   pageSize,
@@ -243,7 +242,7 @@ data Spill = Spill
   , spEnd :: !Int
   -- ^ Where the next region goes: the file's end.
   , spMapping :: !Bool
-  -- ^ Map regions ('False': buffers, see @CCC_SPILL_NO_MMAP@).
+  -- ^ Map regions ('False': buffers; see "Clash.CircuitContext.Internal.SpillTesting").
   , spMeta :: !(Maybe Region)
   -- ^ The region the next metadata block goes to.
   , spMetaUsed :: !Int
@@ -361,8 +360,8 @@ newRecorder spill start = do
       opened <- openSpill path
       fd <-
         either (\e -> ioError (errnoToIOError "open" (Errno e) Nothing (Just path))) pure opened
-      mapping <- (/= Just "1") <$> lookupEnv "CCC_SPILL_NO_MMAP"
-      pure (ToFile (Spill fd pageSize mapping Nothing 0 pageSize False))
+      mapped <- readIORef mapping
+      pure (ToFile (Spill fd pageSize mapped Nothing 0 pageSize False))
   rec <-
     Recorder spill start
       <$> newMVar store

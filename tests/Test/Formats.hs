@@ -51,7 +51,7 @@ import System.Directory (
   removeFile,
   removePathForcibly,
  )
-import System.Environment (setEnv)
+import System.Environment (setEnv, unsetEnv)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess))
 import System.FilePath ((<.>), (</>))
 import System.IO (hFlush, hGetLine, stdout)
@@ -88,6 +88,7 @@ import Test.Tasty.HUnit (assertBool, assertFailure, testCase, (@?=))
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext
+import Clash.CircuitContext.Internal.SpillTesting (withoutMappings)
 import Clash.CircuitContext.Recording (
   discardRecording,
   recordedChanges,
@@ -348,7 +349,6 @@ children =
         -- The same, written without mappings: a full region that cannot be
         -- written is lost, and the recording ends where it began, in the
         -- spill file and in the recording alike.
-        setEnv "CCC_SPILL_NO_MMAP" "1"
         let name = "formats-full-disk-unmapped"
             cycles = 200000
         scrub [name, "formats-full-disk-unmapped-read"]
@@ -356,9 +356,10 @@ children =
         limits <- getResourceLimit ResourceFileSize
         setResourceLimit ResourceFileSize limits{softLimit = ResourceLimit 262144}
         (r, rec) <-
-          withRecording
-            (Just (file name "spill"))
-            (evaluate (P.sum (P.map P.toInteger (sampleN cycles counter))))
+          withoutMappings
+            $ withRecording
+              (Just (file name "spill"))
+              (evaluate (P.sum (P.map P.toInteger (sampleN cycles counter))))
         setResourceLimit ResourceFileSize limits
         P.either (Left . P.show) Right r
           @?= Right (P.sum (P.map P.toInteger (P.take cycles (P.cycle [0 .. 255 :: Int]))))
@@ -384,12 +385,11 @@ children =
     , do
         -- Every region a buffer: no mapping, and the waveform a recording
         -- in memory gives, also read back from the spill file.
-        setEnv "CCC_SPILL_NO_MMAP" "1"
         let name = "formats-unmapped"
         scrub [name, "formats-unmapped-memory", "formats-unmapped-read"]
         createDirectoryIfMissing True "waveforms"
         spillFile <- (</> (name <.> "spill")) <$> canonicalizePath "waveforms"
-        (r, rec) <- withRecording (Just spillFile) $ do
+        (r, rec) <- withoutMappings $ withRecording (Just spillFile) $ do
           _ <- evaluate (P.sum (P.map P.toInteger (sampleN 50000 busyAndQuiet)))
           P.readFile "/proc/self/maps"
             >>= evaluate
@@ -682,10 +682,13 @@ tests =
                 . P.length
                 . P.filter (spillFile `isSuffixOf`)
                 . P.lines
+        -- No environment variable turns mapping off.
+        setEnv "CCC_SPILL_NO_MMAP" "1"
         (r, rec) <- withRecording (Just spillFile) $ do
           -- About 600 KiB of records: regions of 4, 8, 16, 32 and then 64 KiB.
           _ <- evaluate (P.sum (P.map P.toInteger (sampleN 200000 counter)))
           mappings
+        unsetEnv "CCC_SPILL_NO_MMAP"
         -- The counter's region, and the metadata's.
         P.either (Left . P.show) Right r @?= Right 2
         mappings >>= (@?= 0)
