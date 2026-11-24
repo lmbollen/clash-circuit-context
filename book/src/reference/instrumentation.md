@@ -30,8 +30,10 @@ call stack, for example to report the site of the call, therefore reads the
 call of `$wf`, which is the same for each call. The site of the call is in
 the second frame.
 
-A top entity (a `Synthesize` or `TopEntity` annotation of Clash) whose
-signature has `HasCircuitContext` is an error. Give the top entity a
+A top entity whose signature has `HasCircuitContext` is an error. A top
+entity is a binding with a `Synthesize` or `TopEntity` annotation of Clash,
+or a top-level binding named `topEntity`: Clash takes that one as a top
+entity also without an annotation. Give the top entity a
 signature without it, and supply the context inside:
 `topEntity … = withoutCircuitContext (design …)`.
 
@@ -90,7 +92,7 @@ Inside an instrumented function, each named local binding is wrapped in
 | A function with arguments, `f x = …` | not wrapped |
 | A name that starts with `_` | not wrapped |
 | A name that contains `:` (made by a code generator) | not wrapped |
-| A closed binding (no free local variables) without its own signature | not wrapped. Warning: `x-circuit-context-untraced`, if GHC did not generalise it (see below) |
+| A closed binding (no free local variables) without its own signature | not wrapped. Warning: `x-circuit-context-untraced`, in a traced function, if GHC did not generalise it (see below) |
 | A closed binding with its own signature | wrapped |
 | A closed binding that refers to itself, such as a free-running counter `cnt = register clockGen resetGen enableGen 0 (cnt + 1)` | wrapped, with or without a signature |
 | A binding with a higher-rank type | not wrapped, and not reported |
@@ -101,7 +103,9 @@ it a type with a type variable of its own, such as `forall a. Signal dom
 (Maybe a)` for `none = pure Nothing`), and a recorder would stop that. So
 the plugin leaves such a binding alone. After type checking, it reports
 each one that GHC did not generalise, with the signature to add. A binding
-that GHC did generalise has no single waveform, and is not reported. An unconstrained binding that refers to itself and is not
+that GHC did generalise has no single waveform, and is not reported. In a
+function with `HasProbe`, a closed binding is not reported: it uses no
+input of the step function, so its value is the same in each cycle. An unconstrained binding that refers to itself and is not
 `NonTranslatable`, such as `s = Nothing :- s`, becomes monomorphic when it is
 wrapped.
 

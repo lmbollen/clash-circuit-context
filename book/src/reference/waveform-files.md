@@ -23,6 +23,12 @@ and their content.
   working directory of `cabal test` and of `cabal run` can differ.
 - An absolute path is the same from each working directory.
 - The functions make the missing directories of the path.
+- The functions refuse a path that cannot be the path of a waveform, before
+  the simulation runs: an empty path, a path that names a directory (it
+  ends in `/`, `.` or `..`), and a path that ends in `.fst`, `.vcd`,
+  `.json` or `.spill`. `writeWaveform`, `withWaveform` and
+  `simulateWaveform` throw an error; `recoverWaveform` returns `Left`. The
+  error says which path to give.
 - A message that names a file gives its absolute path. `writeWaveform`,
   and `simulateWaveform` for the passing case of `AtSize`, write their files
   without a message. `recoverWaveform` returns the absolute path of the
@@ -32,7 +38,12 @@ and their content.
 - One path is one waveform. The FST and the VCD of a path have the same
   sidecar, `<path>.json`, so when a function writes a waveform in one
   format, it deletes the waveform in the other format at that path.
-- Two tests must not use the same path. The functions do not check this.
+- Two tests must not use the same path. With `spill = OnDisk`, two
+  recordings that use one spill file at the same time are an error: the
+  second one stops at once, with a message, and the first one goes on.
+  `withWaveform` then writes no waveform for the second test, and the test
+  fails with the exception of its check. With `spill = InMemory`, the
+  functions do not check this: the last waveform written stays.
 - A spill file uses RAM when its path is on a file system in RAM (tmpfs),
   for example `/tmp` on many systems. Then `spill = OnDisk` does not save
   memory.

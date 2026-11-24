@@ -85,11 +85,15 @@ sidecar with the extension `.json` beside the waveform. For example,
 - An absolute path, for example `"/home/you/project/out/accumulate"`, is
   the same from each working directory.
 - If a directory of the path does not exist, the function makes it.
-- Give each test its own path. The functions do not check this. Two tests
-  with the same path write the same files: the waveform of one test can
-  replace the waveform of the other, and a passing test can delete the
-  waveform of a failed test. Two tests that record at the same time with
-  `spill = OnDisk` also use the same spill file.
+- Give each test its own path. Two tests with the same path write the same
+  files: the waveform of one test can replace the waveform of the other, and
+  a passing test can delete the waveform of a failed test. With
+  `spill = OnDisk`, two tests that record at the same time use the same
+  spill file: the second recording stops with an error, and that test gets
+  no waveform. With `spill = InMemory`, nothing checks this.
+- Give the path without an extension. A path that ends in `.fst`, `.vcd`,
+  `.json` or `.spill`, an empty path, and a path that ends in `/` are
+  refused with an error.
 
 ## Always write the waveform
 

@@ -44,11 +44,15 @@ A run that is cancelled after it recorded a cycle writes a message on
 stderr with the absolute path of the spill file:
 
 ```text
-clash-circuit-context: the run was stopped; what it recorded is in
-/home/you/project/waveforms/firmware.spill. Write its waveform with spill2fst
-or spill2vcd (executables of clash-circuit-context), or with recoverWaveform
-or writeSpill
+clash-circuit-context: the run was stopped; what it recorded is in /home/you/project/waveforms/firmware.spill. Write its waveform in Haskell with
+  recoverWaveform defaultOptions "/home/you/project/waveforms/firmware"
+or from a shell, in a cabal project with clash-circuit-context (spill2vcd writes a VCD), with
+  cabal run clash-circuit-context:spill2fst -- /home/you/project/waveforms/firmware.spill
 ```
+
+The message gives both ways with the path filled in. For a spill file whose
+name does not end in `.spill` (one of `withRecording`), it gives `writeSpill`
+in place of `recoverWaveform`.
 
 `withRecording` with a spill file writes the same message.
 
