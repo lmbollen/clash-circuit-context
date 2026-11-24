@@ -19,6 +19,15 @@ gives complete files.
 
    If you have a local checkout of the package, you can add its directory to
    `packages:` instead, for example `packages: . ../clash-circuit-context`.
+   Then do not turn on the tests for all packages of the project, with
+   `tests: True` at the top level of `cabal.project` or with
+   `cabal build all --enable-tests`: Cabal then also builds the test suites
+   of clash-circuit-context. Turn on the tests of your package only:
+
+   ```cabal
+   package <your-package>
+     tests: True
+   ```
 
 2. The package is tested with a commit of clash-prelude 1.11, which is not
    on Hackage yet. If your project does not already pin a clash-prelude,

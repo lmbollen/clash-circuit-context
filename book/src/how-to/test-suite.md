@@ -55,7 +55,14 @@ let design :: (CircuitContextOnly) => Signal System (Unsigned 8)
     design = top (pure True)
 ```
 
-Without a signature, the error names `CircuitContextOnly`.
+Without a signature, GHC stops with an error that names
+`CircuitContextOnly`, for example:
+
+```text
+error: [GHC-91416]
+    • Unbound implicit parameter CircuitContextOnly
+        arising from a use of ‘top’
+```
 
 ## Choose the path of the waveform
 
@@ -65,10 +72,16 @@ sidecar with the extension `.json` beside the waveform. For example,
 `"waveforms/accumulate"` gives `waveforms/accumulate.fst` and
 `waveforms/accumulate.json`.
 
-- A relative path is relative to the working directory of the process. The
-  working directory of `cabal test` and of `cabal run` can differ. The
-  messages of the functions give the absolute path of each file that they
-  write or keep.
+- A relative path is relative to the working directory of the process.
+  `cabal test` runs the test suite in the directory of the package.
+  `cabal run`, and the executable of the test suite, run in the directory
+  from which you start them.
+- When `withWaveform` writes the waveform of a failed check, a message on
+  stderr gives its absolute path. The report of a failed Hedgehog property
+  gives the absolute path of the waveform of its counterexample.
+  `writeWaveform`, and `simulateWaveform` for the passing case of `AtSize`,
+  write their files without a message. Find these files at the path that
+  you gave.
 - An absolute path, for example `"/home/you/project/out/accumulate"`, is
   the same from each working directory.
 - If a directory of the path does not exist, the function makes it.
@@ -92,7 +105,8 @@ case_accumulate = do
 ```
 
 If the simulation throws an exception, the waveform up to that cycle is
-written, and the exception comes out as usual.
+written, and the exception comes out as usual. The waveform ends with the
+cycle that threw. In that cycle, the value that threw is `x`.
 
 ## Write the waveform only when the test fails
 
@@ -191,8 +205,13 @@ Keep these rules in mind:
   values at random can do this. For such a design, use `writeWaveform`, and
   check the samples that it returns.
 - The check gets the samples lazily. The waveform has the cycles that the
-  check evaluated. A check that stops at the first wrong value gives a
-  waveform that ends at that value.
+  check evaluated, and it ends at the last of these cycles. A check that
+  stops at the first wrong value gives a waveform that ends at that value.
+  `@?=` and `==` on two lists are such checks: they stop at the first
+  element that is different. The message of the failure can show more
+  samples, because the message comes from the first run, which does not
+  record. To record all cycles of the window, evaluate all samples before
+  the comparison, for example ``out `deepseqX` (out @?= expected)``.
 - The path of the waveform is on stderr, not in the message of the failed
   test. A test runner that redraws its progress line, such as tasty in a
   terminal, can print that line in the middle of its own output. Look for

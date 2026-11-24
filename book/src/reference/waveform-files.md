@@ -23,8 +23,10 @@ and their content.
   working directory of `cabal test` and of `cabal run` can differ.
 - An absolute path is the same from each working directory.
 - The functions make the missing directories of the path.
-- Each message gives the absolute path of the file. `recoverWaveform` also
-  returns the absolute path.
+- A message that names a file gives its absolute path. `writeWaveform`,
+  and `simulateWaveform` for the passing case of `AtSize`, write their files
+  without a message. `recoverWaveform` returns the absolute path of the
+  waveform.
 - Two ways to write one path are one path: `waveforms/counter` and
   `./waveforms//counter` are the same.
 - One path is one waveform. The FST and the VCD of a path have the same
@@ -62,7 +64,7 @@ and their content.
 
 | Function | Writes | Deletes |
 |---|---|---|
-| `writeWaveform` | always | the waveform in the other format at the path |
+| `writeWaveform` | always, also when the simulation throws. Then the waveform ends with the cycle that threw | the waveform in the other format at the path |
 | `withWaveform` | when the check fails | the waveform of an earlier failed run, when the check passes. When it writes, the waveform in the other format at the path |
 | `simulateWaveform` | the counterexample, and with `AtSize size` one passing case, as `<path>_<size>` | when it writes, the waveform in the other format at the path |
 | `recoverWaveform` | the waveform of a spill file | the spill file, after it wrote the waveform, and the waveform in the other format at the path |
@@ -81,7 +83,7 @@ These rows are true for both formats.
 |---|---|
 | Comment | `No comment`, or `clash-circuit-context: the run of a failing test` for the waveform of a failed run |
 | Values at `start` | the value of each signal at the time of `start` |
-| End | the end of the window: the last timestamp of a VCD, the end time of an FST. A viewer shows the last cycle whole |
+| End | the end of the window: the last timestamp of a VCD, the end time of an FST. If the run ended before the end of the window, the end of the run: for example, the last cycle that the check of `withWaveform` read. A viewer shows the last cycle whole |
 | Scopes | one scope for each component instance, nested as the components are |
 | A component with no recorded signal under it | no scope: an empty scope is not written |
 | Order in a scope | First the signals, in the order of the position of their recorder in the source file (see below). Then the child scopes, by name, with numbers compared as numbers (`lane_2` before `lane_10`) |
@@ -94,9 +96,10 @@ These rows are true for both formats.
 | The bindings of a local function without a scope, for each call | `v_0`, `v_1`, … in the scope of the caller |
 | A name outside all components | in the scope `logic`. A component named `logic` beside such names is `logic_0` |
 | A signal that the simulation never evaluated, for example a binding that nothing uses | not in the waveform at all. When a run ends, the recorder evaluates each trace up to the last cycle of the run (see [The cost of recording](../explanation/cost.md)), so a trace that the run evaluated once is in the waveform |
-| A cycle that was not evaluated | the value `z`, for example the cycles after the last cycle that a check read |
+| A cycle that was not evaluated, before the end of the run | the value `z`, for example a probe in a cycle in which nothing used its value, or a trace that the run evaluated less far than the other signals |
 | A probed value that the simulation evaluated after a later cycle | at its own cycle. A value that a mealy machine keeps in its state and uses a few cycles later is evaluated late |
-| A value that is undefined | the value `x`, with the bits that are defined kept |
+| A value that is undefined, or that throws an exception | the value `x`, with the bits that are defined kept |
+| The bits that a constructor does not use, for example in `Nothing` of a `Maybe (BitVector 8)` | the value `x`, as Clash packs them with `BitPack`, also when the value is defined. The sidecar describes the type, so a viewer that reads the sidecar can show the constructor |
 | Traces with the same history | one set of values for all of them: one VCD identifier, or FST aliases |
 
 The waveform file has no other dependency. Each viewer can open it without

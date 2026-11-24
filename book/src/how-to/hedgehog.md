@@ -104,6 +104,9 @@ out <- simulateWaveform defaultOptions (AtSize 10) "waveforms/prop" (0, n) (accu
 The waveform of this case has the size at the end of its path:
 `waveforms/prop_10.fst`. The waveform of a counterexample is
 `waveforms/prop.fst`, so the two do not replace each other.
+`simulateWaveform` writes the waveform of this case without a message, also
+in the report of Hedgehog. A relative path is relative to the working
+directory of the process.
 
 Hedgehog gives the tests of a property the sizes `0`, `1`, `2`, … up to
 `99`, and then starts at `0` again. So choose a size below the number of
