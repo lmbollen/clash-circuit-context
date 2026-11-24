@@ -210,10 +210,8 @@ import System.IO (
   SeekMode (AbsoluteSeek),
   hClose,
   hFileSize,
-  hPutStrLn,
   hSeek,
   openBinaryFile,
-  stderr,
  )
 import System.IO.Unsafe (unsafeInterleaveIO)
 
@@ -228,6 +226,7 @@ import qualified Data.ByteString.Unsafe as ByteString
 import qualified Data.Text as Text
 import qualified Data.Text.Encoding as Text
 
+import Clash.CircuitContext.Internal.Message (say)
 import Clash.CircuitContext.Internal.SpillFile (
   Fd,
   Region (..),
@@ -462,10 +461,8 @@ halt rec why err = do
     (_, Full) -> (Just Full, True)
     _ -> (Just (fromMaybe why h), False)
   when full $
-    hPutStrLn
-      stderr
-      ( "clash-circuit-context: "
-          <> err
+    say
+      ( err
           <> ". The spill file cannot grow, so the recording stops here; the run"
           <> " goes on, and its waveform ends where the recording stopped"
       )
@@ -489,10 +486,8 @@ allocate rec sp owner want need = do
         Just e
           | spMapping sp
           , not (spFellBack sp) -> do
-              hPutStrLn
-                stderr
-                ( "clash-circuit-context: "
-                    <> errorMessage (fromMaybe "" (rSpill rec)) "mmap" e
+              say
+                ( errorMessage (fromMaybe "" (rSpill rec)) "mmap" e
                     <> ". The spill file is written a region at a time instead, so a"
                     <> " process that is killed loses each signal's newest records"
                 )

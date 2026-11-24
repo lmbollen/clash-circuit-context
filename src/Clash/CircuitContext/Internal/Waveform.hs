@@ -59,7 +59,6 @@ import System.Directory (
   removePathForcibly,
  )
 import System.FilePath ((<.>))
-import System.IO (hPutStrLn, stderr)
 
 import Clash.Explicit.Signal (Signal, sampleN)
 import Clash.Prelude (KnownDomain, NFDataX, deepseqX, snatToNum)
@@ -71,6 +70,7 @@ import Clash.CircuitContext.Core (
   withoutCircuitContext,
  )
 import Clash.CircuitContext.Internal.FstOut (writeFst)
+import Clash.CircuitContext.Internal.Message (say)
 import Clash.CircuitContext.Internal.Recorder (
   Recording (..),
   holdsCycles,
@@ -293,9 +293,9 @@ landed (as the absolute path 'save' gives), or why there is none.
 -}
 announce :: FilePath -> Either String FilePath -> IO ()
 announce path written =
-  hPutStrLn stderr $ case written of
-    Right absolute -> "clash-circuit-context: wrote " <> absolute
-    Left err -> "clash-circuit-context: " <> path <> ": no waveform written: " <> err
+  say $ case written of
+    Right absolute -> "wrote " <> absolute
+    Left err -> path <> ": no waveform written: " <> err
 
 {- | Write the waveform of a run that was stopped, from its spill file
 @\<path\>.spill@, in the options' format: everything it recorded. Deletes

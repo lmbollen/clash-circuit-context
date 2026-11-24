@@ -125,6 +125,7 @@ import Clash.XException (NFDataX)
 import Clash.Shockwaves.Internal.Types (Translator, TypeName)
 import Clash.Shockwaves.Internal.Waveform (Waveform (typeName), tRef)
 
+import Clash.CircuitContext.Internal.Message (say)
 import Clash.CircuitContext.Internal.Recorder (
   Kind (..),
   Recorder,
@@ -172,7 +173,6 @@ import GHC.Stack (
   srcLocStartLine,
  )
 import System.Directory (makeAbsolute, removePathForcibly)
-import System.IO (hPutStrLn, stderr)
 import System.IO.Unsafe (unsafeDupablePerformIO, unsafePerformIO)
 import System.Mem.StableName (StableName, hashStableName, makeStableName)
 
@@ -448,9 +448,8 @@ absolute path: see 'withRecordingFrom').
 -}
 stoppedMessage :: FilePath -> IO ()
 stoppedMessage path =
-  hPutStrLn
-    stderr
-    ( "clash-circuit-context: the run was stopped; what it recorded is in "
+  say
+    ( "the run was stopped; what it recorded is in "
         <> path
         <> ". Write its waveform with spill2fst or spill2vcd (executables of"
         <> " clash-circuit-context), or with recoverWaveform or writeSpill"

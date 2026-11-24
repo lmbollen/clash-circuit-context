@@ -58,7 +58,6 @@ import Control.Exception (
   throwIO,
   try,
  )
-import System.IO (hPutStrLn, stderr)
 
 import Clash.Explicit.Signal (Signal, sampleN)
 import Clash.Prelude (KnownDomain, NFDataX, deepseqX)
@@ -67,6 +66,7 @@ import Clash.CircuitContext.Core (
   HasCircuitContext,
   withoutCircuitContext,
  )
+import Clash.CircuitContext.Internal.Message (say)
 import Clash.CircuitContext.Internal.Waveform
 
 {- | Simulate @stop@ cycles of a design and write the waveform of cycles
@@ -162,10 +162,8 @@ withWaveform opts path0 window@(_, stop) sig check = do
         Left _ -> save Failure opts path ps rec >>= announce path
         Right _ -> do
           discard rec
-          hPutStrLn
-            stderr
-            ( "clash-circuit-context: "
-                <> path
+          say
+            ( path
                 <> ": the failure did not happen again with recording, so no"
                 <> " waveform was written. Simulate this test with writeWaveform"
                 <> " to record the run it checks."

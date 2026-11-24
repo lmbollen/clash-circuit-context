@@ -68,6 +68,7 @@ library
     Clash.CircuitContext.Internal.Bits
     Clash.CircuitContext.Internal.Fst
     Clash.CircuitContext.Internal.FstOut
+    Clash.CircuitContext.Internal.Message
     Clash.CircuitContext.Internal.Recorder
     Clash.CircuitContext.Internal.Sidecar
     Clash.CircuitContext.Internal.SpillFile

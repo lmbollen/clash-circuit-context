@@ -49,7 +49,6 @@ module Clash.CircuitContext.Internal.Sidecar (
 import Control.Exception (IOException, try)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
-import System.IO (hPutStrLn, stderr)
 
 import qualified Data.ByteString as ByteString
 import qualified Data.Text as Text
@@ -58,6 +57,7 @@ import Data.Aeson ((.=))
 import qualified Data.Aeson as Json
 import qualified Data.Aeson.KeyMap as KeyMap
 
+import Clash.CircuitContext.Internal.Message (say)
 import Clash.CircuitContext.Internal.Recorder (
   Description (..),
   RecordedSignal (..),
@@ -101,10 +101,8 @@ sidecar ::
 sidecar origin ext named luts = do
   mapM_
     ( \(path, err) ->
-        hPutStrLn
-          stderr
-          ( "clash-circuit-context: "
-              <> path
+        say
+          ( path
               <> ": left out of the typed-waveform sidecar, because its"
               <> " clash-shockwaves description failed to render (the waveform"
               <> " still has its bits): "

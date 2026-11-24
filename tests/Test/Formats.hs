@@ -446,6 +446,19 @@ children =
           Right _ -> assertFailure "the second recording ran"
     )
   ,
+    ( "formats-whole-lines"
+    , do
+        -- Many threads that each print a message at the same time.
+        ends <- forM [1 .. 16 :: Int] $ \i -> do
+          ended <- newEmptyMVar
+          _ <-
+            forkFinally
+              (writeWaveform defaultOptions (pathOf "formats-whole-lines" </> P.show i) (8, 8) counter)
+              (putMVar ended)
+          pure ended
+        P.mapM_ takeMVar ends
+    )
+  ,
     ( "formats-killed"
     , do
         -- Records, says how far, and waits to be killed (see the test).
@@ -674,6 +687,20 @@ tests =
         assertBool
           ("said: " <> err)
           (("clash-circuit-context: " <> absolute <> ": no waveform written") `isInfixOf` err)
+    , -- Messages that threads print at the same time (tests that fail
+      -- together in a parallel run) come out as whole lines. Before, a
+      -- message was written a character at a time, and the messages of
+      -- threads interleaved. -C0 switches threads as often as it can.
+      testCase "messages printed at the same time stay whole lines" $ do
+        (code, _, err) <- inChild "formats-whole-lines" ["-C0"]
+        code @?= ExitSuccess
+        dir <- makeAbsolute (pathOf "formats-whole-lines")
+        let says i l =
+              ("clash-circuit-context: " <> (dir </> P.show i) <> ": no waveform written: ")
+                `isPrefixOf` l
+            whole l = P.length (P.filter (`says` l) [1 .. 16 :: Int]) P.== 1
+        assertBool ("said:\n" <> err) (P.all whole (P.lines err))
+        [i | i <- [1 .. 16 :: Int], P.any (says i) (P.lines err)] @?= [1 .. 16]
     , testCase "a spill file on disk gives the waveform a spill in memory gives" $ do
         let (onDisk, inMemory) = ("formats-on-disk", "formats-in-memory")
         scrub [onDisk, inMemory]
