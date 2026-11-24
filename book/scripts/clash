@@ -7,9 +7,12 @@
 # so without -fplugin the HDL of the book would be built without the plugin.
 # In `clash --interactive` the pragma and the flag both apply, which is
 # harmless: the renamer pass is idempotent.
+# clash-shockwaves and hedgehog are not named here: the environment file of
+# `cabal exec` exposes the build of the plan, and a -package flag for a
+# package with two builds in the store exposes both ("Ambiguous module name").
 set -euo pipefail
 book=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 exec cabal --project-dir="$book" --project-file="$book/cabal.project" exec -v0 -- clash \
-  -package clash-circuit-context -package clash-shockwaves -package containers -package text \
+  -package clash-circuit-context -package containers -package text \
   -package directory -package filepath \
   -i"$book/examples" -fplugin=Clash.CircuitContext.Plugin "$@"
