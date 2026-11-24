@@ -103,6 +103,10 @@ library
   -- On `array`: Internal.Recorder sorts a probe's late values in unboxed
   -- arrays when it reads them. It comes with GHC; the range is GHC 9.6's to
   -- 9.12's.
+  --
+  -- On `transformers`: Waveform.Hedgehog lifts a generator into a property
+  -- (`lift`), without the annotation `forAll` adds. It comes with GHC; the
+  -- range is GHC 9.6's to 9.12's.
   build-depends:
     aeson >=2.1 && <2.3,
     array >=0.5.4 && <0.6,
@@ -121,6 +125,7 @@ library
     template-haskell >=2.20 && <2.24,
     text >=2.0 && <2.2,
     time >=1.12 && <1.15,
+    transformers >=0.6 && <0.7,
 
   if impl(ghc <9.8)
     build-depends: clash-shockwaves >=1.1.3

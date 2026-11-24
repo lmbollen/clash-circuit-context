@@ -31,7 +31,7 @@ import System.IO.Unsafe (unsafePerformIO)
 import System.Timeout (timeout)
 
 import Test.Tasty (TestTree, testGroup)
-import Test.Tasty.HUnit (Assertion, assertBool, testCase, (@?=))
+import Test.Tasty.HUnit (Assertion, assertBool, assertFailure, testCase, (@?=))
 
 import Clash.Explicit.Prelude
 
@@ -48,6 +48,7 @@ import Hedgehog.Internal.Property (Property (..), footnote)
 import qualified Hedgehog.Internal.Report as Report
 import Hedgehog.Internal.Runner (checkReport)
 import qualified Hedgehog.Internal.Seed as Seed
+import Hedgehog.Internal.Source (Span (spanFile))
 import qualified Hedgehog.Range as Range
 
 import Test.Vcd (asInts, decodeVCD)
@@ -431,6 +432,36 @@ tests =
               ("clash-circuit-context: the path \"waveforms/capture-bad.vcd\" ends in .vcd" `isInfixOf`)
               (P.take 1 thrown)
           )
+    , -- AtSize reads the size of the case without a forAll: Hedgehog's
+      -- report of a failure lists every forAll, and AtSize's showed as an
+      -- empty "forAll0 =".
+      testCase "AtSize adds nothing to the report of a failure"
+        $ withName "capture-prop-report"
+        $ \name -> do
+          seed <- Seed.random
+          let Property config test =
+                Hedgehog.withTests 1 . Hedgehog.withShrinks 0 . Hedgehog.property $ do
+                  _ <- Hedgehog.forAll (Gen.int (Range.linear 0 9))
+                  _ <- simulateWaveform vcdOptions (AtSize 0) name (0, 4) counter
+                  Hedgehog.failure
+          report <- checkReport config 0 seed test (\_ -> pure ())
+          text <- Report.renderResult DisableColor Nothing report
+          -- The test's own forAll is the report's only annotation. Where the
+          -- report cannot read the source of an annotation (the library's,
+          -- in a project that depends on it), it shows a line "forAll0 =".
+          case Report.reportStatus report of
+            Report.Failed failed ->
+              P.map (P.fmap spanFile . Report.failedSpan) (Report.failureAnnotations failed)
+                @?= [P.Just "tests/Test/Capture.hs"]
+            _ -> assertFailure ("reported: " <> text)
+          assertBool ("reported: " <> text) ("waveform: " `isInfixOf` text)
+          P.mapM_
+            removeFile
+            [ vcdOf name
+            , vcdOf name -<.> "json"
+            , vcdOf (name <> "_0")
+            , vcdOf (name <> "_0") -<.> "json"
+            ]
     , testCase "a passing property never evaluates a footnote" $ do
         evaluated <- newIORef 0
         ok <-

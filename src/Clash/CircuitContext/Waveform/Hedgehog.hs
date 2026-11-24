@@ -58,12 +58,13 @@ module Clash.CircuitContext.Waveform.Hedgehog (
 
 import Control.Exception (SomeException, displayException, evaluate, throwIO, try)
 import Control.Monad.IO.Class (liftIO)
+import Control.Monad.Trans.Class (lift)
 import Data.IORef (IORef, atomicModifyIORef', newIORef)
 import qualified Data.Set as Set
 import System.IO.Unsafe (unsafePerformIO)
 
 import Hedgehog (PropertyT, Size)
-import Hedgehog.Internal.Property (footnote, forAllWithT)
+import Hedgehog.Internal.Property (PropertyT (PropertyT), footnote)
 
 import qualified Hedgehog.Gen as Gen
 
@@ -179,12 +180,15 @@ onPrint = unsafePerformIO
 
 {- | Is this the first case of at least this size for this path? Then the
 path of its waveform: @\<path\>_\<size\>@. Asked inside a generator, because
-that is where Hedgehog gives the size; it renders as nothing and has no
-shrinks.
+that is where Hedgehog gives the size; it has no shrinks. The generator is
+lifted into the property as 'Hedgehog.forAll' lifts one, but without the
+annotation 'Hedgehog.forAll' adds: the report of a failure shows each
+annotation, and one of a library whose source the report cannot read shows
+as an empty line, @forAll0 =@.
 -}
 firstAtSize :: FilePath -> Size -> PropertyT IO (Maybe FilePath)
 firstAtSize path size =
-  forAllWithT (const "") . Gen.sized $ \current ->
+  PropertyT . lift . Gen.sized $ \current ->
     if current >= size
       then liftIO (atomicModifyIORef' fired (\names -> (Set.insert sized names, first names)))
       else pure Nothing
