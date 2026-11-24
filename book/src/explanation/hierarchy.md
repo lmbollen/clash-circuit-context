@@ -99,7 +99,10 @@ site: the call stack that the next split function receives holds their
 call sites too. In HDL, these functions keep the call sites as an
 argument, and Clash makes a variant of a function for each constant
 argument: such a function with `OPAQUE` becomes one module for each call
-site (see [How to generate HDL](../how-to/hdl.md)).
+site (see [How to generate HDL](../how-to/hdl.md)). A method does not become
+a component, so the plugin warns about `OPAQUE` on a method of a class with
+`HasCircuitContext`. A method that only calls a top-level component gives
+one module, and one scope for each instance, as other components do.
 
 A number never makes a name that the scope already has. The name of a
 binding or a field has no `#` in it (a `MagicHash` name has one at its end

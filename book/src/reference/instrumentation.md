@@ -116,14 +116,33 @@ wrapped.
   So a `HasProbe` step function inside a component probes.
 - A signature with both constraints probes. Warning:
   `x-circuit-context-uninstrumented`.
+- A step function without `HasProbe` in its type probes nothing, also
+  inside a component. Given to `mealyProbed`, `mooreProbed`,
+  `mealyBProbed`, `mooreBProbed` or `probeFmap`, it gets a warning:
+  `x-circuit-context-uninstrumented`, at the argument. The warning gives
+  the signature to add, or says to use `mealy`, `moore`, `mealyB`, `mooreB`
+  or `fmap` if there is nothing to probe. A step function with `HasProbe`
+  in its signature, or one that calls `probe`, is not reported.
 
 ## Other rules
 
 - An `OPAQUE` function without a signature is not instrumented. Warning:
   `x-circuit-context-uninstrumented`.
-- The bodies of class methods and instance methods are not instrumented.
-  Warning: `x-circuit-context-uninstrumented`, if the signature has the
-  constraint.
+- The bodies of instance methods and class defaults are not instrumented.
+  The class signature can have `HasCircuitContext` or `HasProbe`, and is
+  not reported. A body is reported, in
+  `x-circuit-context-uninstrumented`, when it loses something:
+  - a local binding that a recorder would take in a top-level function
+    with the same constraint. The warning lists these bindings.
+  - `OPAQUE` on a method whose class gives it `HasCircuitContext`. The
+    method does not become a component, and Clash makes one HDL module of
+    it for each call site.
+
+  A body that only calls a top-level function is not reported. To record
+  the body, move it to a top-level function with the constraint (and
+  `OPAQUE`, for a component), and call that function from the method (see
+  [How to control the warnings of the
+  plugin](../how-to/warnings.md#instrument-a-class-method)).
 - The pass is idempotent. If the plugin is turned on twice, the second run
   makes no change.
 - A binding that already applies `traceSignalC`, `traceSignalSW`,

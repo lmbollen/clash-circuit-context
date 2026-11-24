@@ -5,7 +5,9 @@ function. This guide shows how to record it, one value for each cycle.
 
 1. Use `mealyProbed` instead of `mealy`. It takes a clock, a reset and an
    enable, as `Clash.Explicit.Prelude.mealy` does.
-2. Give the step function a signature with `HasProbe`.
+2. Give the step function a signature with `HasProbe`. Without it, the
+   step function probes nothing, and the plugin warns (see [Warning
+   categories](../reference/warnings.md#-wx-circuit-context-uninstrumented)).
 3. Give each value that you want to see a name in a `where` or `let`
    binding.
 
@@ -155,7 +157,13 @@ decode
 - A probe is `z` in each cycle in which nothing uses its value. Here `&&`
   does not read `small` when `large` is `False`.
 - For a function of more than one signal, bundle the signals:
-  `probeFmap clk (\(x, y) -> f x y) (bundle (a, b))`.
+  `probeFmap clk (\(x, y) -> f x y) (bundle (a, b))`, with `HasProbe` in
+  the signature of `f`.
+- A function without `HasProbe` in its type probes nothing. The plugin
+  warns about it, in `x-circuit-context-uninstrumented`, and says to use
+  `fmap` if there is nothing to probe. The same is true for the step
+  function of `mealyProbed`, `mooreProbed`, `mealyBProbed` and
+  `mooreBProbed`.
 - In HDL, `probeFmap clk f` is `fmap f`. The clock is not used.
 
 ## Probe a value by hand

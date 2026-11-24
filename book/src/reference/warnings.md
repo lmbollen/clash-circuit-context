@@ -12,7 +12,7 @@ warnings of the plugin](../how-to/warnings.md).
 | Flag | The plugin reports |
 |---|---|
 | `-Wx-circuit-context` | It could not do something that the source clearly asks for. Example: a component equation whose guards can fail, and that is not the last equation. |
-| `-Wx-circuit-context-uninstrumented` | A signature asks for instrumentation where the plugin does not instrument, or does not make a scope. The cases: `HasCircuitContext` without `OPAQUE`, `OPAQUE` without a signature, both constraints in one signature, and a class method or instance method. |
+| `-Wx-circuit-context-uninstrumented` | A signature asks for instrumentation where the plugin does not instrument, or does not make a scope. The cases: `HasCircuitContext` without `OPAQUE`, `OPAQUE` without a signature, both constraints in one signature, the body of an instance method or a class default that loses something (a local binding that a recorder would take, or `OPAQUE` on a method with `HasCircuitContext`), and a step function without `HasProbe` given to `mealyProbed`, `mooreProbed`, `mealyBProbed`, `mooreBProbed` or `probeFmap`. |
 | `-Wx-circuit-context-undecided` | The oracle could not decide if a binding can be recorded, so it did not record it. This can be a limit of the oracle, not a fact about the type. |
 | `-Wx-circuit-context-untraced` | A binding could be recorded, but a requirement is missing: an instance or a constraint. The message names it. |
 | `-Wx-circuit-context-undescribed` | A binding is recorded, but as bits: its type has no `Waveform` instance. Nothing is lost. |
@@ -133,6 +133,81 @@ Warn.hs:37:1: warning: [-Wx-circuit-context-uninstrumented]
     Add {-# OPAQUE helper #-} if you wanted one.
 ```
 
+A step function without `HasProbe`, given to `mealyProbed`. A local
+function without a signature has no `HasProbe`, so nothing in it is
+probed:
+
+```haskell
+toggle :: (HasCircuitContext) => Signal System Bool -> Signal System Bool
+toggle press = on
+ where
+  on = mealyProbed clockGen resetGen enableGen step False press
+  step s p = (s', s)
+   where
+    s' = if p then not s else s
+{-# OPAQUE toggle #-}
+```
+
+```text
+Warn.hs:11:48: warning: [-Wx-circuit-context-uninstrumented]
+    'step' probes nothing: it is the step function of mealyProbed, and its type has no HasProbe.
+    The plugin probes the local bindings of a function only when its signature has HasProbe.
+    To probe them, give 'step' a type signature with HasProbe (step :: (HasProbe) => ...), or call probe in it.
+    If it has nothing to probe, use mealy in place of mealyProbed.
+```
+
+The warning points at the argument. For `probeFmap`, it says "the function
+of probeFmap" and "use fmap". A step function with `HasProbe` in its
+signature is not reported, also when it has nothing to probe, and neither
+is a step function that calls `probe`.
+
+An instance method whose body has a local binding that a recorder would
+take. The plugin does not instrument the body of an instance method or a
+class default:
+
+```haskell
+class Filter f where
+  run :: (HasCircuitContext) => f -> Signal System Int -> Signal System Int
+
+data Delay = Delay
+
+instance Filter Delay where
+  run _ inp = held
+   where
+    held = register clockGen resetGen enableGen 0 inp
+```
+
+```text
+Warn.hs:35:3: warning: [-Wx-circuit-context-uninstrumented]
+    'run' is an instance method, and its class gives it HasCircuitContext.
+    The plugin does not reach the body of an instance method or a class default, so these local bindings are not traced here: held.
+    To trace them, move the body to a top-level function with HasCircuitContext and OPAQUE, and call that function here.
+```
+
+`OPAQUE` on an instance method of a class with `HasCircuitContext`:
+
+```haskell
+data Twice = Twice
+
+instance Filter Twice where
+  run _ inp = inp + inp
+  {-# OPAQUE run #-}
+```
+
+```text
+Warn.hs:40:3: warning: [-Wx-circuit-context-uninstrumented]
+    'run' is an instance method, and its class gives it HasCircuitContext.
+    OPAQUE does not make 'run' a component: the plugin makes components of top-level functions only.
+    Clash makes an HDL module of it for each call site, and these modules differ in their names only.
+    Put OPAQUE on the top-level function that it calls, and remove it here.
+```
+
+The class signature is not reported: it needs the constraint, so that the
+instances can call instrumented functions. An instance method that only
+calls a top-level component is not reported either. See [How to control
+the warnings of the
+plugin](../how-to/warnings.md#instrument-a-class-method).
+
 ### `-Wx-circuit-context`
 
 Guards that can fail, on an equation that is not the last:
@@ -164,6 +239,12 @@ Warn.hs:42:1: warning: [-Wx-circuit-context]
   instruments](instrumentation.md#local-bindings)).
 - A function with `HasCircuitContext`, without `OPAQUE`, and with the
   annotation `{-# ANN f NoCircuitScope #-}`.
+- The signature of a class method, with `HasCircuitContext` or `HasProbe`.
+- The body of an instance method or a class default that loses nothing:
+  for example, one that only calls a top-level function, or one whose
+  local bindings are functions or start with `_`.
+- A step function with `HasProbe` in its signature, also when it has
+  nothing to probe, and a step function that calls `probe`.
 
 ## Versions of GHC
 

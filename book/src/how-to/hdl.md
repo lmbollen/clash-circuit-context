@@ -114,11 +114,16 @@ from the pragma.
 
 Clash writes the HDL to `verilog/<Module>.topEntity/` (or `vhdl/…`). Each
 component is one module with the name of its function, also when it is
-called from several places. There are two exceptions: a class method,
-and a function with an annotation other than `NoCircuitScope` (for example
-an HLint `ANN`). These keep the call sites as an argument, and Clash makes
-one module for each call site. The modules differ only in their names.
-Remove the annotation, or accept the extra modules. The names of instances in the HDL are Clash's,
+called from several places. There are two exceptions: an instance method
+or a class default with `OPAQUE`, and a function with an annotation other
+than `NoCircuitScope` (for example an HLint `ANN`). These keep the call
+sites as an argument, and Clash makes one module for each call site. The
+modules differ only in their names. Remove the annotation, or accept the
+extra modules. For a method of a class with `HasCircuitContext`, the plugin
+warns about `OPAQUE` (in `x-circuit-context-uninstrumented`): put `OPAQUE`
+on a top-level function that the method calls, and remove it from the
+method (see [How to control the warnings of the
+plugin](warnings.md#instrument-a-class-method)). The names of instances in the HDL are Clash's,
 and can differ from the names of the scopes in the waveform. A module name
 with a number, such as `adder_0`, is a second variant of `adder` that Clash
 made, for example for a constant argument. In the waveform, the instances

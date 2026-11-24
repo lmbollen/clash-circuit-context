@@ -60,6 +60,52 @@ runSystem = ...
 off for that function only. The category stays on for each function that you
 did not mark.
 
+## Instrument a class method
+
+The plugin does not instrument the body of an instance method or of a class
+default. If such a body has a local binding that a recorder would take, the
+plugin warns in `x-circuit-context-uninstrumented`, and names the binding.
+It also warns about `OPAQUE` on such a method in a class with
+`HasCircuitContext`: the method does not become a component, and Clash makes
+one HDL module of it for each call site.
+
+To record the body, move it to a top-level function with
+`HasCircuitContext` and `OPAQUE`, and let the method only call that
+function. Keep `HasCircuitContext` in the signature of the class method, so
+that the instance can call the function:
+
+```haskell,clash group=method hidden
+{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
+module Method where
+
+import Clash.Explicit.Prelude
+import Clash.CircuitContext
+import BookSupport
+```
+
+```haskell,clash group=method
+class Filter f where
+  run :: (HasCircuitContext) => f -> Signal System Int -> Signal System Int
+
+data Delay = Delay
+
+instance Filter Delay where
+  run _ inp = delayLine inp
+
+delayLine :: (HasCircuitContext) => Signal System Int -> Signal System Int
+delayLine inp = held
+ where
+  held = register clockGen resetGen enableGen 0 inp
+{-# OPAQUE delayLine #-}
+
+>>> printWaveform 3 (run Delay (pure 1))
+delayLine
+  held
+```
+
+The plugin does not warn about this instance, or about the class signature.
+`delayLine` is a component, and is one module in the HDL.
+
 ## Make tracing a requirement
 
 A warning never stops the build on its own. To make the build fail when one
