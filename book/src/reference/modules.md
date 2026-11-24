@@ -112,7 +112,8 @@ data Spill = InMemory | OnDisk
 defaultOptions :: WaveformOptions
 
 -- Simulate stop cycles, write <path>.fst (or .vcd) and <path>.json, and
--- return the stop samples. The path has no extension.
+-- return the stop samples. The path has no extension. Throws when the
+-- waveform cannot be written.
 writeWaveform ::
   (KnownDomain dom, NFDataX a) =>
   WaveformOptions -> FilePath -> (Int, Int) -> ((CircuitContextOnly) => Signal dom a) -> IO [a]
@@ -136,8 +137,12 @@ the call.
 
 The path of the waveform has no extension. The function adds `.fst` or
 `.vcd`, and writes the sidecar and the spill file beside the waveform. A
-relative path is relative to the working directory. The function makes the
-missing directories of the path.
+relative path is relative to the working directory. Before the design
+runs, the function makes the missing directories of the path, and checks
+that the directory of the waveform can hold a file. If not, it throws an
+error that names the directory (`recoverWaveform` returns it as `Left`).
+`writeWaveform` also throws when it cannot write the waveform after the
+run. See [Waveform files](waveform-files.md#place-and-names).
 
 The window `(start, stop)` is in cycles. The simulation runs `stop` cycles,
 and the waveform has the cycles `start` to `stop - 1`.
@@ -164,7 +169,8 @@ simulateWaveform ::
 ```haskell
 -- Run the action with recording: into the spill file at the path, or, with
 -- Nothing, in memory. Returns what the action returned or threw, and the
--- recording.
+-- recording. Throws an IOError, before the action, when it cannot make
+-- the spill file.
 withRecording ::
   Maybe FilePath -> ((CircuitContextOnly) => IO r) -> IO (Either SomeException r, Recording)
 

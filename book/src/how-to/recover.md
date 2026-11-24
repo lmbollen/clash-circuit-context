@@ -60,8 +60,13 @@ A run that is cancelled before it recorded a cycle deletes its spill file,
 and writes no message. There is nothing to recover from it.
 
 A run whose waveform cannot be written, for example because the disk is
-full, also keeps its spill file. The message that gives the reason also
-gives the absolute path of the spill file.
+full, also keeps its spill file. `writeWaveform` then throws an error, and
+the other functions write a message. The error or the message gives the
+reason and the absolute path of the spill file:
+
+```text
+clash-circuit-context: /home/you/project/waveforms/firmware: no waveform written: <reason>; what the run recorded is kept in /home/you/project/waveforms/firmware.spill
+```
 
 A process that is killed writes no message. Its spill file is in the same
 place. A second Ctrl-C kills the process: the first one cancels the run, and
@@ -98,7 +103,10 @@ Do one of these:
   ```
 
   If it cannot write the waveform, it gives `Left` with the reason, and
-  keeps the spill file.
+  keeps the spill file. Before it reads the spill file, it makes the
+  directory of the waveform and checks that it can hold a file. A part of
+  the path that is a file, or a directory that is not writable, gives
+  `Left` with the directory that is in the way.
 
   For the spill file of `withRecording` with a path that does not end in
   `.spill`, use `writeSpill` (see [Write the files

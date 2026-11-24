@@ -66,6 +66,11 @@ recordBoth = do
   wait. `Nothing` keeps them in memory. `Just path` writes them to a spill
   file at `path`, and makes its directory. Delete the spill file with
   `discardRecording` when the waveform is written.
+- `withRecording` makes the spill file before the action. If it cannot,
+  for example because a part of the path is a file or a directory is not
+  writable, it throws an `IOError` that names the spill file, and the
+  action does not run. The `Either` holds only what the action returned or
+  threw.
 - `writeFST` and `writeVCD` make the directory of the waveform, and return
   `Left` with the reason when they write nothing. Do not ignore it.
 - The window of `writeFST` and `writeVCD` is `[start, stop)` in units of the

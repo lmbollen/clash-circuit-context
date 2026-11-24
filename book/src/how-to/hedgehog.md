@@ -79,8 +79,14 @@ with the path of the file:
 
 Keep these rules in mind:
 
-- Give each property its own path. One path is one pair of files. The
-  function does not check this.
+- Give each call of `simulateWaveform` its own path, also two calls in one
+  property. One path is one pair of files. Two calls with one path write
+  the same files: the waveform of one call is lost, and the report names
+  the one file twice. The function does not check this.
+- The function makes the directory of the path before the case runs. A
+  directory that cannot hold the waveform (a part of the path is a file,
+  or a directory is not writable) fails the property at once, with an
+  error that names it.
 - The second simulation must give the same result as the first. This is
   true when the property supplies all inputs of the design.
 - The waveform is written when Hedgehog prints the report. tasty-hedgehog

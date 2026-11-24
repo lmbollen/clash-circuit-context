@@ -84,13 +84,18 @@ sidecar with the extension `.json` beside the waveform. For example,
   you gave.
 - An absolute path, for example `"/home/you/project/out/accumulate"`, is
   the same from each working directory.
-- If a directory of the path does not exist, the function makes it.
-- Give each test its own path. Two tests with the same path write the same
-  files: the waveform of one test can replace the waveform of the other, and
-  a passing test can delete the waveform of a failed test. With
-  `spill = OnDisk`, two tests that record at the same time use the same
-  spill file: the second recording stops with an error, and that test gets
-  no waveform. With `spill = InMemory`, nothing checks this.
+- If a directory of the path does not exist, the function makes it, before
+  the simulation runs. If it cannot, the function throws an error at that
+  time, also in a test that passes. The error names the
+  part of the path that is in the way: `<dir> is a file, not a directory`
+  or `<dir> is not writable`.
+- Give each call its own path, also two calls in one test. Two calls with
+  the same path write the same files: the waveform of one call can replace
+  the waveform of the other, and a passing test can delete the waveform of
+  a failed test. With `spill = OnDisk`, two tests that record at the same
+  time use the same spill file: the second recording stops with an error,
+  and that test gets no waveform. In all other cases, nothing checks
+  this.
 - Give the path without an extension. A path that ends in `.fst`, `.vcd`,
   `.json` or `.spill`, an empty path, and a path that ends in `/` are
   refused with an error.
@@ -111,6 +116,12 @@ case_accumulate = do
 If the simulation throws an exception, the waveform up to that cycle is
 written, and the exception comes out as usual. The waveform ends with the
 cycle that threw. In that cycle, the value that threw is `x`.
+
+If the waveform cannot be written, for example because the disk is full,
+`writeWaveform` throws an error, so the test fails. The error names the
+waveform and gives the reason. With `spill = OnDisk`, it also names the
+spill file, which stays (see [How to keep the waveform of a stopped
+run](recover.md)).
 
 ## Write the waveform only when the test fails
 

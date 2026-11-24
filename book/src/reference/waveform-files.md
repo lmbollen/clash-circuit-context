@@ -12,7 +12,7 @@ and their content.
 | Waveform | `<path>.fst`, or `<path>.vcd` with `format = VCD` | kept |
 | Waveform of the passing case of `AtSize size` | `<path>_<size>.fst`, or `.vcd` | kept |
 | Sidecar | `<path>.json`, beside the waveform | kept |
-| Spill file | `<path>.spill`, only with `spill = OnDisk` | while the simulation records. Deleted when the waveform is written. Kept when a recording run stops first after it recorded a cycle, or when the waveform cannot be written (the message gives its path). The first runs of `withWaveform` and `simulateWaveform` do not record |
+| Spill file | `<path>.spill`, only with `spill = OnDisk` | while the simulation records. Deleted when the waveform is written. Kept when a recording run stops first after it recorded a cycle, or when the waveform cannot be written (the error or the message gives its path). The first runs of `withWaveform` and `simulateWaveform` do not record |
 
 `<path>` is the path that you give to `writeWaveform`, `withWaveform`,
 `simulateWaveform` or `recoverWaveform`, without an extension. For example,
@@ -22,7 +22,20 @@ and their content.
 - A relative path is relative to the working directory of the process. The
   working directory of `cabal test` and of `cabal run` can differ.
 - An absolute path is the same from each working directory.
-- The functions make the missing directories of the path.
+- Before the simulation runs, the functions make the missing directories
+  of the path, and create and delete a file in the directory of the
+  waveform. A part of the path that is a file, or a directory without
+  write permission, is an error. `writeWaveform`, `withWaveform` and
+  `simulateWaveform` throw it; `recoverWaveform` returns it as `Left`, and
+  keeps the spill file. The error names the waveform, and the directory by
+  its absolute path:
+
+  ```text
+  clash-circuit-context: /home/you/project/waveforms/x: /home/you/project/waveforms is a file, not a directory
+  ```
+
+  or `… is not writable`. `withWaveform` does this check also when its check
+  passes, so a test with such a path fails at once.
 - The functions refuse a path that cannot be the path of a waveform, before
   the simulation runs: an empty path, a path that names a directory (it
   ends in `/`, `.` or `..`), and a path that ends in `.fst`, `.vcd`,
@@ -38,12 +51,14 @@ and their content.
 - One path is one waveform. The FST and the VCD of a path have the same
   sidecar, `<path>.json`, so when a function writes a waveform in one
   format, it deletes the waveform in the other format at that path.
-- Two tests must not use the same path. With `spill = OnDisk`, two
-  recordings that use one spill file at the same time are an error: the
-  second one stops at once, with a message, and the first one goes on.
-  `withWaveform` then writes no waveform for the second test, and the test
-  fails with the exception of its check. With `spill = InMemory`, the
-  functions do not check this: the last waveform written stays.
+- Give each call its own path, also two calls in one test or one
+  property. Two calls with one path write the same files, so the waveform
+  of one call is lost. The functions check this only for two recordings
+  at the same time with `spill = OnDisk`: two recordings that use one
+  spill file at the same time are an error. The second one stops at once,
+  with an error that names the spill file, and the first one goes on.
+  `withWaveform` then writes no waveform for the second test, says why on
+  stderr, and the test fails with the exception of its check. In all other cases, the last waveform written stays.
 - A spill file uses RAM when its path is on a file system in RAM (tmpfs),
   for example `/tmp` on many systems. Then `spill = OnDisk` does not save
   memory.
@@ -59,10 +74,25 @@ and their content.
   is complete. A crash between the two renames can leave a new `.json` file
   beside the waveform file of an earlier run.
 - If a file cannot be written or renamed, for example because the disk is
-  full, no new file stays. An earlier waveform and an earlier `.json` file
-  at the path stay as they were. The functions of
-  `Clash.CircuitContext.Waveform` then say why on stderr, and keep the
-  spill file; `writeFST` and `writeVCD` return the reason as `Left`.
+  full or a directory is where the file must go, no new file stays. An
+  earlier waveform and an earlier `.json` file at the path stay as they
+  were. A spill file stays too. Then:
+  - `writeWaveform` throws an error, with either spill option. The error
+    names the waveform and gives the reason. With `spill = OnDisk`, it also
+    gives the absolute path of the spill file:
+
+    ```text
+    clash-circuit-context: /home/you/project/waveforms/x: no waveform written: /home/you/project/waveforms/x.vcd: renameFile: inappropriate type (is a directory); what the run recorded is kept in /home/you/project/waveforms/x.spill
+    ```
+
+    If the simulation also threw, its exception goes on, and the reason is
+    on stderr.
+  - `withWaveform` gives the reason on stderr, and the test fails with the
+    exception of its check. `simulateWaveform` gives the reason in the
+    report of the property (`no waveform for <path>: …`), and on stderr for
+    the passing case of `AtSize`.
+  - `recoverWaveform`, `writeFST` and `writeVCD` return the reason as
+    `Left`.
 - The description of a signal for the sidecar is made when the signal is
   first recorded. A description that fails to render (a `Waveform` instance
   whose width is not `BitSize`) is left out of the sidecar, with a message
@@ -270,7 +300,7 @@ Its functions take the full path of each file, with its extension:
 
 | Function | Does |
 |---|---|
-| `withRecording spill action` | runs `action` with recording, and returns what the action returned or threw, with the `Recording`. A cancellation (an asynchronous exception, such as Ctrl-C or a test's timeout) is not returned: it goes on, after the recording stops. `spill` is `Just path` for a spill file at `path` (its directory is made), or `Nothing` to keep the values in memory. When the action is cancelled after it recorded a cycle, the spill file stays, and a message on stderr gives its absolute path. When it is cancelled before, the spill file is deleted |
+| `withRecording spill action` | runs `action` with recording, and returns what the action returned or threw, with the `Recording`. A cancellation (an asynchronous exception, such as Ctrl-C or a test's timeout) is not returned: it goes on, after the recording stops. `spill` is `Just path` for a spill file at `path`, or `Nothing` to keep the values in memory. Before the action, it makes the directory of the spill file and the spill file. If it cannot (a part of the path is a file, a directory is not writable, another recording uses the spill file), it throws an `IOError` that names the spill file, and the action does not run. The `Either` holds only what the action returned or threw. When the action is cancelled after it recorded a cycle, the spill file stays, and a message on stderr gives its absolute path. When it is cancelled before, the spill file is deleted |
 | `writeFST (start, stop) rec path` | writes the FST file at `path` and the sidecar beside it. Returns `Left` with the reason when it writes nothing: nothing was recorded, the window shows nothing, or a file cannot be written |
 | `writeVCD (start, stop) rec path` | the same, as a VCD file |
 | `recordingStart rec`, `recordingEnd rec` | the time from which the recording has cycles, and the time at which the simulation stopped, in units of the timescale |
