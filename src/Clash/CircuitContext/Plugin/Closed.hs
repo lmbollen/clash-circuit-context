@@ -24,6 +24,12 @@ like a binding with a higher-rank type), and nothing is said about it.
 Neither is a binding no recorder could take (a plain value in a traced
 component, a function, a type declared @NonTranslatable@): the same rule as
 the oracle's (see @neverRecordable@ in "Clash.CircuitContext.Plugin.Oracle").
+
+Only trace mode is reported. A closed binding in a traced component can be a
+signal that changes from cycle to cycle (@riseEvery clockGen …@). In probe
+mode the binding is a value in a step function, and a closed one cannot
+depend on the state or the input: its probe would be the same value in every
+cycle (@limit = 5 :: Index 8@, @start = minBound@), so no signal is lost.
 -}
 module Clash.CircuitContext.Plugin.Closed (
   noteClosedSkip,
@@ -48,12 +54,11 @@ import qualified Clash.CircuitContext.Plugin.Diagnostics as Diag
 import Clash.CircuitContext.Plugin.Names (AbiNames (..), lookupAbiNames)
 import Clash.CircuitContext.Plugin.Oracle (recordableShape)
 
-{- | A closed binder the renamer left alone: its name, where, whether it
-would have been traced ('True') or probed, and the type variables a local
-signature can name there (see @ctxScoped@ in
+{- | A closed binder the renamer left alone in trace mode: its name, where,
+and the type variables a local signature can name there (see @ctxScoped@ in
 "Clash.CircuitContext.Plugin.Rename").
 -}
-data Skip = Skip GHC.Name GHC.SrcSpan Bool [GHC.OccName]
+data Skip = Skip GHC.Name GHC.SrcSpan [GHC.OccName]
 
 {- | The skips per module, from the renamer (which runs once per declaration
 group) to 'reportClosedSkips' (once per module). Modules compiled in
@@ -63,12 +68,14 @@ skips :: IORef (Map.Map GHC.Module [Skip])
 skips = unsafePerformIO (newIORef Map.empty)
 {-# NOINLINE skips #-}
 
--- | Remember a closed binder the renamer left alone in this module.
-noteClosedSkip :: GHC.Name -> GHC.SrcSpan -> Bool -> [GHC.OccName] -> GHC.TcM ()
-noteClosedSkip nm spn tracing scoped = do
+{- | Remember a closed binder the renamer left alone in this module, in trace
+mode (see the module header for why not in probe mode).
+-}
+noteClosedSkip :: GHC.Name -> GHC.SrcSpan -> [GHC.OccName] -> GHC.TcM ()
+noteClosedSkip nm spn scoped = do
   md <- GHC.tcg_mod <$> GHC.getGblEnv
   GHC.liftIO $
-    atomicModifyIORef' skips (\m -> (Map.insertWith (<>) md [Skip nm spn tracing scoped] m, ()))
+    atomicModifyIORef' skips (\m -> (Map.insertWith (<>) md [Skip nm spn scoped] m, ()))
 
 {- | Report the closed binders of this module that GHC did not generalise
 and that a recorder would take (see the module header).
@@ -89,14 +96,14 @@ reportClosedSkips _ _ env = do
         let types = binderTypes (GHC.tcg_binds env)
         -- A binder is noted once per run of the renamer pass (twice when the
         -- plugin is enabled twice); 'Diag.report' says each message once.
-        forM_ mine $ \(Skip nm spn tracing scoped) ->
+        forM_ mine $ \(Skip nm spn scoped) ->
           forM_ (Map.lookup nm types) $ \ty -> do
             let (tvs, theta, rho) = GHC.tcSplitSigmaTy ty
             when (null tvs && null theta && not (GHC.isFunTy rho)) $ do
-              recordable <- recordableShape nonTranslatableTc tracing ty
+              recordable <- recordableShape nonTranslatableTc True ty
               when recordable $
                 Diag.report spn Diag.Untraced $
-                  [ (if tracing then "not traced: " else "not probed: ")
+                  [ "not traced: "
                       <> GHC.getOccString nm
                       <> " :: "
                       <> Diag.renderPlain ty

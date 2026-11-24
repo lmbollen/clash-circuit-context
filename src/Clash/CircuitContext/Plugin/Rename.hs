@@ -854,10 +854,11 @@ rewriteInside ctx mode0 = goM mode0
       ms <- goM m (fun_matches b)
       inferred <- inferredHigherRank localSigned nm (zeroArgGRHSs ms)
       when
-        ( all (null . matchPats . unLoc) (mgEquations ms)
+        ( m == TraceMode
+            && all (null . matchPats . unLoc) (mgEquations ms)
             && closedSkip (locA l) inferred nm localSigned rankN (fun_ext b) (zeroArgGRHSs ms)
         )
-        (noteClosedSkip nm (locA l) (m == TraceMode) (ctxScoped ctx))
+        (noteClosedSkip nm (locA l) (ctxScoped ctx))
       pure
         ( L
             l
@@ -876,8 +877,8 @@ rewriteInside ctx mode0 = goM mode0
       rhs <- goM m (pat_rhs b)
       inferred <- inferredHigherRank localSigned nm [rhs]
       when
-        (closedSkip (locA l) inferred nm localSigned rankN (pat_ext b) [rhs])
-        (noteClosedSkip nm (locA l) (m == TraceMode) (ctxScoped ctx))
+        (m == TraceMode && closedSkip (locA l) inferred nm localSigned rankN (pat_ext b) [rhs])
+        (noteClosedSkip nm (locA l) (ctxScoped ctx))
       pure
         ( L
             l
@@ -1305,8 +1306,9 @@ at two different types. The wrap makes it monomorphic, and the second use
 does not compile. A register loop cannot be such a binding. Give it a
 signature, or start its name with @_@.
 
-Any other closed binding is still skipped. It is reported after type
-checking when GHC did not generalise it, which the renamer cannot know: see
+Any other closed binding is still skipped. In trace mode it is reported
+after type checking when GHC did not generalise it, which the renamer cannot
+know; in probe mode it is a constant and is not reported: see
 "Clash.CircuitContext.Plugin.Closed".
 -}
 closedBind :: GHC.Name -> GHC.NameSet -> Bool

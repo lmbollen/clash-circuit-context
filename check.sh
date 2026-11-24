@@ -187,6 +187,15 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
   else
     echo "ok: a generalised closed binding is not reported"
   fi
+  # In probe mode a closed binding is a constant, so it is not reported
+  # (Test/Downstream.hs probedConstants: stepLimit, stepStart).
+  if grep -q "Compiling Test.Downstream" "$log"; then
+    if grep -qE "not (traced|probed): step(Limit|Start) ::" "$log"; then
+      echo "FAIL: reported a closed constant of a probed step function"; fail=1
+    else
+      echo "ok: a closed constant of a probed step function is not reported"
+    fi
+  fi
   # The signature a closed-binding warning names needs no forall hint when
   # the enclosing signature already binds its type variables with an
   # explicit forall under ScopedTypeVariables (Test/Downstream.hs

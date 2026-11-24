@@ -167,9 +167,10 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
    to itself (a register loop such as `cnt = register clockGen resetGen
    enableGen 0 (cnt + 1)`); otherwise it is skipped, because GHC may
    generalise it, and under the Monomorphism Restriction the injected
-   constraint would stop that. A skipped binding that GHC did *not*
-   generalise is reported (`-Wx-circuit-context-untraced`), with the
-   signature that records it. Untraceable types (no `BitPack`,
+   constraint would stop that. A skipped binding of a traced function that
+   GHC did *not* generalise is reported (`-Wx-circuit-context-untraced`),
+   with the signature that records it. In a probed function a closed
+   binding is a constant, so it is not reported. Untraceable types (no `BitPack`,
    unknown domain, missing evidence for a polymorphic type) fall back to
    identity — by
    design, decided by a typechecker-plugin oracle (`CanTrace`), so
@@ -309,7 +310,7 @@ Five categories, because they differ in how likely each is to be a defect:
 | `-Wx-circuit-context` | The plugin could not honour something the source unambiguously asked for. Nothing benign lands here. |
 | `-Wx-circuit-context-uninstrumented` | A signature asks for instrumentation somewhere the pass does not reach or does not scope: `HasCircuitContext` without `OPAQUE`, `OPAQUE` without a signature, both constraints at once, a class or instance method body. |
 | `-Wx-circuit-context-undecided` | The oracle could not decide, and fell back to not tracing. **The one that matters**: this is the approximation admitting it may be wrong, not a fact about your types. |
-| `-Wx-circuit-context-untraced` | The oracle found no instance for something that could have been recorded, and the message names the instance or constraint to add. Also an unsigned closed local binding that the plugin left alone and GHC did not generalise; the message names the signature to add. Bindings no recorder could ever take are not reported (see below). |
+| `-Wx-circuit-context-untraced` | The oracle found no instance for something that could have been recorded, and the message names the instance or constraint to add. Also an unsigned closed local binding of a traced function that the plugin left alone and GHC did not generalise; the message names the signature to add. Bindings no recorder could ever take are not reported (see below). |
 | `-Wx-circuit-context-undescribed` | The signal is recorded, but as raw bits: its payload has no `clash-shockwaves` `Waveform` instance, so a typed viewer cannot name its constructors and fields. Nothing is lost; derive the instance, or silence the category if bits are what you want. |
 
 What counts as "could have been recorded" depends on the mode. A trace
@@ -759,8 +760,11 @@ actually collects a waveform.
   after type checking, in `-Wx-circuit-context-untraced`, and names the
   signature to add. One that GHC did generalise (`noWrite = pure Nothing`,
   of type `forall a. Signal dom (Maybe a)`) has no single waveform and is
-  not reported. Give it a type signature to have it traced. A
-  self-referring one is traced, with one exception: an unconstrained
+  not reported. Give it a type signature to have it traced. In a probed
+  function (`HasProbe`) a closed binding is not reported: it uses neither
+  the state nor the input, so its probe would be the same value in every
+  cycle (`limit = 5 :: Index 8`, `start = minBound`). A
+  self-referring closed binding is traced, with one exception: an unconstrained
   self-referring binding of a type that is not `NonTranslatable`
   (`s = Nothing :- s`, an infinite stream of your own type) becomes
   monomorphic, so it cannot be used at two types. Give it a signature, or

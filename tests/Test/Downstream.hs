@@ -73,6 +73,7 @@ module Test.Downstream (
   rankNArg,
   rankNArgOp,
   probedRankN,
+  probedConstants,
 ) where
 
 import qualified Clash.Explicit.Prelude as E
@@ -565,6 +566,21 @@ probedRankN s i = (s', s')
 
   withRstProbe :: ((HiddenReset System) => r) -> r
   withRstProbe = withReset (unsafeFromActiveHigh (pure False))
+
+{- | Unsigned closed constants in a PROBED step function. A closed binding
+uses no local variable, so in a step function it cannot depend on the state
+or the input: its probe would be the same value in every cycle, and leaving
+it alone loses no signal. @check.sh@ asserts that neither @stepLimit@ nor
+@stepStart@ is reported (the trace-mode ones in 'unsignedClosed' are).
+-}
+probedConstants :: (HasProbe) => Index 8 -> Bool -> (Index 8, Index 8)
+probedConstants s go = (s', s)
+ where
+  s'
+    | not go || s == stepLimit = stepStart
+    | otherwise = s + 1
+  stepLimit = 5 :: Index 8
+  stepStart = minBound
 
 {- | The control for synonyms: an arrow behind one is consumed by the pattern,
 and what remains is an ordinary @Signal@, so the component wrap applies.
