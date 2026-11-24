@@ -25,7 +25,10 @@ name the worker. A `RULES` pragma for an instrumented function does not
 fire: the wrapper is inlined first. If the function also asks for
 `HasCallStack`, its call stack has one more frame: the call of `$wf`, at the
 definition of the function. `error` in the function shows that frame
-between its own line and the caller.
+between its own line and the caller. Code that reads the first frame of the
+call stack, for example to report the site of the call, therefore reads the
+call of `$wf`, which is the same for each call. The site of the call is in
+the second frame.
 
 A top entity (a `Synthesize` or `TopEntity` annotation of Clash) whose
 signature has `HasCircuitContext` is an error. Give the top entity a
