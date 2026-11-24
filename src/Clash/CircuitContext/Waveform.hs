@@ -11,11 +11,11 @@ Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
 
 Write the waveform of a simulation, from any IO code or from a test.
 
-Both functions take 'WaveformOptions' ('defaultOptions' writes an FST,
-recorded in memory), and what 'Clash.Signal.Trace.dumpVCD' takes: the
-'Signal' to observe and a window @(start, stop)@ of cycles. The simulation runs @stop@
-cycles, and the waveform shows cycles @start@ to @stop - 1@; use @(0, n)@ to
-see all @n@. The signal carries 'HasCircuitContext', which they supply. A
+'writeWaveform' and 'withWaveform' take 'WaveformOptions' ('defaultOptions'
+writes an FST, recorded in memory), and what 'Clash.Signal.Trace.dumpVCD'
+takes: the 'Signal' to observe and a window @(start, stop)@ of cycles. The
+simulation runs @stop@ cycles, and the waveform shows cycles @start@ to
+@stop - 1@; use @(0, n)@ to see all @n@. The signal carries 'HasCircuitContext', which they supply. A
 design with outputs in one domain gives one signal with @bundle@; a
 @clash-protocols@ circuit gives one with @toSignals@. For outputs in more
 than one domain, see "Clash.CircuitContext.Recording".

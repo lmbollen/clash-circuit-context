@@ -243,23 +243,24 @@ type HasCircuitContext = ?circuitContext :: CircuitContext
 noCircuitContext :: CircuitContext
 noCircuitContext = CircuitContext [] Nothing Nothing []
 
-{- | Run an instrumented ('HasCircuitContext'-constrained) computation with a
-disabled context, /without/ the caller having to acquire the constraint itself.
+{- | Run an instrumented ('HasCircuitContext') computation with tracing and
+probing turned off, so that the caller does not need the constraint.
 
-'HasCircuitContext' is a viral constraint: instrumenting a deep function forces
-it onto every transitive caller. At a boundary where you do NOT want to thread a
-context — most often a synthesis-facing caller — wrap the call:
+'HasCircuitContext' goes to every caller of an instrumented function. At a
+boundary where you do not want it, such as a synthesis entry point, wrap the
+call:
 
 > outputs = withoutCircuitContext (myComponent clk rst inp)
 
-This replaces the hand-written shim idiom
+This is @let ?circuitContext = noCircuitContext in myComponent clk rst inp@,
+without a copy of @myComponent@'s type signature.
 
-> myComponentNC clk rst inp = let ?circuitContext = noCircuitContext in myComponent clk rst inp
-
-which otherwise has to duplicate @myComponent@'s entire type signature just to
-drop the constraint. Because instrumentation is HDL-transparent, the wrapped
-call is identical — in both simulation and synthesis — to calling the
-uninstrumented function directly.
+In simulation, the wrapped call gives the values the function without
+instrumentation gives, and records nothing. In HDL, it does the same function
+as the HDL of the function without instrumentation, but the text can differ:
+wire names, the order of declarations, and an identity generate loop for a
+traced 'Clash.Sized.Vector.Vec'. Compare the two with an equivalence checker
+(such as Yosys @equiv_make@ and @equiv_induct@), not as text.
 -}
 withoutCircuitContext :: ((HasCircuitContext) => r) -> r
 withoutCircuitContext k = let ?circuitContext = noCircuitContext in k

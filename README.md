@@ -384,8 +384,11 @@ topEntity = withoutCircuitContext (myInstrumentedCircuit clk rst)
 ```
 
 `withoutCircuitContext` is exactly `let ?circuitContext = noCircuitContext in …`.
-Because instrumentation is HDL-transparent, the wrapped call is identical — in
-simulation *and* synthesis — to calling an uninstrumented function.
+In simulation, the wrapped call gives the values of the uninstrumented
+function, and records nothing. Its HDL does the same function as the HDL of
+the uninstrumented function, but its text can differ (see [HDL generation &
+performance](#hdl-generation--performance) below): compare the two with an
+equivalence checker, not as text.
 
 What is *not* cheap is the opposite direction. `HasCircuitContext` propagates to
 callers, so instrumenting a widely-shared component means either threading the
