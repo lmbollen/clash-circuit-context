@@ -69,6 +69,7 @@ import System.Posix.Resource (
 import System.Posix.Signals (
   Handler (Ignore),
   installHandler,
+  scheduleAlarm,
   sigKILL,
   sigXFSZ,
   signalProcess,
@@ -222,6 +223,48 @@ vcdOnDisk = defaultOptions{format = VCD, spill = OnDisk}
 children :: [Child]
 children =
   [
+    ( "formats-cut-off"
+    , do
+        -- The spill file ends inside the counter's last record. Before,
+        -- the writer read past the bytes it had and did not stop.
+        _ <- scheduleAlarm 20
+        let name = "formats-cut-off"
+        scrub [name]
+        (_, rec) <-
+          withRecording
+            (Just (file name "spill"))
+            (evaluate (P.sum (P.map P.toInteger (sampleN 20000 counter))))
+        contents <- ByteString.readFile (file name "spill")
+        let lastOfCounter = P.last [off | (off, _, owner) <- regionsOf contents, owner P.== 1]
+            used =
+              P.foldr
+                ( \i acc ->
+                    acc P.* 256 P.+ P.fromIntegral (ByteString.index contents (lastOfCounter P.+ 16 P.+ i))
+                )
+                0
+                [0 .. 7]
+            lastRecordAt = lastOfCounter P.+ 32 P.+ used P.- 3
+            refused why = forM_ [("vcd", writeVCD), ("fst", writeFST)] $ \(ext, write) -> do
+              written <- write (0, recordingEnd rec) rec (file name ext)
+              case written of
+                Right () -> assertFailure ("the " <> ext <> " was written")
+                Left err -> assertBool ("said: " <> err) (why `isInfixOf` err)
+              existing name [ext] >>= (@?= [False])
+        -- A record of the counter is three bytes: keep the first of the last.
+        ByteString.writeFile (file name "spill") (ByteString.take (lastRecordAt P.+ 1) contents)
+        refused "cut off"
+        -- The last record zero bytes, as a region that was never written:
+        -- at the cycle of the record before it.
+        ByteString.writeFile
+          (file name "spill")
+          ( ByteString.take lastRecordAt contents
+              <> ByteString.replicate 3 0
+              <> ByteString.drop (lastRecordAt P.+ 3) contents
+          )
+        refused "do not make sense"
+        discardRecording rec
+    )
+  ,
     ( "formats-cut-fst"
     , do
         let name = "formats-cut-fst"
@@ -280,7 +323,8 @@ children =
         -- heap of the whole process.
         let spillFile = file "formats-read-big-spill" "spill"
             regions = 1024 :: Int
-            -- Records of 0 at every cycle: 3 bytes each, as many as fit.
+            -- Records of 0, one a cycle from cycle 1 on: 3 bytes each, as many
+            -- as fit.
             used = (65536 P.- 32) `P.div` 3 P.* 3
             perRegion = used `P.div` 3
             varint :: Int -> Builder.Builder
@@ -310,8 +354,9 @@ children =
               word 65536
                 <> word 1
                 <> word used
-                <> word (i P.* perRegion)
-                <> Builder.byteString (ByteString.replicate used 0)
+                <> word (i P.* perRegion P.+ 1)
+                <> Builder.byteString (ByteString.concat (P.replicate perRegion record))
+            record = ByteString.pack [1, 0, 0]
         createDirectoryIfMissing True "waveforms"
         ByteStringLazy.writeFile spillFile
           $ padded
@@ -338,7 +383,7 @@ children =
           live <- gcdetails_live_bytes . gc <$> getRTSStats
           assertBool ("the live heap is " <> P.show live <> " bytes") (live P.< 16000000)
           -- The recording is alive until here.
-          recordingEnd rec @?= P.fromIntegral (regions P.* perRegion)
+          recordingEnd rec @?= P.fromIntegral (regions P.* perRegion P.+ 1)
     )
   ,
     ( "formats-killed"
@@ -822,6 +867,14 @@ tests =
             b <- vcdBody (file name "vcd")
             a @?= b
         discardRecording rec
+    , -- A recording whose records point at bytes that are not in its spill
+      -- file (as a region whose write was lost on a full disk): writing its
+      -- waveform is an error, and does not hang. In a process of its own,
+      -- which an alarm stops: the writer looped without allocating, where no
+      -- timeout in this process could stop it.
+      testCase "records that point past the spill file give an error, not a hang" $ do
+        (code, _, err) <- inChild "formats-cut-off" []
+        assertBool ("exited " <> P.show code <> ", said: " <> err) (code P.== ExitSuccess)
     , testCase "a long recording on disk keeps its memory flat"
         $ assertChild "formats-flat-memory" []
     , -- A waveform that cannot be written must not cost the recording: the

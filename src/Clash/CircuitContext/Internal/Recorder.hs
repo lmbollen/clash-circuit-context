@@ -88,7 +88,9 @@ stops; the signal then ends where the lost region began.
 
 A finished 'Recording' reads its changes back lazily, one chunk (in a spill
 file: one region) at a time ('readChanges'), so rendering does not hold a
-history in memory either.
+history in memory either. Each chunk is checked as it is read, as
+'readSpill' checks a region: a chunk that is cut off, or whose records do not
+make sense, is an error, and writing the waveform fails with it.
 
 == Descriptions
 
@@ -903,23 +905,34 @@ withReader rec k = case recordingSpill rec of
 {- | A signal's records, oldest first, read lazily: a chunk is read when the
 list reaches it. The reader must stay open while the list is consumed, and
 nothing else may move it in between (one thread).
+
+A chunk is checked before its records are decoded, as 'readSpill' checks a
+region: a chunk that the spill file does not hold whole, or whose records do
+not make sense ('lastRecord'), throws an 'IOError' when the list reaches it.
 -}
 readChanges :: Reader -> RecordedSignal -> IO [Change]
-readChanges (Reader mh) sig = go 0 (signalChunks sig)
+readChanges (Reader mh) sig = go (-1) (signalChunks sig)
  where
   n = (signalWidth sig + 7) `div` 8
   go _ [] = pure []
-  go base (chunk : rest) = unsafeInterleaveIO $ do
+  go prev (chunk : rest) = unsafeInterleaveIO $ do
     bs <- case (chunk, mh) of
       (InMemory b, _) -> pure b
       (OnFile off len, Just h) -> do
         hSeek h AbsoluteSeek (fromIntegral off)
-        ByteString.hGet h len
-      (OnFile _ _, Nothing) -> ioError (userError "clash-circuit-context: a spill file's chunk without its file")
-    let (changes, base') = decode base bs
-    (changes <>) <$> go base' rest
+        b <- ByteString.hGet h len
+        when (ByteString.length b /= len) $
+          unreadable "are cut off: the spill file ends before them"
+        pure b
+      (OnFile _ _, Nothing) -> unreadable "are in a spill file, but the recording has none"
+    case lastRecord n prev bs of
+      Nothing -> unreadable "do not make sense"
+      Just newest -> (decode (max 0 prev) bs <>) <$> go newest rest
+  unreadable why =
+    ioError
+      (userError ("clash-circuit-context: the records of " <> signalKey sig <> " " <> why))
   decode !base bs
-    | ByteString.null bs = ([], base)
+    | ByteString.null bs = []
     | otherwise =
         let
           (delta, b1) = unvarint bs
@@ -932,9 +945,8 @@ readChanges (Reader mh) sig = go 0 (signalChunks sig)
               let (val, r1) = ByteString.splitAt n b2
                   (mask, r2) = ByteString.splitAt n r1
                in (Just (fromBytes mask, fromBytes val), r2)
-          (rest, base') = decode cyc b3
          in
-          (Change cyc mv : rest, base')
+          Change cyc mv : decode cyc b3
   fromBytes = ByteString.foldr' (\w acc -> acc `shiftL` 8 .|. fromIntegral w) 0
 
 -- | A varint, and the bytes after it.
@@ -991,8 +1003,8 @@ readSpill path = bracket (openBinaryFile path ReadMode) hClose $ \h -> do
                     Nothing -> continue sigs lasts luts end
                     Just s -> do
                       let i = owner - 1
-                          base = Map.findWithDefault 0 i lasts
-                      case lastRecord ((signalWidth s + 7) `div` 8) base payload of
+                          prev = Map.findWithDefault (-1) i lasts
+                      case lastRecord ((signalWidth s + 7) `div` 8) prev payload of
                         Nothing -> done start sigs luts end
                         Just newest -> do
                           let !chunk = OnFile (off + headerBytes) used
@@ -1033,22 +1045,29 @@ metadata !sigs luts end = Parser $ \b ->
         b
 
 {- | The cycle of the last of these records of a signal whose values take
-this many bytes, the first counted from this cycle; 'Nothing' when they do
-not make sense.
+this many bytes, given the cycle of the record before them (-1: none; the
+first then counts from cycle 0). 'Nothing' when they do not make sense: a
+record is cut off, has a tag that is none of 0, 1 and 2, or is not after the
+record before it.
 -}
 lastRecord :: Int -> Int -> ByteString.ByteString -> Maybe Int
 lastRecord n = go
  where
-  go !base b
-    | ByteString.null b = Just base
+  go !prev b
+    | ByteString.null b = Just prev
     | otherwise = case runParser ((,) <$> varintP <*> byte) b of
-        Just ((delta, tag), r) ->
-          let skip = case tag of
-                2 -> 0
-                0 -> n
-                _ -> 2 * n
-           in if ByteString.length r < skip then Nothing else go (base + delta) (ByteString.drop skip r)
-        Nothing -> Nothing
+        Just ((delta, tag), r)
+          | tag <= 2
+          , cyc > prev
+          , ByteString.length r >= skip ->
+              go cyc (ByteString.drop skip r)
+         where
+          cyc = max 0 prev + delta
+          skip = case tag of
+            2 -> 0
+            0 -> n
+            _ -> 2 * n
+        _ -> Nothing
 
 -- | What a block of a spill file says.
 data Block
