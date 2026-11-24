@@ -155,6 +155,7 @@ import Control.Exception (
 import qualified Control.Exception as Exception (mask, uninterruptibleMask_)
 import Control.Monad (forM, forM_, unless)
 import Data.Bits (xor, (.&.))
+import Data.Char (isAsciiLower, isAsciiUpper, isDigit)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import qualified Data.IntMap.Strict as IntMap
 import Data.List (intercalate, isPrefixOf)
@@ -386,7 +387,8 @@ What the action recorded before it threw is in the recording too: that is
 what the waveform of a failing test is made of. An asynchronous exception
 (a cancelled test) is not caught: the recording stops where it got to and
 the exception goes on. A spill file that holds recorded cycles stays, and a
-message on stderr says where it is: read it with
+message on stderr says where it is, and what to run to write its waveform
+(in Haskell, and from a shell); read it with
 'Clash.CircuitContext.Recording.recoverRecording'. One that holds none is
 deleted, without a message. The spill file of a
 process that was killed stays too, with everything it recorded: a value is in
@@ -443,17 +445,40 @@ withRecordingFrom start spill0 k = Exception.mask $ \restore -> do
       then mapM_ stoppedMessage (recordingSpill recording)
       else mapM_ removePathForcibly (recordingSpill recording)
 
-{- | Say on stderr that a run was stopped, and where its spill file is (an
-absolute path: see 'withRecordingFrom').
+{- | Say on stderr that a run was stopped, where its spill file is (an
+absolute path: see 'withRecordingFrom'), and what to run to write its
+waveform, as it is to be typed: in Haskell, and from a shell in a cabal
+project that has this package. 'Clash.CircuitContext.Waveform.recoverWaveform'
+takes the path without @.spill@, so for a spill file named otherwise, the
+Haskell is 'Clash.CircuitContext.Recording.writeSpill'.
 -}
 stoppedMessage :: FilePath -> IO ()
 stoppedMessage path =
   say
     ( "the run was stopped; what it recorded is in "
         <> path
-        <> ". Write its waveform with spill2fst or spill2vcd (executables of"
-        <> " clash-circuit-context), or with recoverWaveform or writeSpill"
+        <> ". Write its waveform in Haskell with\n  "
+        <> haskell
+        <> "\nor from a shell, in a cabal project with clash-circuit-context (spill2vcd"
+        <> " writes a VCD), with\n  cabal run clash-circuit-context:spill2fst -- "
+        <> shellWord path
     )
+ where
+  haskell = case stripSuffix ".spill" path of
+    Just waveform -> "recoverWaveform defaultOptions " <> show waveform
+    Nothing -> "writeSpill FST Nothing " <> show path <> " " <> show (path <> ".fst")
+  stripSuffix suffix s =
+    reverse <$> List.stripPrefix (reverse suffix) (reverse s)
+
+{- | A path as one word of a POSIX shell: as it is, when it has no character
+the shell treats specially, and else in single quotes.
+-}
+shellWord :: String -> String
+shellWord s
+  | not (null s) && all plain s = s
+  | otherwise = "'" <> concatMap (\c -> if c == '\'' then "'\\''" else [c]) s <> "'"
+ where
+  plain c = isAsciiUpper c || isAsciiLower c || isDigit c || c `elem` ("/._+-:@%,=" :: String)
 
 {- | Finish every trace up to the end of the run, and return that end (ps).
 

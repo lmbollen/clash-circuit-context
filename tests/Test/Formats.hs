@@ -317,6 +317,26 @@ children =
         (() <$ evaluate (P.sum (P.map P.toInteger (sampleN 100 counter))))
     )
   ,
+    ( "formats-stopped-message"
+    , stoppedRun
+        "formats-stopped-message"
+        (() <$ evaluate (P.sum (P.map P.toInteger (sampleN 100 counter))))
+    )
+  ,
+    ( "formats-cli-absolute"
+    , do
+        -- The executables, given relative paths.
+        let name = "formats-cli-absolute"
+        scrub [name]
+        (_, rec) <-
+          withRecording
+            (Just (file name "spill"))
+            (evaluate (P.sum (P.map P.toInteger (sampleN 30 counter))))
+        _ <- spillWith FST "spill2fst" [file name "spill"]
+        _ <- spillWith FST "spill2fst" [file "formats-cli-absolute-missing" "spill"]
+        discardRecording rec
+    )
+  ,
     ( "formats-cancel-storm"
     , do
         -- Many recordings, each cancelled at a different moment: none may
@@ -882,6 +902,32 @@ tests =
       -- the file that the first had mapped, and the first died of SIGBUS.
       testCase "a second recording with the spill file of a running one is refused"
         $ assertChild "formats-one-spill-two-recordings" []
+    , -- The message of a stopped run says what to run to write its
+      -- waveform, in Haskell and from a shell, and both work as printed.
+      testCase "the message of a stopped run gives commands that write its waveform" $ do
+        (code, _, err) <- inChild "formats-stopped-message" []
+        code @?= ExitSuccess
+        spillFile <- makeAbsolute (file "formats-stopped-message" "spill")
+        let after prefix = [P.drop (P.length prefix) l | l <- P.lines err, prefix `isPrefixOf` l]
+        -- From a shell: what follows "--" is the spill file, as one word.
+        after "  cabal run clash-circuit-context:spill2fst -- " @?= [spillFile]
+        code' <- spillWith FST "spill2fst" [spillFile]
+        code' @?= ExitSuccess
+        -- In Haskell: the argument is a Haskell string, the path without .spill.
+        case after "  recoverWaveform defaultOptions " of
+          [arg] -> do
+            recovered <- recoverWaveform defaultOptions (P.read arg)
+            absolute <- makeAbsolute (file "formats-stopped-message" "fst")
+            recovered @?= Right absolute
+          other -> assertFailure ("said: " <> err <> P.show other)
+        existing "formats-stopped-message" ["spill"] >>= (@?= [False])
+    , testCase "spill2fst names its files by their absolute paths" $ do
+        (code, out, err) <- inChild "formats-cli-absolute" []
+        code @?= ExitSuccess
+        written <- makeAbsolute (file "formats-cli-absolute" "fst")
+        missing <- makeAbsolute (file "formats-cli-absolute-missing" "spill")
+        assertBool ("said: " <> out) (("spill2fst: wrote " <> written <> ", ") `isPrefixOf` out)
+        P.take 1 (P.lines err) @?= ["spill2fst: " <> missing <> " does not exist"]
     , testCase "a recording cancelled at any moment leaves no file open"
         $ assertChild "formats-cancel-storm" []
     , testCase "an FST that cannot be written whole is an error, and the spill file stays"

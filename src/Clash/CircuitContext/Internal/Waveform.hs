@@ -128,8 +128,10 @@ data Spill
     holding what it recorded, when it recorded a cycle (a run of
     @writeWaveform@; @withWaveform@ and @simulateWaveform@ record only when
     they run a failed case again). Write its waveform
-    with @recoverWaveform@, or from the command line with the package's
-    executables @spill2fst@ and @spill2vcd@. The values are written twice: to
+    with @recoverWaveform@, or from a shell with the package's
+    executables @spill2fst@ and @spill2vcd@ (in a cabal project that has this
+    package: @cabal run clash-circuit-context:spill2fst -- \<path\>.spill@).
+    A cancelled run says so on stderr, with both commands filled in. The values are written twice: to
     the spill file, and to the waveform.
 
     A recording locks its spill file while it runs. A second recording with

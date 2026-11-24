@@ -486,8 +486,8 @@ opts = defaultOptions {format = VCD, spill = OnDisk}
 ### A run that was stopped
 
 A recording with `spill = OnDisk` that is cancelled (a test timeout, Ctrl-C)
-or killed leaves `<path>.spill`, and a cancelled one says where on
-stderr. A cancelled run that recorded no cycle leaves nothing and says
+or killed leaves `<path>.spill`, and a cancelled one says on stderr where it
+is, and what to run to write its waveform, with the path filled in. A cancelled run that recorded no cycle leaves nothing and says
 nothing, as there is nothing to recover. A cancelled run keeps everything it recorded, and so
 does a killed one (a second Ctrl-C, SIGKILL, the out-of-memory killer, a crash): a value is in the
 file as soon as it is recorded. Only a crash of the machine itself can lose the newest values.
@@ -504,7 +504,15 @@ values recorded up to there. Write its waveform from Haskell:
 recoverWaveform defaultOptions "waveforms/counter"   -- waveforms/counter.fst, deletes the spill
 ```
 
-or from the command line, with the executables this package installs:
+or from a shell, with the package's executables `spill2fst` and `spill2vcd`.
+In a cabal project that has clash-circuit-context as a local package (in its
+`packages:`), run them with `cabal run`:
+
+```sh
+cabal run clash-circuit-context:spill2fst -- waveforms/counter.spill   # waveforms/counter.fst (+ .json)
+```
+
+After `cabal install clash-circuit-context`, they are on the `PATH`:
 
 ```sh
 spill2fst waveforms/counter.spill              # waveforms/counter.fst (+ .json)
@@ -512,7 +520,7 @@ spill2vcd -w 100,200 -o slice.vcd waveforms/counter.spill
 spill2fst --delete waveforms/*.spill
 ```
 
-Both keep the spill file unless given `--delete`, and need nothing of the
+Their messages name each file by its absolute path. Both keep the spill file unless given `--delete`, and need nothing of the
 design: a spill file carries the typed-waveform descriptions too.
 `Clash.CircuitContext.Recording.writeSpill` is the same conversion as a
 function, for a tool of your own.

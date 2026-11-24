@@ -12,6 +12,7 @@ module SpillMain (spillMain, spillWith) where
 
 import Control.Monad (foldM, when)
 import Data.Char (isDigit)
+import Data.List (isInfixOf)
 import GHC.Natural (Natural)
 import System.Console.GetOpt (
   ArgDescr (NoArg, ReqArg),
@@ -20,7 +21,7 @@ import System.Console.GetOpt (
   getOpt,
   usageInfo,
  )
-import System.Directory (removeFile)
+import System.Directory (doesFileExist, makeAbsolute, removeFile)
 import System.Environment (getArgs, getProgName)
 import System.Exit (ExitCode (ExitFailure, ExitSuccess), exitWith)
 import System.FilePath ((-<.>))
@@ -100,11 +101,20 @@ spillWith fmt prog args = do
             pure (if and results then ExitSuccess else ExitFailure 1)
     (_, _, errs) -> failWith (concatMap (takeWhile (/= '\n')) errs)
  where
-  convert opts spill = do
-    let out = maybe (spill -<.> extension) id (optOutput opts)
-    written <- writeSpill fmt (optWindow opts) spill out
+  -- Every message names a file by its absolute path, as the library's do.
+  convert opts spill0 = do
+    spill <- makeAbsolute spill0
+    out <- makeAbsolute (maybe (spill -<.> extension) id (optOutput opts))
+    there <- doesFileExist spill
+    written <-
+      if there
+        then writeSpill fmt (optWindow opts) spill out
+        else pure (Left (spill <> " does not exist"))
     case written of
-      Left err -> hPutStrLn stderr (prog <> ": " <> spill <> ": " <> err) >> pure False
+      Left err
+        -- Most errors name the file already.
+        | spill `isInfixOf` err -> hPutStrLn stderr (prog <> ": " <> err) >> pure False
+        | otherwise -> hPutStrLn stderr (prog <> ": " <> spill <> ": " <> err) >> pure False
       Right (start, stop) -> do
         when (optDelete opts) (removeFile spill)
         putStrLn (prog <> ": wrote " <> out <> ", window " <> show start <> "," <> show stop)
