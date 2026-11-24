@@ -1,4 +1,5 @@
 {-# LANGUAGE BangPatterns #-}
+{-# LANGUAGE MultiWayIf #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 
 {- |
@@ -50,10 +51,11 @@ can still be read ('readSpill'). It is a header, then regions:
   of the first region;
 * region: a header of four words, then bytes. The words are the region's
   size (header included; 0: no region from here on), its owner (0: the
-  metadata; @i + 1@: signal @i@), the number of bytes used after the header,
-  and (a signal's region) the cycle up to which the signal has recorded,
-  exclusive. A signal's bytes are its change records; the metadata's are
-  blocks.
+  metadata; @i + 1@: signal @i@; @2^62 + i + 1@: the late values of signal
+  @i@), the number of bytes used after the header, and (a signal's region)
+  the cycle up to which the signal has recorded, exclusive. A signal's
+  bytes are its change records; the metadata's are blocks; the late values'
+  are late records (see "Late values").
 
 Every number in a header is 64 bits, little endian. Records and blocks are
 stored before the number of bytes used counts them, and the progress after
@@ -73,7 +75,8 @@ and UTF-8 bytes.
 * 5, a signal's description broke after it registered: its id, and the
   error.
 
-A signal's block comes before its records, in a region before its first.
+A signal's block comes before its records and its late values, in a region
+before their first.
 
 Where a region cannot be mapped (a file system without shared writable
 mappings, more mappings than the system allows), and on every platform but
@@ -91,6 +94,33 @@ file: one region) at a time ('readChanges'), so rendering does not hold a
 history in memory either. Each chunk is checked as it is read, as
 'readSpill' checks a region: a chunk that is cut off, or whose records do not
 make sense, is an error, and writing the waveform fails with it.
+
+== Late values
+
+A probe records a value when the design evaluates it, and a design can
+evaluate a cycle's value after a later cycle's: a value kept in a mealy
+machine's state, and used a few cycles on, is evaluated then. A signal's
+records are in cycle order, so such a /late/ value cannot go with them. It
+is a late record instead, in a buffer of the probe's own, kept as the
+signal's records are: in memory, or in regions of the spill file. A late
+record is the cycle itself (a varint), a tag (0 or 1, as above), and the
+value's bytes. Only a cycle that the records have no value for gets one, so
+a design that evaluates no cycle late writes none. A region of late values
+that is a buffer is lost as a signal's is (a killed process, a full disk);
+its cycles then show as not evaluated.
+
+Reading a probe's changes merges its late values into its records: a late
+value fills its cycle where the records have a gap, and is ignored where
+they have a value (the same cycle, evaluated again). So a probe shows @z@
+exactly where its cycle was never evaluated. To merge, the reader sorts the
+probe's late values by cycle, in memory, when it starts to read the probe's
+changes: 24 bytes for each late value, and its record. Their number is the
+number of cycles that the design evaluated late for that probe, not the
+length of the run. The records themselves are still read lazily.
+
+A spill file with late values is a spill file of version 2 still: a reader
+from before late values knows no signal of their regions' owner, and skips
+them. It then shows a late cycle as not evaluated.
 
 == Descriptions
 
@@ -155,8 +185,13 @@ import Control.Exception (
   uninterruptibleMask_,
  )
 import Control.Monad (forM, unless, when)
+import Control.Monad.ST (ST, runST)
+import Data.Array.Base (unsafeAt, unsafeFreeze, unsafeRead, unsafeWrite)
+import Data.Array.ST (STUArray, newArray, newListArray)
+import Data.Array.Unboxed (UArray, bounds)
 import Data.Bits (shiftL, shiftR, xor, (.&.), (.|.))
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
+import Data.Ix (rangeSize)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
@@ -290,6 +325,12 @@ data Sig = Sig
   , sigStart :: !Int
   -- ^ The first cycle that is recorded: the one in progress at 'rStart'.
   , sigState :: MVar SigState
+  , sigLate :: IORef (Maybe Late)
+  {- ^ Its late values ('ProbeKind' only; see "Late values"), once there is
+  one. Read and written only by the thread that holds 'sigState'. Not in
+  'SigState': a field more there made every cycle slower (by 7 to 10%,
+  measured), and a late value is rare.
+  -}
   }
 
 data SigState = SigState
@@ -316,6 +357,20 @@ data SigState = SigState
   {- ^ A region could not be written (a buffer, on a full disk): the
   records from this cycle on are lost.
   -}
+  }
+
+{- | A probe's late values, as records (see "Late values"), in a buffer of
+their own as a signal's records are: in memory, or in regions of the spill
+file.
+-}
+data Late = Late
+  { lateBuf :: !Buf
+  , lateLen :: !Int
+  -- ^ The bytes of records in the buffer.
+  , lateChunks :: ![Chunk]
+  -- ^ The finished chunks, newest first.
+  , lateHash :: !Word64
+  -- ^ A hash of every record, as 'ssHash'.
   }
 
 -- | Where a signal's newest records are.
@@ -539,8 +594,9 @@ newSig rec key kind period width adt = do
     _ -> pure (InRegion Nothing pageSize)
   st <-
     newMVar
-      (SigState 0 Nothing True 0 buf 0 [] 14695981039346656037 Set.empty Nothing Nothing)
-  let sig = Sig i key kind period width desc lut (rStart rec `div` period) st
+      (SigState 0 Nothing True 0 buf 0 [] fnvBasis Set.empty Nothing Nothing)
+  late <- newIORef Nothing
+  let sig = Sig i key kind period width desc lut (rStart rec `div` period) st late
   writeBlock
     rec
     1
@@ -605,9 +661,11 @@ recorderEnd rec = do
   ends <- mapM (\sig -> (* sigPeriod sig) . ssNext <$> readMVar (sigState sig)) sigs
   pure (maximum (0 : ends))
 
-{- | Record the value of one cycle. Cycles must arrive in increasing order: a
-cycle that is already recorded is ignored (a lazy re-evaluation), and a cycle
-after a skipped one starts with a gap. An unchanged value costs a comparison.
+{- | Record the value of one cycle. Cycles arrive in increasing order, but
+for one exception: a probe's value can arrive after a later cycle's, and is
+then kept as a late value (see "Late values"). A cycle that is already
+recorded is ignored (a lazy re-evaluation). A cycle after a skipped one
+starts with a gap. An unchanged value costs a comparison.
 -}
 recordCycle :: Recorder -> Sig -> Int -> Value -> IO ()
 recordCycle rec sig cyc v = Exception.mask $ \restore -> do
@@ -651,7 +709,7 @@ recordCycle rec sig cyc v = Exception.mask $ \restore -> do
     InRegion Nothing _ -> False
   need = 2 * recordBytes (sigWidth sig)
   step restore s
-    | cyc < ssNext s = pure s
+    | cyc < ssNext s = if isLate sig cyc s then recordLate rec sig cyc v restore s else pure s
     -- Before the window only the value is kept, for the first record.
     | cyc < sigStart sig = pure s{ssNext = cyc + 1, ssLast = Just v}
     | otherwise = do
@@ -724,26 +782,146 @@ retireLive rec fd s = case ssBuf s of
         }
   _ -> pure s
 
+{- | Record a late value (see "Late values"): a record with the cycle itself
+where a signal's record has the distance from the one before. Nothing when
+there is no room for it ('lateRoom'). Only the lookup-table entries are run
+with this restore of the mask.
+-}
+{-# NOINLINE recordLate #-}
+recordLate ::
+  Recorder -> Sig -> Int -> Value -> (IO SigState -> IO SigState) -> SigState -> IO SigState
+recordLate rec sig cyc v restore s = do
+  -- The late values are not in the state that a cancellation puts back, so
+  -- room is made here.
+  roomy <- uninterruptibleMask_ (lateRoom rec sig s)
+  late <- readIORef (sigLate sig)
+  case late of
+    Just l | roomy -> do
+      (len, h) <-
+        withRecords (lateBuf l) $ \p ->
+          putRecord p (lateLen l) (lateHash l) ((sigWidth sig + 7) `div` 8) cyc (Just v)
+      s' <- restore (lutEntries rec sig v s)
+      -- The record is stored; now the region's header counts it.
+      let l' = l{lateLen = len, lateHash = h}
+      l'' <- case lateBuf l' of
+        InRegion (Just (Live r _)) _ -> l' <$ setUsed r len
+        InHeap{} | len >= chunkBytes -> lateInMemory l'
+        _ -> pure l'
+      writeIORef (sigLate sig) (Just l'')
+      pure s'
+    _ -> pure s
+
+{- | Whether a probe's cycle came after a later one, and its records do not
+have a value for it already: a late value. (The records have one from the
+newest change on, when that change is a value.)
+-}
+isLate :: Sig -> Int -> SigState -> Bool
+isLate sig cyc s =
+  sigKind sig == ProbeKind
+    && cyc >= sigStart sig
+    && cyc < ssNext s
+    && not (isJust (ssLast s) && cyc >= ssLastChange s)
+
+{- | Make room in the signal's buffer of late values for one record: make
+the buffer, grow it (in memory), or start a new region (in the spill file;
+the full one is retired). 'False' when there is no room: the spill file
+cannot grow, or the recording ended. The state tells memory from a spill
+file.
+-}
+lateRoom :: Recorder -> Sig -> SigState -> IO Bool
+{-# NOINLINE lateRoom #-}
+lateRoom rec sig s =
+  readIORef (sigLate sig) >>= \late -> case late of
+    Nothing -> case ssBuf s of
+      InHeap{} -> do
+        buf <- mallocForeignPtrBytes (64 + need)
+        True <$ writeIORef (sigLate sig) (Just (Late (InHeap buf (64 + need)) 0 [] fnvBasis))
+      InRegion{} -> do
+        writeIORef (sigLate sig) (Just (Late (InRegion Nothing pageSize) 0 [] fnvBasis))
+        lateRoom rec sig s
+    Just l -> case lateBuf l of
+      InHeap buf cap
+        | lateLen l + need <= cap -> pure True
+        | otherwise -> do
+            let cap' = until (>= lateLen l + need) (* 2) cap
+            buf' <- mallocForeignPtrBytes cap'
+            withForeignPtr buf $ \p -> withForeignPtr buf' $ \p' -> copyBytes p' p (lateLen l)
+            True <$ writeIORef (sigLate sig) (Just l{lateBuf = InHeap buf' cap'})
+      InRegion (Just (Live r _)) _ | lateLen l + need <= regionSize r - headerBytes -> pure True
+      InRegion _ next -> do
+        new <- modifyMVar (rStore rec) $ \store -> case store of
+          ToFile sp -> do
+            (sp', r) <- allocate rec sp (lateOwner (sigId sig)) next need
+            pure (ToFile sp', (\r' -> (spFd sp', r')) <$> r)
+          _ -> pure (store, Nothing)
+        case new of
+          Nothing -> pure False
+          Just (fd, r) -> do
+            l' <- retireLate rec fd l
+            writeIORef
+              (sigLate sig)
+              (Just l'{lateBuf = InRegion (Just (Live r 0)) (min regionBytes (2 * regionSize r))})
+            -- Retiring the full region can fail too (a buffer, on a full disk).
+            not . isJust <$> readIORef (rHalt rec)
+ where
+  need = recordBytes (sigWidth sig)
+
+{- | Retire the region of a signal's late values, if it has one: its records
+become a chunk. When the region cannot be written, they are lost, and their
+cycles show as not evaluated.
+-}
+retireLate :: Recorder -> Fd -> Late -> IO Late
+retireLate rec fd l = case lateBuf l of
+  InRegion (Just (Live r _)) next -> do
+    written <- retireRegion rec fd r (lateLen l)
+    pure
+      l
+        { lateBuf = InRegion Nothing next
+        , lateLen = 0
+        , lateChunks =
+            if written && lateLen l > 0
+              then OnFile (regionOffset r + headerBytes) (lateLen l) : lateChunks l
+              else lateChunks l
+        }
+  _ -> pure l
+
+-- | Make the buffer in memory of a signal's late values a chunk.
+lateInMemory :: Late -> IO Late
+lateInMemory l = case lateBuf l of
+  InHeap buf _ | lateLen l > 0 -> do
+    chunk <-
+      withForeignPtr buf (\p -> ByteString.create (lateLen l) (\q -> copyBytes q p (lateLen l)))
+    pure l{lateLen = 0, lateChunks = InMemory chunk : lateChunks l}
+  _ -> pure l
+
 -- | Append one record to the signal's buffer, which has room for it ('room').
 emit :: Sig -> Int -> Maybe Value -> SigState -> IO SigState
 emit sig c mv s = do
-  (o, h) <- withRecords (ssBuf s) $ \p -> do
-    let
-      put (!o, !h) w = pokeByteOff p o w >> pure (o + 1, fnv h w)
-      putVar acc x
-        | x < 0x80 = put acc (fromIntegral x)
-        | otherwise =
-            put acc (fromIntegral (x .&. 0x7f) .|. 0x80) >>= \a -> putVar a (x `shiftR` 7)
-      putNat acc 0 _ = pure acc
-      putNat acc k x = put acc (fromIntegral (x .&. 0xff)) >>= \a -> putNat a (k - 1 :: Int) (x `shiftR` 8)
-    a1 <- putVar (ssLen s, ssHash s) (c - ssLastChange s)
-    case mv of
-      Nothing -> put a1 2
-      Just (0, val) -> put a1 0 >>= \a -> putNat a n val
-      Just (mask, val) -> put a1 1 >>= \a -> putNat a n val >>= \a' -> putNat a' n mask
+  (o, h) <-
+    withRecords (ssBuf s) $ \p ->
+      putRecord p (ssLen s) (ssHash s) ((sigWidth sig + 7) `div` 8) (c - ssLastChange s) mv
   pure s{ssLen = o, ssHash = h, ssLast = mv, ssLastChange = c, ssFresh = False}
+
+{- | Store a record at this offset of a buffer, hashed into this hash: this
+number (a varint), a tag, and a value whose bytes are this many ('Nothing':
+a gap). Returns the offset after it, and the hash.
+-}
+putRecord :: Ptr Word8 -> Int -> Word64 -> Int -> Int -> Maybe Value -> IO (Int, Word64)
+putRecord p o0 h0 n c mv = do
+  a1 <- putVar (o0, h0) c
+  case mv of
+    Nothing -> put a1 2
+    Just (0, val) -> put a1 0 >>= \a -> putNat a n val
+    Just (mask, val) -> put a1 1 >>= \a -> putNat a n val >>= \a' -> putNat a' n mask
  where
-  n = (sigWidth sig + 7) `div` 8
+  put (!o, !h) w = pokeByteOff p o w >> pure (o + 1, fnv h w)
+  putVar acc x
+    | x < 0x80 = put acc (fromIntegral x)
+    | otherwise =
+        put acc (fromIntegral (x .&. 0x7f) .|. 0x80) >>= \a -> putVar a (x `shiftR` 7)
+  putNat acc 0 _ = pure acc
+  putNat acc k x = put acc (fromIntegral (x .&. 0xff)) >>= \a -> putNat a (k - 1 :: Int) (x `shiftR` 8)
+{-# INLINE putRecord #-}
 
 -- | Run an action with the address of a buffer's records.
 withRecords :: Buf -> (Ptr Word8 -> IO a) -> IO a
@@ -790,19 +968,53 @@ chunkInMemory s = case ssBuf s of
     pure s{ssLen = 0, ssChunks = InMemory chunk : ssChunks s}
   _ -> pure s
 
--- | Finish the signal's buffer: a chunk in memory, or its region retired.
-finish :: Recorder -> SigState -> IO SigState
-finish rec s = case ssBuf s of
-  InHeap{} -> chunkInMemory s
-  InRegion Nothing _ -> pure s
-  InRegion (Just _) _ -> do
+{- | Finish the signal's buffers, of its records and of its late values: a
+chunk in memory, or a region retired.
+-}
+finish :: Recorder -> Sig -> SigState -> IO SigState
+finish rec sig s0 = do
+  s <- case ssBuf s0 of
+    InHeap{} -> chunkInMemory s0
+    InRegion Nothing _ -> pure s0
+    InRegion (Just _) _ -> withFd (\fd -> retireLive rec fd s0) s0
+  late <- readIORef (sigLate sig)
+  late' <- forM late $ \l -> case lateBuf l of
+    InHeap{} -> lateInMemory l
+    InRegion Nothing _ -> pure l
+    InRegion (Just _) _ -> withFd (\fd -> retireLate rec fd l) l
+  writeIORef (sigLate sig) late'
+  pure s
+ where
+  withFd k orElse = do
     store <- readMVar (rStore rec)
     case store of
-      ToFile sp -> retireLive rec (spFd sp) s
-      _ -> pure s
+      ToFile sp -> k (spFd sp)
+      _ -> pure orElse
 
 fnv :: Word64 -> Word8 -> Word64
 fnv h b = (h `xor` fromIntegral b) * 1099511628211
+
+-- | The hash of no bytes.
+fnvBasis :: Word64
+fnvBasis = 14695981039346656037
+
+{- | A signal's hash ('signalHash'): the hash of its records, and, when it has
+late values, the hash of those, after it.
+-}
+withLateHash :: Word64 -> Word64 -> Word64
+withLateHash h l
+  | l == fnvBasis = h
+  | otherwise = List.foldl' fnv h [fromIntegral (l `shiftR` (8 * k)) | k <- [0 .. 7 :: Int]]
+
+{- | The owner of a region that holds signal @i@'s late values: @2^62 + i +
+1@. A reader that does not know late values knows no signal of that owner,
+and skips the region.
+-}
+lateOwner :: Int -> Int
+lateOwner i = lateOwners + i + 1
+
+lateOwners :: Int
+lateOwners = 2 ^ (62 :: Int)
 
 --------------------------------------------------------------------------------
 -- A finished recording
@@ -824,6 +1036,8 @@ data RecordedSignal = RecordedSignal
   , signalChunks :: [Chunk]
   -- ^ Its records, oldest first.
   , signalHash :: Word64
+  , signalLate :: [Chunk]
+  -- ^ Its late values' records (see "Late values"), in the order they came.
   }
 
 -- | A finished recording: the signals recorded, and where their records are.
@@ -859,7 +1073,8 @@ closeRecorder rec end = flip finally closeStore $ do
   atomicModifyIORef' (rHalt rec) (\h -> (Just (fromMaybe Closing h), ()))
   sigs <- reverse <$> readIORef (rSignals rec)
   frozen <- forM sigs $ \sig -> modifyMVar (sigState sig) $ \s0 -> do
-    s <- finish rec s0
+    s <- finish rec sig s0
+    late <- readIORef (sigLate sig)
     pure
       ( s
       , RecordedSignal
@@ -870,7 +1085,8 @@ closeRecorder rec end = flip finally closeStore $ do
           , signalDescription = maybe (sigDescription sig) Broken (ssBroken s)
           , signalEnd = maybe (ssNext s) (min (ssNext s)) (ssLost s)
           , signalChunks = reverse (ssChunks s)
-          , signalHash = ssHash s
+          , signalHash = withLateHash (ssHash s) (maybe fnvBasis lateHash late)
+          , signalLate = maybe [] (reverse . lateChunks) late
           }
       )
   halted <- readIORef (rHalt rec)
@@ -911,23 +1127,32 @@ region: a chunk that the spill file does not hold whole, or whose records do
 not make sense ('lastRecord'), throws an 'IOError' when the list reaches it.
 -}
 readChanges :: Reader -> RecordedSignal -> IO [Change]
-readChanges (Reader mh) sig = go (-1) (signalChunks sig)
+readChanges (Reader mh) sig = do
+  inOrder <- go (-1) (signalChunks sig)
+  case signalLate sig of
+    [] -> pure inOrder
+    chunks -> unsafeInterleaveIO $ do
+      late <- ByteString.concat <$> mapM bytesOf chunks
+      case lateValues n late of
+        Nothing -> unreadable "have late values that do not make sense"
+        Just values -> pure (mergeLate (signalEnd sig) values inOrder)
  where
   n = (signalWidth sig + 7) `div` 8
   go _ [] = pure []
   go prev (chunk : rest) = unsafeInterleaveIO $ do
-    bs <- case (chunk, mh) of
-      (InMemory b, _) -> pure b
-      (OnFile off len, Just h) -> do
-        hSeek h AbsoluteSeek (fromIntegral off)
-        b <- ByteString.hGet h len
-        when (ByteString.length b /= len) $
-          unreadable "are cut off: the spill file ends before them"
-        pure b
-      (OnFile _ _, Nothing) -> unreadable "are in a spill file, but the recording has none"
+    bs <- bytesOf chunk
     case lastRecord n prev bs of
       Nothing -> unreadable "do not make sense"
       Just newest -> (decode (max 0 prev) bs <>) <$> go newest rest
+  bytesOf chunk = case (chunk, mh) of
+    (InMemory b, _) -> pure b
+    (OnFile off len, Just h) -> do
+      hSeek h AbsoluteSeek (fromIntegral off)
+      b <- ByteString.hGet h len
+      when (ByteString.length b /= len) $
+        unreadable "are cut off: the spill file ends before them"
+      pure b
+    (OnFile _ _, Nothing) -> unreadable "are in a spill file, but the recording has none"
   unreadable why =
     ioError
       (userError ("clash-circuit-context: the records of " <> signalKey sig <> " " <> why))
@@ -947,7 +1172,148 @@ readChanges (Reader mh) sig = go (-1) (signalChunks sig)
                in (Just (fromBytes mask, fromBytes val), r2)
          in
           Change cyc mv : decode cyc b3
-  fromBytes = ByteString.foldr' (\w acc -> acc `shiftL` 8 .|. fromIntegral w) 0
+
+-- | A little-endian number.
+fromBytes :: ByteString.ByteString -> Natural
+fromBytes = ByteString.foldr' (\w acc -> acc `shiftL` 8 .|. fromIntegral w) 0
+
+{- | The number of records of late values in these bytes, of a signal whose
+values take this many bytes: 'Nothing' when they do not make sense. A record
+is a cycle (a varint), a tag (0: a defined value; 1: a value with undefined
+bits), and the value's bytes (and the mask's).
+-}
+lateCount :: Int -> ByteString.ByteString -> Maybe Int
+lateCount n = go 0
+ where
+  go !k b
+    | ByteString.null b = Just k
+    | otherwise = case runParser ((,) <$> varintP <*> byte) b of
+        Just ((cyc, tag), r)
+          | cyc >= 0
+          , tag <= 1
+          , ByteString.length r >= (fromIntegral tag + 1) * n ->
+              go (k + 1) (ByteString.drop ((fromIntegral tag + 1) * n) r)
+        _ -> Nothing
+
+{- | The late values in these records ('lateCount'), by cycle, one per cycle:
+of those for one cycle, the first. 'Nothing' when the records do not make
+sense.
+
+The records are sorted in memory, as an index of 24 bytes each (cycle,
+offset, and order), and the values are decoded as the list is consumed.
+Late values come nearly always in increasing order, which is not sorted
+again.
+-}
+lateValues :: Int -> ByteString.ByteString -> Maybe [(Int, Value)]
+lateValues n bs = do
+  count <- lateCount n bs
+  let
+    (cycles, offsets, order) = runST (index count)
+    from !j !prev
+      | j >= count = []
+      | otherwise =
+          let i = order `unsafeAt` j
+              cyc = cycles `unsafeAt` i
+           in if cyc == prev
+                then from (j + 1) prev
+                else (cyc, valueAt (offsets `unsafeAt` i)) : from (j + 1) cyc
+  pure (from 0 (-1))
+ where
+  -- Each record's cycle and offset, and the order of the records by cycle.
+  index :: forall s. Int -> ST s (UArray Int Int, UArray Int Int, UArray Int Int)
+  index count = do
+    cs <- newArray (0, count - 1) 0 :: ST s (STUArray s Int Int)
+    os <- newArray (0, count - 1) 0 :: ST s (STUArray s Int Int)
+    let
+      fill :: Int -> Int -> ST s ()
+      fill !k !o
+        | k >= count = pure ()
+        | otherwise = do
+            let (cyc, r) = unvarint (ByteString.unsafeDrop o bs)
+                at = ByteString.length bs - ByteString.length r
+                tag = fromIntegral (ByteString.unsafeIndex bs at)
+            unsafeWrite cs k cyc
+            unsafeWrite os k at
+            fill (k + 1) (at + 1 + (tag + 1) * n)
+    fill 0 0
+    cs' <- unsafeFreeze cs
+    os' <- unsafeFreeze os
+    ix <- sortByCycle cs'
+    pure (cs', os', ix)
+  valueAt at =
+    let val = fromBytes (ByteString.take n (ByteString.drop (at + 1) bs))
+     in case ByteString.index bs at of
+          0 -> (0, val)
+          _ -> (fromBytes (ByteString.take n (ByteString.drop (at + 1 + n) bs)), val)
+
+{- | The indices of these cycles, in increasing order of cycle, and of index
+for one cycle: a merge sort, bottom up. Cycles that are in order already are
+not sorted.
+-}
+sortByCycle :: forall s. UArray Int Int -> ST s (UArray Int Int)
+sortByCycle cycles = do
+  let count = rangeSize (bounds cycles)
+  a <- newListArray (0, count - 1) [0 .. count - 1] :: ST s (STUArray s Int Int)
+  if and [cycles `unsafeAt` (k - 1) <= cycles `unsafeAt` k | k <- [1 .. count - 1]]
+    then unsafeFreeze a
+    else do
+      b <- newArray (0, count - 1) 0 :: ST s (STUArray s Int Int)
+      let
+        before i j =
+          let ci = cycles `unsafeAt` i; cj = cycles `unsafeAt` j in ci < cj || (ci == cj && i < j)
+        -- Merge the runs [lo, mid) and [mid, hi) of src into dst.
+        merge :: STUArray s Int Int -> STUArray s Int Int -> Int -> Int -> Int -> ST s ()
+        merge src dst lo mid hi = loop lo mid lo
+         where
+          loop :: Int -> Int -> Int -> ST s ()
+          loop !i !j !k
+            | k >= hi = pure ()
+            | j >= hi = unsafeRead src i >>= unsafeWrite dst k >> loop (i + 1) j (k + 1)
+            | i >= mid = unsafeRead src j >>= unsafeWrite dst k >> loop i (j + 1) (k + 1)
+            | otherwise = do
+                x <- unsafeRead src i
+                y <- unsafeRead src j
+                if before y x
+                  then unsafeWrite dst k y >> loop i (j + 1) (k + 1)
+                  else unsafeWrite dst k x >> loop (i + 1) j (k + 1)
+        pass :: Int -> STUArray s Int Int -> STUArray s Int Int -> ST s (UArray Int Int)
+        pass !width src dst
+          | width >= count = unsafeFreeze src
+          | otherwise = do
+              mapM_
+                (\lo -> merge src dst lo (min count (lo + width)) (min count (lo + 2 * width)))
+                [0, 2 * width .. count - 1]
+              pass (2 * width) dst src
+      pass 1 a b
+
+{- | Fill the gaps of a signal's changes, which end at this cycle, with its
+late values (by cycle, one per cycle): a late value counts where its cycle
+has no value (it was not evaluated in order), and not where it has one, or at
+or after the end. Lazy in the changes.
+-}
+mergeLate :: Int -> [(Int, Value)] -> [Change] -> [Change]
+mergeLate end = go Nothing
+ where
+  -- @cur@: the value of the changes, from the last one before these on.
+  go _ [] cs = cs
+  go cur ls@((p, v) : ls') cs
+    | p >= end = cs
+    | otherwise = case cs of
+        Change c mv : cs'
+          | c < p -> Change c mv : go mv ls cs'
+          | c == p, Nothing <- mv -> fill p v ls' cs'
+          | c == p -> Change c mv : go mv ls' cs'
+        _
+          | isJust cur -> go cur ls' cs
+          | otherwise -> fill p v ls' cs
+  -- The late value shows at its cycle; the cycle after it is in the gap
+  -- again, unless a change or a late value is at it.
+  fill p v ls cs =
+    Change p (Just v) : case (ls, cs) of
+      _ | p + 1 >= end -> go Nothing ls cs
+      (_, Change c _ : _) | c == p + 1 -> go Nothing ls cs
+      ((q, _) : _, _) | q == p + 1 -> go Nothing ls cs
+      _ -> Change (p + 1) Nothing : go Nothing ls cs
 
 -- | A varint, and the bytes after it.
 unvarint :: ByteString.ByteString -> (Int, ByteString.ByteString)
@@ -975,14 +1341,15 @@ readSpill path = bracket (openBinaryFile path ReadMode) hClose $ \h -> do
       | m /= magic -> pure (Left (path <> " is not a spill file"))
       | version /= spillVersion -> pure (Left (path <> " is a spill file of another version"))
       | Just ((start, first), _) <- runParser ((,) <$> (takeBytes 7 *> word64P) <*> word64P) rest ->
-          regions h size start first Map.empty Map.empty [] Nothing
+          regions h size start first Map.empty Map.empty Map.empty [] Nothing
     _ -> pure (Left (path <> " is not a spill file"))
  where
   -- The signals are kept evaluated as each region is read: a lazy update
   -- would keep the region's bytes, and with them the whole file, in memory.
-  -- @lasts@: the cycle of each signal's newest record so far.
-  regions h size start !off !sigs !lasts luts end
-    | off < 0 || off + headerBytes > size = done start sigs luts end
+  -- @lasts@: the cycle of each signal's newest record so far; @lateHs@: the
+  -- hash of each probe's late values so far.
+  regions h size start !off !sigs !lasts !lateHs luts end
+    | off < 0 || off + headerBytes > size = done start sigs lateHs luts end
     | otherwise = do
         hSeek h AbsoluteSeek (fromIntegral off)
         hdr <- ByteString.hGet h headerBytes
@@ -994,27 +1361,43 @@ readSpill path = bracket (openBinaryFile path ReadMode) hClose $ \h -> do
             , used <= size - off - headerBytes -> do
                 payload <- ByteString.hGet h used
                 let continue = regions h size start (off + rsize)
-                if owner == 0
-                  then case runParser (metadata sigs luts end) payload of
-                    Just ((sigs', luts', end'), rest)
-                      | ByteString.null rest -> continue sigs' lasts luts' end'
-                    _ -> done start sigs luts end
-                  else case Map.lookup (owner - 1) sigs of
-                    Nothing -> continue sigs lasts luts end
-                    Just s -> do
-                      let i = owner - 1
-                          prev = Map.findWithDefault (-1) i lasts
-                      case lastRecord ((signalWidth s + 7) `div` 8) prev payload of
-                        Nothing -> done start sigs luts end
-                        Just newest -> do
-                          let !chunk = OnFile (off + headerBytes) used
-                              !hash = ByteString.foldl' fnv (signalHash s) payload
-                              !reached = maximum [signalEnd s, progress, if used > 0 then newest + 1 else 0]
-                              !s' = s{signalEnd = reached, signalChunks = chunk : signalChunks s, signalHash = hash}
-                          continue (Map.insert i s' sigs) (Map.insert i newest lasts) luts end
-          _ -> done start sigs luts end
-  done start sigs luts end = do
-    let signals = [s{signalChunks = reverse (signalChunks s)} | s <- Map.elems sigs]
+                    chunk = OnFile (off + headerBytes) used
+                if
+                  | owner == 0 -> case runParser (metadata sigs luts end) payload of
+                      Just ((sigs', luts', end'), rest)
+                        | ByteString.null rest -> continue sigs' lasts lateHs luts' end'
+                      _ -> done start sigs lateHs luts end
+                  | owner > lateOwners -> case Map.lookup (owner - lateOwners - 1) sigs of
+                      Nothing -> continue sigs lasts lateHs luts end
+                      Just s -> case lateCount ((signalWidth s + 7) `div` 8) payload of
+                        Nothing -> done start sigs lateHs luts end
+                        Just _ -> do
+                          let i = owner - lateOwners - 1
+                              !hash = ByteString.foldl' fnv (Map.findWithDefault fnvBasis i lateHs) payload
+                              !s' = s{signalLate = [chunk | used > 0] <> signalLate s}
+                          continue (Map.insert i s' sigs) lasts (Map.insert i hash lateHs) luts end
+                  | otherwise -> case Map.lookup (owner - 1) sigs of
+                      Nothing -> continue sigs lasts lateHs luts end
+                      Just s -> do
+                        let i = owner - 1
+                            prev = Map.findWithDefault (-1) i lasts
+                        case lastRecord ((signalWidth s + 7) `div` 8) prev payload of
+                          Nothing -> done start sigs lateHs luts end
+                          Just newest -> do
+                            let !hash = ByteString.foldl' fnv (signalHash s) payload
+                                !reached = maximum [signalEnd s, progress, if used > 0 then newest + 1 else 0]
+                                !s' = s{signalEnd = reached, signalChunks = chunk : signalChunks s, signalHash = hash}
+                            continue (Map.insert i s' sigs) (Map.insert i newest lasts) lateHs luts end
+          _ -> done start sigs lateHs luts end
+  done start sigs lateHs luts end = do
+    let signals =
+          [ s
+              { signalChunks = reverse (signalChunks s)
+              , signalLate = reverse (signalLate s)
+              , signalHash = withLateHash (signalHash s) (Map.findWithDefault fnvBasis i lateHs)
+              }
+          | (i, s) <- Map.toList sigs
+          ]
         reached = maximum (0 : [signalEnd s * signalPeriod s | s <- signals])
     pure (Right (Recording (Just path) signals start (fromMaybe reached end) (reverse luts)))
 
@@ -1090,7 +1473,7 @@ block 1 = do
       1 -> Described <$> stringP <*> bytesP
       2 -> Broken <$> stringP
       _ -> pure Undescribed
-  pure (Declared i (RecordedSignal key kind period width desc 0 [] 14695981039346656037))
+  pure (Declared i (RecordedSignal key kind period width desc 0 [] fnvBasis []))
 block 3 = pure Lut
 block 4 = Ended <$> varintP
 block 5 = BrokeDown <$> varintP <*> stringP

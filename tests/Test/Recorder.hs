@@ -32,6 +32,7 @@ import Control.Concurrent.MVar (
   takeMVar,
  )
 import Control.Exception (evaluate, finally, throwIO)
+import Control.Monad (forM_)
 import Control.Monad.IO.Class (liftIO)
 import Data.IORef (newIORef)
 import qualified Data.List as List
@@ -42,6 +43,9 @@ import System.Directory (createDirectoryIfMissing, removePathForcibly)
 import System.FilePath ((-<.>))
 import System.IO (hClose, openTempFile)
 import System.IO.Unsafe (unsafePerformIO)
+
+import Clash.CircuitContext (HasProbe, mealyProbed)
+import Clash.CircuitContext.Recording (recoverRecording)
 
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.Hedgehog (testProperty)
@@ -426,6 +430,136 @@ waitingName gate n i = unsafePerformIO (arrive *> wait (20 :: Int)) `P.seq` "p"
     if open P.|| P.length is P.>= n then pure () else threadDelay 1000 *> wait (t P.- 1)
 {-# NOINLINE waitingName #-}
 
+{- | A probed value that the design evaluates after a later cycle's is shown
+at its own cycle, and @z@ is left exactly where a cycle was never evaluated:
+from a recording in memory, from one with a spill file, and from that spill
+file read back.
+
+A sample-and-hold ('holdLate'): every fourth cycle keeps its input @x@ in the
+state, and puts it out three cycles later, after the two @x@s in between were
+put out (and so evaluated). The state is a tuple, which a register keeps
+evaluated only to its constructor, so the kept @x@ is evaluated when it is
+put out. Before late values were kept, its cycle showed @z@: "not
+evaluated", which was false. And 'swapLate', whose late values come out of
+order.
+-}
+prop_lateProbeIsShown :: Property
+prop_lateProbeIsShown = property $ do
+  xs <- forAll genStim
+  lateProbeIsShown xs
+
+{- | 'prop_lateProbeIsShown' on a run long enough that its late values take
+several chunks in memory, and several regions of a spill file.
+-}
+prop_manyLateProbesAreShown :: Property
+prop_manyLateProbesAreShown =
+  Hedgehog.withTests 1
+    . property
+    $ lateProbeIsShown (P.take 40000 (P.cycle [0 .. 250]))
+
+lateProbeIsShown :: [Unsigned 8] -> PropertyT IO ()
+lateProbeIsShown xs = do
+  annotate "holdLate"
+  -- Put out at k (c 1, 2 modulo 4), or kept and put out at k + 3 (c 0).
+  lateProbeShows xs holdLate $ \c k ->
+    c `P.mod` 4 `P.elem` [1, 2] P.|| (c `P.mod` 4 P.== 0 P.&& k P.+ 3 P.< n)
+  annotate "swapLate"
+  -- Put out at k (c 2, 5, 6, 7), or kept and put out at k + 4 (c 0) or at
+  -- k + 2 (c 1).
+  lateProbeShows xs swapLate $ \c k ->
+    c `P.elem` [2, 5, 6, 7]
+      P.|| (c P.== 0 P.&& k P.+ 4 P.< n)
+      P.|| (c P.== 1 P.&& k P.+ 2 P.< n)
+ where
+  n = P.length xs
+
+{- | The probe @x@ of a design shows where it was evaluated, which a function
+of the design's counter at a cycle and the cycle says.
+-}
+lateProbeShows ::
+  [Unsigned 8] ->
+  ((HasCircuitContext) => Signal System (Unsigned 8) -> Signal System (Unsigned 8)) ->
+  (Int -> Int -> Bool) ->
+  PropertyT IO ()
+lateProbeShows xs design evaluatedAt = do
+  let
+    n = P.length xs
+    -- The state register holds its reset value at cycles 0 and 1, so the x
+    -- of cycle 0 is kept while it is in reset, and lost.
+    evaluated k = k P.> 0 P.&& evaluatedAt ((k P.- 1) `P.mod` 8) k
+    want = [if evaluated k then Just (toInteger x) else Nothing | (k, x) <- P.zip [0 ..] xs]
+  liftIO (createDirectoryIfMissing True dir)
+  (path, h) <- liftIO (openTempFile dir "late.vcd")
+  liftIO (hClose h)
+  let spill = path -<.> "spill"
+      record where_ = liftIO $ do
+        (r, rec) <- withRecordingFrom 0 where_ $ do
+          -- The output is traced so that the recording ends at the last cycle.
+          let ys = sampleN n (traceSignalC "out" (design (stim @System xs)))
+          evaluate (ys `deepseqX` ys)
+        _ <- P.either throwIO pure r
+        pure rec
+      shown rec = do
+        written <- liftIO (writeVCD (0, P.fromIntegral n) rec path)
+        written === Right ()
+        vcd <- liftIO (P.readFile path)
+        -- A probe that never fired is not in the VCD at all.
+        _ <- liftIO (evaluate (P.length vcd))
+        pure (maybe (P.replicate n Nothing) asInts (Map.lookup "x" (decodeVCD n vcd)))
+  inMemory <- record Nothing
+  onDisk <- record (Just spill)
+  recovered <- liftIO (recoverRecording spill)
+  readBack <- P.either (\e -> annotate e *> failure) pure recovered
+  forM_ [("in memory", inMemory), ("with a spill file", onDisk), ("read back", readBack)]
+    $ \(how, rec) -> do
+      annotate how
+      wave <- shown rec
+      wave === want
+  liftIO (P.mapM_ removePathForcibly [path, path -<.> "json", spill])
+ where
+  dir = "waveforms/test-recorder"
+
+{- | The sample-and-hold of 'prop_lateProbeIsShown'. Its counter counts to
+8, as 'swapLate''s, and the hold repeats every 4.
+-}
+holdLate ::
+  (HasCircuitContext) => Signal System (Unsigned 8) -> Signal System (Unsigned 8)
+holdLate = mealyProbed clockGen resetGen enableGen step (0, 0)
+ where
+  step ::
+    (HasProbe) =>
+    (Unsigned 8, Unsigned 3) -> Unsigned 8 -> ((Unsigned 8, Unsigned 3), Unsigned 8)
+  step (h, c) i = ((if c `P.mod` 4 P.== 0 then x else h, c + 1), o)
+   where
+    x = probe "x" i
+    o = case c `P.mod` 4 of
+      0 -> 0
+      3 -> h
+      _ -> x
+
+{- | Every eighth cycle keeps its @x@, and the next one too; it puts out the
+second two cycles later, and the first a cycle after that. So the late
+value of the earlier cycle comes after the later one's.
+-}
+swapLate ::
+  (HasCircuitContext) => Signal System (Unsigned 8) -> Signal System (Unsigned 8)
+swapLate = mealyProbed clockGen resetGen enableGen step (0, 0, 0)
+ where
+  step ::
+    (HasProbe) =>
+    (Unsigned 8, Unsigned 8, Unsigned 3) ->
+    Unsigned 8 ->
+    ((Unsigned 8, Unsigned 8, Unsigned 3), Unsigned 8)
+  step (h0, h1, c) i = ((if c P.== 0 then x else h0, if c P.== 1 then x else h1, c + 1), o)
+   where
+    x = probe "x" i
+    o = case c of
+      0 -> 0
+      1 -> 0
+      3 -> h1
+      4 -> h0
+      _ -> x
+
 tests :: TestTree
 tests =
   testGroup
@@ -449,4 +583,10 @@ tests =
     , testProperty
         "the first firings of a probe on several threads register one signal"
         prop_probeFirstFiringsRace
+    , testProperty
+        "a probed value evaluated after a later cycle is shown at its cycle"
+        prop_lateProbeIsShown
+    , testProperty
+        "many probed values evaluated late are shown at their cycles"
+        prop_manyLateProbesAreShown
     ]

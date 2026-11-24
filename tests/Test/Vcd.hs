@@ -57,10 +57,15 @@ decodeWith n vcd vars = Map.fromList [(nm, waveFor code) | (nm, code) <- vars]
       | [bits, code] <- words l -> (t, code, drop 1 bits) : go t rest
     _ -> go t rest
   go _ [] = []
-  waveFor code =
-    [ last ("z" : [bits | (t, c, bits) <- events, c == code, t <= cyc])
-    | cyc <- [0 .. n - 1]
-    ]
+  -- The value at each cycle: of the change lines at or before it, the last.
+  -- The timestamps of a VCD increase, so one pass over them does.
+  waveFor code = sweep 0 "z" [(t, bits) | (t, c, bits) <- events, c == code]
+  sweep cyc cur evs
+    | cyc >= n = []
+    | otherwise =
+        let (now, later) = span ((<= cyc) . fst) evs
+            cur' = last (cur : map snd now)
+         in cur' : sweep (cyc + 1) cur' later
 
 -- | 'Nothing' for a value with undefined (@x@) or never-sampled (@z@) bits.
 bitsToInteger :: String -> Maybe Integer

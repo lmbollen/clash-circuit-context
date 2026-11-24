@@ -98,8 +98,13 @@ library
   -- has `maybeUnpack` (clash-prelude master does, its releases do not), so
   -- one hand-written instance compiles against both. clash-prelude depends
   -- on it already; the range is GHC 9.6's to 9.12's.
+  --
+  -- On `array`: Internal.Recorder sorts a probe's late values in unboxed
+  -- arrays when it reads them. It comes with GHC; the range is GHC 9.6's to
+  -- 9.12's.
   build-depends:
     aeson >=2.1 && <2.3,
+    array >=0.5.4 && <0.6,
     base >=4.18 && <4.22,
     bytestring >=0.11 && <0.13,
     clash-prelude >=1.9 && <1.12,

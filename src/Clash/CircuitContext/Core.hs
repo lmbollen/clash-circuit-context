@@ -34,9 +34,10 @@ Everything hangs off one implicit parameter @?circuitContext@:
   function. The step function has no cycle identity of its own, so the
   wrapper derives one from a companion counter register and binds a
   per-application @?probe@ context; writes are keyed by (name, cycle), so a
-  cycle evaluated twice is recorded once. The recorder keeps cycles in
-  increasing order: a cycle that the simulation evaluates after a later one
-  is not recorded, and an expression that is never forced records nothing.
+  cycle evaluated twice is recorded once. A cycle that the simulation
+  evaluates after a later one (a value kept in the state and used later) is
+  recorded too, at its own cycle; an expression that is never forced
+  records nothing.
 * 'traceSignalSW' and 'probeSW' are 'traceSignalC' and 'probe' plus the
   payload type's @clash-shockwaves@ descriptor. They are separate functions,
   not extra constraints on the plain ones, because recording and describing
@@ -879,11 +880,10 @@ noProbe = ProbeCtx noCircuitContext 0 [] 0 (unsafePerformIO (newIORef Map.empty)
 > f acc i = let acc' = probe "acc" (acc + i) in (acc', acc)
 
 Returns its argument. The write happens when the expression is forced, keyed
-by (qualified name, cycle), so a cycle evaluated twice is recorded once. The
-recorder keeps cycles in increasing order: a cycle evaluated after a later
-one is not recorded and shows as @z@, as does a cycle whose expression is
-never forced. An X value is stored as an all-undefined (masked) entry rather
-than an exception.
+by (qualified name, cycle), so a cycle evaluated twice is recorded once. A
+cycle evaluated after a later one is recorded at its own cycle; a cycle
+whose expression is never forced shows as @z@. An X value is stored as an
+all-undefined (masked) entry rather than an exception.
 
 Transparent to Clash: during HDL generation this is exactly @a@, so a probed
 step function synthesizes as if the 'probe' calls were not there.
@@ -992,9 +992,9 @@ simProbe adt nm a = case (ccRecorder ctx, ccOrdinals ctx) of
                   (Map.insert nm rsig c, ())
                 pure rsig
       -- Force the packed value NOW, releasing the design value 'a'. A cycle
-      -- that fires after a later one is not recorded (see 'recordCycle'),
-      -- and a cycle the probed expression never reaches leaves a gap; both
-      -- render @z@.
+      -- that fires after a later one is kept as a late value (see
+      -- 'recordCycle'); a cycle the probed expression never reaches leaves a
+      -- gap, which renders @z@.
       let !v = val
       recordCycle (liveRecorder live) rsig cyc v
       pure a

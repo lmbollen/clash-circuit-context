@@ -633,8 +633,9 @@ you want explicit control. From `Clash.CircuitContext`: `component`,
   at registration time via its `StableName`.
 * Probing inside step functions works by pairing the mealy machine with a
   companion cycle counter; writes are keyed by `(name, cycle)`, so a cycle
-  evaluated twice is recorded once. The recorder keeps cycles in increasing
-  order: a cycle evaluated after a later one is not recorded, and an
+  evaluated twice is recorded once. A cycle evaluated after a later one (a
+  value kept in the state and used a few cycles on) is recorded at its own
+  cycle, so a probe shows `z` only where its cycle was never evaluated. An
   expression that is never forced records nothing.
 * The plugin is a renamer-stage rewrite (names are resolved, injection is
   by exact `Name` — user code needs no extra imports) plus a
