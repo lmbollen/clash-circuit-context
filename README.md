@@ -452,12 +452,13 @@ opts = defaultOptions {format = VCD, spill = OnDisk}
     memory as a short one (on a CPU design, 237,000 recorded cycles took a
     maximum residency of 58 MB), and the values are written to disk twice. A
     recording that is stopped leaves the spill file, holding what it recorded
-    (see below). The file is mapped into memory a region per signal, and its
-    disk space is reserved a region ahead: up to 16 KiB per signal, so a
+    (see below). On Linux, the file is mapped into memory a region per signal,
+    and its disk space is reserved a region ahead: up to 16 KiB per signal, so a
     design of 10,000 signals reserves up to 160 MB more than it has written.
     A full disk stops the recording, not the run: a message says so, and the
     waveform ends where the recording stopped. Where the file cannot be mapped
-    (some network or FUSE file systems, Windows), it is written a region at a
+    (some network or FUSE file systems), and on every platform but Linux
+    (macOS, Windows), it is written a region at a
     time instead, and says so; a killed run then loses what was not written
     yet (see below).
 

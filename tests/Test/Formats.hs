@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE ImplicitParams #-}
@@ -171,6 +172,21 @@ pageOf :: ByteString.ByteString -> Int
 pageOf contents = case regionsOf contents of
   (off, _, _) : _ -> off
   [] -> 0
+
+{- | Whether a spill file is mapped into memory here: on Linux only. Where
+it is not, a killed run keeps only what was written ('onLinux' skips what
+needs more).
+-}
+mapped :: Bool
+#if defined(linux_HOST_OS)
+mapped = True
+#else
+mapped = False
+#endif
+
+-- | Run a test of a mapped spill file, where a spill file is mapped.
+onLinux :: IO () -> IO ()
+onLinux test = when mapped test
 
 -- | The path of a waveform name: in @waveforms@, as every test's.
 pathOf :: String -> FilePath
@@ -645,7 +661,7 @@ tests =
         assertBool "refused" (code'' P./= ExitSuccess)
     , -- A killed process writes nothing more: what it leaves must have every
       -- signal, up to the cycle it got to, also one that never changes.
-      testCase "a killed run's spill file has every signal, up to the cycle it got to" $ do
+      testCase "a killed run's spill file has every signal, up to the cycle it got to" . onLinux $ do
         let name = "formats-killed"
         scrub [name]
         (out, process) <- startChild "formats-killed"
@@ -725,7 +741,7 @@ tests =
         $ assertChild "formats-unmapped" []
     , -- A full region is unmapped: a signal holds one mapping, however long
       -- it records, and a closed recording none.
-      testCase "a spill file maps one region per signal, and none once closed" $ do
+      testCase "a spill file maps one region per signal, and none once closed" . onLinux $ do
         let name = "formats-mappings"
         scrub [name]
         createDirectoryIfMissing True "waveforms"

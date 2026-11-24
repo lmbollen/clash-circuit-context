@@ -123,14 +123,17 @@ library
   -- writer in Clash.CircuitContext.Internal.Fst. It needs zlib. One local
   -- change, marked clash-circuit-context in fstapi.c: fstWriterClose returns
   -- whether every write succeeded, so that a cut-off FST is an error.
-  -- The system calls of the spill file (open, posix_fallocate, mmap, munmap,
-  -- pwrite, close), for Clash.CircuitContext.Internal.SpillFile. On Windows
-  -- it maps nothing: every region of a spill file is then written whole.
   c-sources:
-    cbits/ccc_spill.c
     cbits/libfst/fastlz.c
     cbits/libfst/fstapi.c
     cbits/libfst/lz4.c
+
+  -- The system calls of the spill file (open, posix_fallocate, mmap, munmap,
+  -- pwrite, close), for Clash.CircuitContext.Internal.SpillFile. A spill
+  -- file is mapped on Linux only; elsewhere it is written through a Handle,
+  -- a region at a time.
+  if os(linux)
+    c-sources: cbits/ccc_spill.c
 
   include-dirs: cbits/libfst
   cc-options: -O2 -DHAVE_FSEEKO -D_FILE_OFFSET_BITS=64

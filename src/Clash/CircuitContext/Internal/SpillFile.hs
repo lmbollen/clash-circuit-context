@@ -1,24 +1,27 @@
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE ScopedTypeVariables #-}
+
 {- |
 Copyright  :  (C) 2026, QBayLogic B.V.
 License    :  BSD2 (see the file LICENSE)
 Maintainer :  Lucas Bollen <lucas@qbaylogic.com>
 
 The regions of a spill file (the format is in
-"Clash.CircuitContext.Internal.Recorder"). A region's disk space is reserved
-first, then the region is mapped into memory, shared with the file, so that
-a store into it is in the file at once (in the kernel's page cache), also
-when the process is killed right after. Mapped memory is outside the GHC
-heap.
+"Clash.CircuitContext.Internal.Recorder"). On Linux, a region's disk space
+is reserved first, then the region is mapped into memory, shared with the
+file, so that a store into it is in the file at once (in the kernel's page
+cache), also when the process is killed right after. Mapped memory is
+outside the GHC heap. The system calls are in @cbits/ccc_spill.c@.
 
 Where a region cannot be mapped (a file system without shared writable
-mappings, more mappings than the system allows, Windows), it is a buffer in
-memory instead, written to the file by 'persistBlock' and 'retire'.
-
-The system calls are in @cbits/ccc_spill.c@. Each returns 0 or an error
-number.
+mappings, more mappings than the system allows), and on every platform but
+Linux, it is a buffer in memory instead, written to the file by
+'persistBlock' and 'retire'. Elsewhere than on Linux, the file is a
+'System.IO.Handle', and nothing is mapped or reserved.
 -}
 module Clash.CircuitContext.Internal.SpillFile (
   Fd,
+  Error,
   Region (..),
   mapping,
   headerBytes,
@@ -36,17 +39,22 @@ module Clash.CircuitContext.Internal.SpillFile (
 ) where
 
 import Data.IORef (IORef, newIORef)
-import Data.Int (Int64)
 import Data.Word (Word64, Word8)
-import Foreign.C.Error (Errno (Errno), errnoToIOError)
-import Foreign.C.String (CString, withCString)
-import Foreign.C.Types (CInt (..))
-import Foreign.Marshal.Alloc (alloca, callocBytes, free)
-import Foreign.Ptr (Ptr, nullPtr, plusPtr)
-import Foreign.Storable (peek, pokeByteOff)
+import Foreign.Marshal.Alloc (callocBytes, free)
+import Foreign.Ptr (Ptr, plusPtr)
+import Foreign.Storable (pokeByteOff)
 import System.IO.Unsafe (unsafePerformIO)
 
 import qualified Control.Exception as Exception
+
+#if defined(linux_HOST_OS)
+import Data.Int (Int64)
+import Foreign.C.Error (Errno (Errno), errnoToIOError)
+import Foreign.C.String (CString, withCString)
+import Foreign.C.Types (CInt (..))
+import Foreign.Marshal.Alloc (alloca)
+import Foreign.Ptr (nullPtr)
+import Foreign.Storable (peek)
 
 foreign import ccall safe "ccc_spill_open" c_open :: CString -> IO CInt
 foreign import ccall safe "ccc_spill_reserve"
@@ -62,11 +70,126 @@ foreign import ccall unsafe "ccc_spill_page_size" c_pageSize :: IO Int64
 -- | An open spill file.
 type Fd = CInt
 
-{- | Whether a new recorder maps its regions: 'False' only in this package's
-tests ("Clash.CircuitContext.Internal.SpillTesting").
+-- | Why a call failed: its error number.
+type Error = CInt
+
+-- | Whether this platform maps a spill file: Linux does.
+mappable :: Bool
+mappable = True
+
+-- | The size a region's offset and size are multiples of.
+pageSize :: Int
+pageSize = fromIntegral (unsafePerformIO c_pageSize)
+{-# NOINLINE pageSize #-}
+
+-- | What an error of this call on the file at this path means.
+errorMessage :: FilePath -> String -> Error -> String
+errorMessage path call e =
+  Exception.displayException (errnoToIOError call (Errno e) Nothing (Just path))
+
+-- | Open a spill file: made, or truncated. Throws when it cannot be.
+openSpill :: FilePath -> IO Fd
+openSpill path = do
+  fd <- withCString path c_open
+  if fd < 0
+    then ioError (errnoToIOError "open" (Errno (negate fd)) Nothing (Just path))
+    else pure fd
+
+closeSpill :: Fd -> IO ()
+closeSpill fd = () <$ c_close fd
+
+result :: CInt -> Either Error ()
+result 0 = Right ()
+result e = Left e
+
+-- | Reserve the disk space of this many bytes at this offset.
+reserve :: Fd -> Int -> Int -> IO (Either Error ())
+reserve fd off len = result <$> c_reserve fd (fromIntegral off) (fromIntegral len)
+
+-- | Write this many bytes at this offset.
+writeAt :: Fd -> Ptr Word8 -> Int -> Int -> IO (Either Error ())
+writeAt fd p len off = result <$> c_write fd p (fromIntegral len) (fromIntegral off)
+
+-- | Map this many bytes at this offset into memory, shared with the file.
+mapAt :: Fd -> Int -> Int -> IO (Either Error (Ptr Word8))
+mapAt fd off len = alloca $ \out -> do
+  e <- c_map fd (fromIntegral off) (fromIntegral len) out
+  p <- peek out
+  pure (if e == 0 && p /= nullPtr then Right p else Left e)
+
+-- | Unmap this many bytes mapped at this address.
+unmap :: Ptr Word8 -> Int -> IO (Either Error ())
+unmap p len = result <$> c_unmap p (fromIntegral len)
+#else
+import Control.Exception (IOException, try)
+import System.IO (
+  BufferMode (NoBuffering),
+  Handle,
+  IOMode (ReadWriteMode),
+  SeekMode (AbsoluteSeek),
+  hClose,
+  hPutBuf,
+  hSeek,
+  hSetBuffering,
+  hSetFileSize,
+  openBinaryFile,
+ )
+
+-- | An open spill file.
+type Fd = Handle
+
+-- | Why a call failed.
+type Error = IOException
+
+-- | Whether this platform maps a spill file: only Linux does.
+mappable :: Bool
+mappable = False
+
+-- | The size a region's offset and size are multiples of.
+pageSize :: Int
+pageSize = 4096
+
+-- | What an error means: it names the file and the call itself.
+errorMessage :: FilePath -> String -> Error -> String
+errorMessage _ _ = Exception.displayException
+
+-- | Open a spill file: made, or truncated. Throws when it cannot be.
+openSpill :: FilePath -> IO Fd
+openSpill path = do
+  h <- openBinaryFile path ReadWriteMode
+  (hSetFileSize h 0 >> hSetBuffering h NoBuffering >> pure h) `Exception.onException` hClose h
+
+{- | Close the spill file. A write that failed leaves its bytes in the
+'Handle', which closing tries again; that error has been reported already.
+-}
+closeSpill :: Fd -> IO ()
+closeSpill h = hClose h `Exception.catch` \(_ :: IOException) -> pure ()
+
+-- | Nothing is reserved here: nothing is mapped.
+reserve :: Fd -> Int -> Int -> IO (Either Error ())
+reserve _ _ _ = pure (Right ())
+
+-- | Write this many bytes at this offset.
+writeAt :: Fd -> Ptr Word8 -> Int -> Int -> IO (Either Error ())
+writeAt h p len off = try (hSeek h AbsoluteSeek (fromIntegral off) >> hPutBuf h p len)
+
+-- | Nothing is mapped here.
+mapAt :: Fd -> Int -> Int -> IO (Either Error (Ptr Word8))
+mapAt _ _ _ = Left <$> unavailable
+
+-- | Nothing is mapped here.
+unmap :: Ptr Word8 -> Int -> IO (Either Error ())
+unmap _ _ = Left <$> unavailable
+
+unavailable :: IO Error
+unavailable = pure (userError "a spill file is mapped on Linux only")
+#endif
+
+{- | Whether a new recorder maps its regions: on Linux, unless this
+package's tests say otherwise ("Clash.CircuitContext.Internal.SpillTesting").
 -}
 mapping :: IORef Bool
-mapping = unsafePerformIO (newIORef True)
+mapping = unsafePerformIO (newIORef mappable)
 {-# NOINLINE mapping #-}
 
 {- | A region of the spill file: its offset and size, both multiples of the
@@ -87,75 +210,41 @@ its progress.
 headerBytes :: Int
 headerBytes = 32
 
--- | The size a region's offset and size are multiples of.
-pageSize :: Int
-pageSize = fromIntegral (unsafePerformIO c_pageSize)
-{-# NOINLINE pageSize #-}
-
--- | What an error number of this call on the file at this path means.
-errorMessage :: FilePath -> String -> CInt -> String
-errorMessage path call e =
-  Exception.displayException (errnoToIOError call (Errno e) Nothing (Just path))
-
--- | Open a spill file: made, or truncated. 'Left' with the error number.
-openSpill :: FilePath -> IO (Either CInt Fd)
-openSpill path = do
-  fd <- withCString path c_open
-  pure (if fd < 0 then Left (negate fd) else Right fd)
-
-closeSpill :: Fd -> IO ()
-closeSpill fd = () <$ c_close fd
-
-result :: CInt -> Either CInt ()
-result 0 = Right ()
-result e = Left e
-
--- | Reserve the disk space of this many bytes at this offset.
-reserve :: Fd -> Int -> Int -> IO (Either CInt ())
-reserve fd off len = result <$> c_reserve fd (fromIntegral off) (fromIntegral len)
-
--- | Write this many bytes at this offset.
-writeAt :: Fd -> Ptr Word8 -> Int -> Int -> IO (Either CInt ())
-writeAt fd p len off = result <$> c_write fd p (fromIntegral len) (fromIntegral off)
-
 {- | A new region of the file, at this offset, of this size, for this owner.
 Its header has its size and owner, in the file at once.
 
 Mapped: its disk space is reserved first, so that no store into it can find
 the disk full. Where it cannot be mapped (or mapping is not asked for), it
-is a buffer instead, with the error of the mapping (0: not asked for). A
-buffer's disk space is not reserved: writing it says whether the disk is
-full.
+is a buffer instead; then 'Just' the error of the mapping, if it was asked
+for. A buffer's disk space is not reserved: writing it says whether the
+disk is full.
 
 'Left', with the call that failed and its error, when the disk space cannot
 be reserved, or a buffer's header cannot be written. The file then has no
 region there, but can have grown.
 -}
 newRegion ::
-  Fd -> Bool -> Int -> Int -> Int -> IO (Either (String, CInt) (Region, Maybe CInt))
+  Fd -> Bool -> Int -> Int -> Int -> IO (Either (String, Error) (Region, Maybe Error))
 newRegion fd mapIt off size owner
   | mapIt = do
       reserved <- reserve fd off size
       case reserved of
         Left e -> pure (Left ("posix_fallocate", e))
         Right () -> do
-          mapped <- alloca $ \out -> do
-            e <- c_map fd (fromIntegral off) (fromIntegral size) out
-            p <- peek out
-            pure (if e == 0 && p /= nullPtr then Right p else Left e)
+          mapped <- mapAt fd off size
           case mapped of
             Right p -> do
               header p
               pure (Right (Region off size p True, Nothing))
-            Left e -> buffer e
-  | otherwise = buffer 0
+            Left e -> buffer (Just e)
+  | otherwise = buffer Nothing
  where
-  buffer e = do
+  buffer why = do
     p <- callocBytes size
     header p
     written <- writeAt fd p headerBytes off
     case written of
-      Right () -> pure (Right (Region off size p False, Just e))
+      Right () -> pure (Right (Region off size p False, why))
       Left w -> free p >> pure (Left ("write", w))
   header p = do
     pokeByteOff p 0 (fromIntegral size :: Word64)
@@ -174,7 +263,7 @@ setProgress r n = pokeByteOff (regionPtr r) 24 (fromIntegral n :: Word64)
 {- | Put the bytes @[from, to)@ after a region's header, and the header, in
 the file: nothing to do for a mapped region.
 -}
-persistBlock :: Fd -> Region -> Int -> Int -> IO (Either CInt ())
+persistBlock :: Fd -> Region -> Int -> Int -> IO (Either Error ())
 persistBlock fd r from to
   | regionMapped r = pure (Right ())
   | otherwise = do
@@ -191,9 +280,9 @@ persistBlock fd r from to
 {- | Done with a region whose header and first bytes (this many after the
 header) are final: unmap it, or write and free its buffer.
 -}
-retire :: Fd -> Region -> Int -> IO (Either CInt ())
+retire :: Fd -> Region -> Int -> IO (Either Error ())
 retire fd r used
-  | regionMapped r = result <$> c_unmap (regionPtr r) (fromIntegral (regionSize r))
+  | regionMapped r = unmap (regionPtr r) (regionSize r)
   | otherwise = do
       written <- writeAt fd (regionPtr r) (headerBytes + used) (regionOffset r)
       free (regionPtr r)

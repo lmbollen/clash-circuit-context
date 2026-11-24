@@ -1,4 +1,5 @@
 dist-newstyle/
+dist-not-linux/
 .ghc.environment.*
 cabal.project.local*
 /manual-instrumentation.vcd

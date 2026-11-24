@@ -28,7 +28,7 @@ chunk.
 == The spill file
 
 With a spill file, each signal encodes its changes into a REGION of the
-file, mapped into memory and shared with the file: a record is in the file
+file, on Linux mapped into memory and shared with the file: a record is in the file
 (in the kernel's page cache) as soon as it is stored, so a process that is
 killed (SIGKILL, the out-of-memory killer, a crash) leaves everything it
 recorded. Only a crash of the machine itself can lose the newest records.
@@ -76,7 +76,8 @@ and UTF-8 bytes.
 A signal's block comes before its records, in a region before its first.
 
 Where a region cannot be mapped (a file system without shared writable
-mappings, more mappings than the system allows, Windows), it is a buffer
+mappings, more mappings than the system allows), and on every platform but
+Linux, it is a buffer
 in memory instead, written to the file when it is full. A killed process
 then loses each signal's last region: up to 16 KiB of its newest records,
 and, for a signal that changes rarely and never fills its first region,
@@ -159,7 +160,6 @@ import qualified Data.Map.Strict as Map
 import Data.Maybe (fromMaybe, isJust)
 import qualified Data.Set as Set
 import Data.Word (Word64, Word8)
-import Foreign.C.Error (Errno (Errno), errnoToIOError)
 import Foreign.ForeignPtr (ForeignPtr, mallocForeignPtrBytes, withForeignPtr)
 import Foreign.Marshal.Utils (copyBytes)
 import Foreign.Ptr (Ptr, castPtr, plusPtr)
@@ -359,9 +359,7 @@ newRecorder spill start = do
     Nothing -> pure ToMemory
     Just path -> do
       createDirectoryIfMissing True (takeDirectory path)
-      opened <- openSpill path
-      fd <-
-        either (\e -> ioError (errnoToIOError "open" (Errno e) Nothing (Just path))) pure opened
+      fd <- openSpill path
       mapped <- readIORef mapping
       pure (ToFile (Spill fd pageSize mapped Nothing 0 pageSize False))
   rec <-

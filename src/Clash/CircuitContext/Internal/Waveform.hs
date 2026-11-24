@@ -118,12 +118,13 @@ data Spill
     executables @spill2fst@ and @spill2vcd@. The values are written twice: to
     the spill file, and to the waveform.
 
-    A value is in the file as soon as it is recorded, also when the process is
-    killed right after. The file's disk space is reserved ahead, up to 16 KiB
+    On Linux, a value is in the file as soon as it is recorded, also when the
+    process is killed right after. The file's disk space is reserved ahead, up to 16 KiB
     per signal, so a full disk stops the recording (not the run) with a
     message, and the waveform ends where the recording stopped.
 
-    Where the file cannot be mapped into memory, it is written 16 KiB per
+    Where the file cannot be mapped into memory, and on every platform but
+    Linux, it is written 16 KiB per
     signal at a time instead (with a message), and a killed run loses what was
     not written yet: a signal that changes rarely loses everything it
     recorded. A cancelled run loses nothing.

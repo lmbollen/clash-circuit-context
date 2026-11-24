@@ -31,6 +31,11 @@ run cabal test typelits-plugins -j1 "$@"
 # (recorder properties, the capture contract, and the tasty-sequenced tests
 # that decode the waveforms the Example level wrote).
 run cabal test waveform-tests -j1 "$@"
+# The same suite as it runs where a spill file is not mapped (every platform
+# but Linux: it is written through a Handle, a region at a time), with
+# linux_HOST_OS undefined in every module (scripts/not-linux.h).
+run cabal test waveform-tests -j1 --builddir=dist-not-linux \
+  --ghc-options="-optP-include -optP$PWD/scripts/not-linux.h" "$@"
 
 for g in manual-instrumentation auto-instrumentation; do
   if diff <(grep -v '^\$date' "$g.vcd") "goldens/$g.vcd" >/dev/null; then
