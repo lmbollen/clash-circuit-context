@@ -446,4 +446,19 @@ tests =
               () <$ simulateWaveform vcdOptions (AtSize 0) name (0, 8) counter
           second <- filesFor (name <> "_0")
           second @?= (False, False)
+    , -- …also when the second property spells the path another way.
+      testCase "AtSize keeps one case per path, however it is spelled" $
+        withName "capture-prop-spelled" $ \name -> do
+          _ <-
+            Hedgehog.check . Hedgehog.withTests 5 . Hedgehog.property $
+              () <$ simulateWaveform vcdOptions (AtSize 0) name (0, 8) counter
+          first <- filesFor (name <> "_0")
+          first @?= (True, True)
+          removeFile (vcdOf (name <> "_0"))
+          removeFile (vcdOf (name <> "_0") -<.> "json")
+          _ <-
+            Hedgehog.check . Hedgehog.withTests 5 . Hedgehog.property $
+              () <$ simulateWaveform vcdOptions (AtSize 0) ("." </> name) (0, 8) counter
+          second <- filesFor (name <> "_0")
+          second @?= (False, False)
     ]

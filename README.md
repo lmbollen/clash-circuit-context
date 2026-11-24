@@ -425,8 +425,10 @@ The path is the waveform's, without extension: `"waveforms/counter"` writes
 `waveforms/counter.fst` and its `waveforms/counter.json` sidecar. A relative
 path is relative to the working directory, which is not the same under every
 way of running a suite, so the messages give absolute paths. An absolute path
-(`"/tmp/out/counter"`) works too, and missing directories are made. Give each
-test its own path.
+(`"/tmp/out/counter"`) works too, and missing directories are made. One path
+is one waveform: a VCD written at a path deletes an FST at that path, and the
+other way round, because the sidecar describes the waveform written last. Give
+each test its own path.
 
 `withWaveform` runs the simulation without recording. When the check throws,
 it runs it again with recording, writes the waveform, prints its absolute path

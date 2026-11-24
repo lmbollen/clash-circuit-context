@@ -24,8 +24,9 @@ A waveform is a pair of files at the path you give, which has no extension:
 @\<path\>.fst@ (or @.vcd@, see 'Format') and the @\<path\>.json@ sidecar a
 typed viewer reads. The path is relative to the working directory, or
 absolute (@\"waveforms\/counter\"@, @\"\/tmp\/out\/counter\"@), and missing
-directories are made. One path is one pair of files, so two tests must not
-share a path. While a simulation records, its values are kept as compact
+directories are made; messages name the absolute path. One path is one
+waveform: writing it in one format deletes a waveform of the other format
+at that path, and two tests must not share a path. While a simulation records, its values are kept as compact
 records, in memory or in @\<path\>.spill@ (see 'Spill'); a spill file is
 deleted when the waveform is written, and kept when a recording run is
 stopped or its waveform cannot be written, for 'recoverWaveform'.
@@ -89,7 +90,8 @@ writeWaveform ::
   -- | The signal to observe
   (HasCircuitContext => Signal dom a) ->
   IO [a]
-writeWaveform opts path window@(_, stop) sig = do
+writeWaveform opts path0 window@(_, stop) sig = do
+  path <- resolvePath path0
   checkWindow path window
   (out, rec) <- record opts path (fst ps) $ do
     let xs = sampleN stop sig
@@ -141,7 +143,8 @@ withWaveform ::
   -- | The check
   ([a] -> IO b) ->
   IO b
-withWaveform opts path window@(_, stop) sig check = do
+withWaveform opts path0 window@(_, stop) sig check = do
+  path <- resolvePath path0
   checkWindow path window
   first <- try (check (withoutCircuitContext (sampleN stop sig)))
   case first of

@@ -235,6 +235,12 @@ children =
         _ <- withWaveform defaultOptions (pathOf name) (0, 8) counter (\xs -> P.length xs @?= 8)
         existing name ["fst", "json"] >>= (@?= [False, False])
     )
+  , -- A window that records nothing, so no waveform is written, and a
+    -- message says so.
+    ( "formats-relative-message"
+    , let relative = "." </> pathOf "formats-relative-message"
+       in () <$ writeWaveform defaultOptions relative (8, 8) counter
+    )
   , -- A cancelled run: one that recorded nothing, and one that did.
     ("formats-stopped-empty", stoppedRun "formats-stopped-empty" (pure ()))
   ,
@@ -544,6 +550,25 @@ tests =
         -- An FST file starts with its header block, whose tag is 0.
         header <- ByteString.take 1 <$> ByteString.readFile (file name "fst")
         header @?= ByteString.pack [0]
+    , -- One path is one waveform: the sidecar describes the waveform written
+      -- last, so a waveform of the other format at the path goes.
+      testCase "writing a waveform deletes one of the other format at its path" $ do
+        let name = "formats-one-per-path"
+        scrub [name]
+        _ <- writeWaveform defaultOptions (pathOf name) (0, 8) counter
+        _ <- writeWaveform vcd (pathOf name) (0, 8) counter
+        existing name ["vcd", "json", "fst"] >>= (@?= [True, True, False])
+        _ <- writeWaveform defaultOptions (pathOf name) (0, 8) counter
+        existing name ["vcd", "json", "fst"] >>= (@?= [False, True, True])
+    , -- A message names the waveform by its absolute path, also when the
+      -- caller gave a relative one (spelled with a ./ here).
+      testCase "a message names a relative path as an absolute one" $ do
+        (code, _, err) <- inChild "formats-relative-message" []
+        code @?= ExitSuccess
+        absolute <- makeAbsolute (pathOf "formats-relative-message")
+        assertBool
+          ("said: " <> err)
+          (("clash-circuit-context: " <> absolute <> ": no waveform written") `isInfixOf` err)
     , testCase "a spill file on disk gives the waveform a spill in memory gives" $ do
         let (onDisk, inMemory) = ("formats-on-disk", "formats-in-memory")
         scrub [onDisk, inMemory]

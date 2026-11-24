@@ -79,7 +79,8 @@ data Capture
   = -- | Only the counterexample Hedgehog reports.
     Counterexample
   | {- | The counterexample, and the first case whose 'Size' is at least this
-    one, once per waveform path in this process. 'Size' is Hedgehog's measure
+    one, once per waveform path in this process (two spellings of one path,
+    such as @a\/b@ and @.\/a\/b@, are one path). 'Size' is Hedgehog's measure
     of how large a case is, so a small one gives a short waveform you can read
     end to end. A property runs its cases at sizes 0, 1, 2, … in order, up to
     99, and then from 0 again. A discarded case takes a size too, so a
@@ -112,7 +113,8 @@ simulateWaveform ::
   -- | The signal to observe
   (HasCircuitContext => Signal dom a) ->
   PropertyT IO [a]
-simulateWaveform opts capture path window@(_, stop) sig = do
+simulateWaveform opts capture path0 window@(_, stop) sig = do
+  path <- liftIO (resolvePath path0)
   liftIO (checkWindow path window)
   keepThis <- case capture of
     Counterexample -> pure Nothing

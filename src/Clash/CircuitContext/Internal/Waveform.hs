@@ -30,6 +30,7 @@ module Clash.CircuitContext.Internal.Waveform (
   Format (..),
   Spill (..),
   defaultOptions,
+  resolvePath,
   waveformPath,
   spillPath,
   checkWindow,
@@ -51,7 +52,7 @@ import Control.Exception (
   evaluate,
   throwIO,
  )
-import Control.Monad (filterM, when)
+import Control.Monad (when)
 import System.Directory (
   doesFileExist,
   makeAbsolute,
@@ -150,6 +151,14 @@ extension :: Format -> String
 extension VCD = "vcd"
 extension FST = "fst"
 
+{- | A waveform's path as the files and the messages use it: absolute, with
+repeated separators and @.@ components removed. So a message names the file
+whatever the working directory, and two spellings of one path (@a\/b@,
+@.\/a\/\/b@) are one path. A @..@ component stays.
+-}
+resolvePath :: FilePath -> IO FilePath
+resolvePath = makeAbsolute
+
 -- | The spill file of a waveform's path: @\<path\>.spill@.
 spillPath :: FilePath -> FilePath
 spillPath path = path <.> "spill"
@@ -209,7 +218,9 @@ record opts path start =
 
 {- | Write a recording as the options' waveform, @\<path\>.vcd@ or @.fst@ and
 its @.json@ sidecar (making missing directories), over the window
-@[start, stop)@ in ps, and then delete its spill file. Returns the
+@[start, stop)@ in ps, and then delete its spill file. One path is one
+waveform: a waveform of the other format at the path is deleted, as the
+sidecar now describes this one. Returns the
 waveform's ABSOLUTE path: a relative path is relative to the working
 directory, which differs between ways of running a suite. 'Left', with the
 reason, and nothing written, when the run recorded nothing in the window or
@@ -242,8 +253,15 @@ writeWaveformFiles ::
   IO (Either String FilePath)
 writeWaveformFiles origin opts path (start, stop) rec = do
   written <- writer origin window rec (waveformPath (format opts) path)
+  -- One path is one waveform: the sidecar now describes this file, so a
+  -- waveform of the other format at the path goes.
+  case written of
+    Right _ -> removePathForcibly (waveformPath (other (format opts)) path)
+    Left _ -> pure ()
   traverse (const (makeAbsolute (waveformPath (format opts) path))) written
  where
+  other VCD = FST
+  other FST = VCD
   window = (start `div` timescale rec, ticks rec stop)
   writer = case format opts of
     VCD -> writeFiles
@@ -263,11 +281,7 @@ removeFailureWaveform path = do
   failed <- failureWaveform (path <.> "json")
   case [fmt | fmt <- [VCD, FST], Just (extension fmt) == failed] of
     [] -> pure ()
-    fmt : _ -> do
-      removePathForcibly (waveformPath fmt path)
-      -- The sidecar goes with the last waveform of its path.
-      left <- filterM (doesFileExist . (`waveformPath` path)) [VCD, FST]
-      when (null left) (removePathForcibly (path <.> "json"))
+    fmt : _ -> mapM_ removePathForcibly [waveformPath fmt path, path <.> "json"]
 
 {- | Say on stderr what became of the waveform of this path: where it
 landed (as the absolute path 'save' gives), or why there is none.
@@ -284,8 +298,9 @@ the spill file once the waveform is written, and keeps it otherwise.
 Returns the waveform's absolute path, or why there is none.
 -}
 recover :: WaveformOptions -> FilePath -> IO (Either String FilePath)
-recover opts path = do
-  spillFile <- makeAbsolute (spillPath path)
+recover opts path0 = do
+  path <- resolvePath path0
+  let spillFile = spillPath path
   there <- doesFileExist spillFile
   if not there
     then pure (Left (spillFile <> " does not exist"))

@@ -127,7 +127,7 @@ import Clash.Shockwaves.Internal.Waveform (Waveform (typeName), tRef)
 import Clash.CircuitContext.Internal.Recorder (
   Kind (..),
   Recorder,
-  Recording,
+  Recording (recordingSpill),
   Sig,
   Value,
   closeRecorder,
@@ -369,7 +369,8 @@ what the action returned (or threw) with the 'Recording'. The recording's
 values go to a spill file at this path while the simulation runs, so memory
 does not grow with the length of the run; given 'Nothing', they stay in
 memory, as compact records, and nothing is written to disk. Delete a spill
-file with 'Clash.CircuitContext.Recording.discardRecording' when done.
+file with 'Clash.CircuitContext.Recording.discardRecording' when done. The
+recording and the messages name the spill file by its absolute path.
 
 The action must /force/ the parts of the circuit it wants recorded (sampling
 does). When it stops, every trace is finished up to the time the furthest
@@ -404,11 +405,13 @@ withRecordingFrom ::
   Maybe FilePath ->
   ((HasCircuitContext) => IO r) ->
   IO (Either SomeException r, Recording)
-withRecordingFrom start spill k = Exception.mask $ \restore -> do
+withRecordingFrom start spill0 k = Exception.mask $ \restore -> do
   -- Masked, so that a cancellation cannot leave the recorder's spill file
-  -- open and its thread running: only the action and finishing the traces
-  -- can be cancelled, and closing the recorder, which waits for nothing but
-  -- its own thread's last write, cannot be.
+  -- open: only the action and finishing the traces can be cancelled, and
+  -- closing the recorder cannot be.
+  -- Absolute, so that every message names the file whatever the working
+  -- directory.
+  spill <- traverse makeAbsolute spill0
   rec <- newRecorder spill start
   taps <- newIORef []
   probes <- newMVar ()
@@ -433,15 +436,14 @@ withRecordingFrom start spill k = Exception.mask $ \restore -> do
     recording <- Exception.uninterruptibleMask_ (closeRecorder rec =<< recorderEnd rec)
     -- Nothing to recover from a spill file without a recorded cycle.
     if holdsCycles recording
-      then mapM_ stoppedMessage spill
-      else mapM_ removePathForcibly spill
+      then mapM_ stoppedMessage (recordingSpill recording)
+      else mapM_ removePathForcibly (recordingSpill recording)
 
-{- | Say on stderr that a run was stopped, and where its spill file is, as an
-ABSOLUTE path: the working directory differs between ways of running a suite.
+{- | Say on stderr that a run was stopped, and where its spill file is (an
+absolute path: see 'withRecordingFrom').
 -}
 stoppedMessage :: FilePath -> IO ()
-stoppedMessage f = do
-  path <- makeAbsolute f
+stoppedMessage path =
   hPutStrLn
     stderr
     ( "clash-circuit-context: the run was stopped; what it recorded is in "
