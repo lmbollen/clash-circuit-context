@@ -56,6 +56,7 @@ module Clash.CircuitContext.Waveform (
 import Control.Exception (
   SomeAsyncException,
   SomeException,
+  displayException,
   evaluate,
   fromException,
   throwIO,
@@ -133,6 +134,9 @@ passes, a waveform left by an earlier failing run is deleted (one written by
   written and a message on stderr says so. A design that resolves undefined
   values at random can do that; simulate it with 'writeWaveform' instead, and
   check the samples it returns.
+* The test fails with the check's exception, also when the second run
+  cannot record (its spill file is in use by another recording, the disk is
+  full): a message on stderr then says why there is no waveform.
 
 To get the waveform of a test that passes, use 'writeWaveform'. To simulate
 without recording at all, sample the design under 'withoutCircuitContext'.
@@ -168,17 +172,26 @@ withWaveform opts path0 window@(_, stop) sig check = do
     Left err -> do
       -- A fresh instantiation of the signal, under a recording context: an
       -- independent simulation, recorded as far as the check forces it.
-      (again, rec) <- record opts path (fst (windowPs win)) (check (sampleN stop sig))
-      case again of
-        Left _ -> save Failure opts path win rec >>= announce path
-        Right _ -> do
-          discard rec
-          say
-            ( path
-                <> ": the failure did not happen again with recording, so no"
-                <> " waveform was written. Simulate this test with writeWaveform"
-                <> " to record the run it checks."
-            )
+      -- The test fails with the check's exception whatever becomes of the
+      -- waveform: an error of the recording (a spill file that another
+      -- recording uses, a full disk) is said, not thrown in its place.
+      recorded <- try $ do
+        (again, rec) <- record opts path (fst (windowPs win)) (check (sampleN stop sig))
+        case again of
+          Left _ -> save Failure opts path win rec >>= announce path
+          Right _ -> do
+            discard rec
+            say
+              ( path
+                  <> ": the failure did not happen again with recording, so no"
+                  <> " waveform was written. Simulate this test with writeWaveform"
+                  <> " to record the run it checks."
+              )
+      case recorded of
+        Left recErr
+          | isAsync recErr -> throwIO recErr
+          | otherwise -> say (path <> ": no waveform written: " <> displayException recErr)
+        Right () -> pure ()
       throwIO err
  where
   win = cycleWindow @dom window

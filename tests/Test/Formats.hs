@@ -35,6 +35,7 @@ import Control.Concurrent (
  )
 import Control.Exception (
   AsyncException (ThreadKilled),
+  ErrorCall (ErrorCall),
   IOException,
   SomeException,
   evaluate,
@@ -935,6 +936,21 @@ tests =
         >> removeFile (file "formats-fst-too-large" "spill")
     , testCase "reading a spill file does not keep its records in memory"
         $ assertChild "formats-read-big-spill" []
+    , -- The recording rerun of a failing check can fail itself; here its
+      -- spill file is in use by another recording. The test still fails with
+      -- the check's own exception, not with the recording's error.
+      testCase "withWaveform rethrows the check's failure when its recording fails" $ do
+        let name = "formats-rerun-fails"
+        scrub [name]
+        (r, rec) <-
+          withRecording (Just (file name "spill")) $
+            try @ErrorCall $
+              withWaveform vcdOnDisk (pathOf name) (0, 8) counter $
+                \xs -> evaluate (P.length xs) >> throwIO (ErrorCall "the check failed")
+        discardRecording rec
+        case r of
+          Right (Left e) -> e @?= ErrorCall "the check failed"
+          other -> assertFailure ("not the check's failure: " <> P.show (fmap (fmap (P.const ())) other))
     , testCase "a cancelled run in memory leaves nothing" $ do
         let name = "formats-cancelled-in-memory"
         scrub [name]
