@@ -252,7 +252,12 @@ both is harmless: the renamer pass then runs twice, and it is idempotent.
   takes. So two `x` of a helper beside the elements `x_0` and `x_1` of a
   pair `x` are `x__0` and `x__1`. The names of one scope are numbered in
   name order, so the same signals always get the same names, and the VCD,
-  the FST and the sidecar use the same names.
+  the FST and the sidecar use the same names. Signals outside every
+  component are in the stock scope `logic`, as in Clash's `dumpVCD`; a
+  component named `logic` beside them is numbered as a second `logic`
+  (`logic_0`). Two signals with the same name and instance (two probe
+  contexts made by hand with one `pcPath`) are numbered too, in the order
+  they were registered.
 
 ### When something isn't traced
 

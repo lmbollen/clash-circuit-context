@@ -188,10 +188,17 @@ ioLeft act = either (\(e :: IOException) -> Left (displayException e)) id <$> tr
 
 {- | Every signal of a recording with its name in the VCD: its key with the
 instance tags resolved by 'disambiguate'. In name order.
+
+Two signals can have one key: the key of a probe is its scope, its name, and
+the ordinal and call site of the instance it is in ('pcPath'), and two
+probe contexts with one 'pcPath' each register their own (see
+'Clash.CircuitContext.Core.ProbeCtx'). So the signals go to 'disambiguate'
+as a list, never through a map of keys: such signals are two instances of
+their name, in registration order.
 -}
 namedSignals :: Recording -> [(String, RecordedSignal)]
 namedSignals rec =
-  Map.toList (disambiguate (Map.fromList [(signalKey s, s) | s <- recordingSignals rec]))
+  Map.toList (disambiguate [(signalKey s, s) | s <- recordingSignals rec])
 
 {- | Write the VCD of a recording over the window @[start, stop)@, in units
 of its timescale (for a single domain: cycles), to the handle. The records
@@ -415,7 +422,9 @@ name with a single instance keeps its clean name; a name with several gets
 @name_i@ suffixes ordered by instantiation call site — a DESIGN property —
 falling back to first-registration order only for instances born at the
 same call site (bare 'fmap' replication; use
-'Clash.CircuitContext.Core.imapComponents' instead).
+'Clash.CircuitContext.Core.imapComponents' instead). A signal is an
+instance of its own: two signals with one key are two instances, in the
+order of the list.
 
 Every name in a scope is unique, also when a suffix makes a name that the
 scope already has (two @x@ beside the elements @x_0@ and @x_1@ of a pair
@@ -425,35 +434,54 @@ underscores as it takes. Only a clean name, or a name that another group got
 with more underscores, can take such a name: two groups with one underscore
 never make the same name, as the digits after the last underscore are the
 suffix. The groups of a scope get their names in name order, after all clean
-names, so the names depend only on the keys. Two signals with one name would
-leave one of them out of the map, so that is an error.
+names, so the names depend only on the keys.
+
+The top level has one more name: the dot-free names are declared in the
+stock scope @logic@ (see 'vcdPath'), so when there are any, @logic@ is a
+name the top level has. A component named @logic@ is then numbered as a
+second instance of it (@logic_0@), and the dot-free names keep the scope
+that 'Clash.Signal.Trace.dumpVCD' gives them. A dot-free signal named
+@logic@ is declared in that scope, not beside it, so it is not numbered.
+
+So no two signals get one name. The map would keep one of them, so that is
+an error.
 -}
-disambiguate :: forall v. Map.Map String v -> Map.Map String v
-disambiguate m =
+disambiguate :: forall v. [(String, v)] -> Map.Map String v
+disambiguate signals =
   Map.fromListWithKey
     (\k _ _ -> error ("clash-circuit-context: two signals are named " <> k <> " (a bug)"))
     [ (intercalate "." path, v)
-    | (path, v) <- go [(map parseSeg (splitPath k), v) | (k, v) <- Map.toList m]
+    | (path, v) <- go rootTaken entries
     ]
  where
-  go :: [([Seg], v)] -> [([String], v)]
-  go entries =
+  entries = [(map parseSeg (splitPath k), (j, v)) | (j, (k, v)) <- zip [0 :: Int ..] signals]
+  -- The stock scope of the dot-free names, when there are any.
+  rootTaken = Set.fromList [rootScope | any ((== 1) . length . fst) entries]
+
+  -- A level, with the names it has besides its own (at the top, rootTaken).
+  go :: Set.Set String -> [([Seg], (Int, v))] -> [([String], v)]
+  go reserved level =
     concat
-      [ [([name'], v) | ([], v) <- grp]
-          ++ [(name' : p, v) | (p, v) <- go [(t, v) | (t@(_ : _), v) <- grp]]
-      | (name', grp) <- concat (snd (List.mapAccumL named clean instances))
+      [ [([name'], v) | ([], (_, v)) <- grp]
+          ++ [(name' : p, v) | (p, v) <- go Set.empty [(t, x) | (t@(_ : _), x) <- grp]]
+      | (name', grp) <- concat (snd (List.mapAccumL named (clean <> reserved) instances))
       ]
    where
     -- Each name with the groups of its instances, in identKey order.
     instances =
-      [ (name, map snd (sortOn identKey (Map.toAscList byOrd)))
-      | (name, byOrd) <- Map.toAscList grouped
+      [ (name, map snd (sortOn identKey (Map.toAscList byInstance)))
+      | (name, byInstance) <- Map.toAscList grouped
       ]
-    clean = Set.fromList [name | (name, [_]) <- instances]
+    -- A name keeps itself when it has one instance, and that is not a scope
+    -- beside a scope of the same name that the level has.
+    keeps (name, [(_, grp)]) = name `Set.notMember` reserved || all (null . fst) grp
+    keeps _ = False
+    clean = Set.fromList [name | g@(name, _) <- instances, keeps g]
 
     -- A name's instances with their names, and the names taken after them.
-    named taken (name, [(_, grp)]) = (taken, [(name, grp)])
-    named taken (name, insts) = (foldr Set.insert taken names, zip names (map snd insts))
+    named taken g@(name, insts)
+      | keeps g = (taken, [(name, grp) | (_, grp) <- insts])
+      | otherwise = (foldr Set.insert taken names, zip names (map snd insts))
      where
       names = free (1 :: Int)
       free k
@@ -463,22 +491,28 @@ disambiguate m =
         ns = [name <> replicate k '_' <> show i | i <- [0 .. length insts - 1]]
 
     -- Call site first (design order); located instances before unlocated;
-    -- registration ordinal as the last resort.
-    identKey (ord', (loc, _)) =
-      let pl = parseLoc loc in (isNothing pl, pl, ord')
+    -- registration ordinal, then the place in the list, as the last resort.
+    identKey (inst, (loc, _)) =
+      let pl = parseLoc loc in (isNothing pl, pl, inst)
 
-    grouped :: Map.Map String (Map.Map (Maybe Int) (String, [([Seg], v)]))
+    -- An instance is the ordinal of its segment, and for a signal (the last
+    -- segment of a key) also its place in the list.
+    grouped ::
+      Map.Map String (Map.Map (Maybe Int, Maybe Int) (String, [([Seg], (Int, v))]))
     grouped =
       Map.fromListWith
         (Map.unionWith (\(l, xs) (_, ys) -> (l, xs <> ys)))
-        [ (sn, Map.singleton ord' (loc, [(rest, v)]))
-        | ((sn, ord', loc) : rest, v) <- entries
+        [ (sn, Map.singleton (ord', leaf) (loc, [(rest, (j, v))]))
+        | ((sn, ord', loc) : rest, (j, v)) <- level
+        , let leaf = if null rest then Just j else Nothing
         ]
 
 {- | The full scope path a signal is declared under, given its name from
 'disambiguate'. A dotted name is already that path, since each segment
 becomes a nested @$scope@. A dot-free name has no scope of its own, so it
-lands in the stock @logic@ scope, as in 'Clash.Signal.Trace.dumpVCD'.
+lands in the stock @logic@ scope, as in 'Clash.Signal.Trace.dumpVCD'. No
+dotted name starts with that scope when there are dot-free names: a
+component named @logic@ is then @logic_0@ (see 'disambiguate').
 
 Anything that names VCD vars from outside the file (the typed-waveform
 sidecar) must use this, not the bare name: a viewer looks a var up by its

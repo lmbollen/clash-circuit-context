@@ -23,6 +23,7 @@ import qualified Prelude as P
 
 import Control.Exception (evaluate, throwIO)
 import Control.Monad.IO.Class (liftIO)
+import Data.IORef (newIORef)
 import qualified Data.List as List
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
@@ -45,8 +46,10 @@ import Clash.CircuitContext (
   HasCircuitContext,
   component,
   traceSignalC,
+  traceSignalSW,
   withRecordingFrom,
  )
+import Clash.CircuitContext.Core (HierSeg (..), ProbeCtx (..), probe)
 import Clash.CircuitContext.Recording (discardRecording, recordingEnd, writeVCD)
 import Test.Vcd (asInts, decodeVCD, decodeVCDPaths, model)
 
@@ -69,7 +72,14 @@ properties run in parallel.
 -}
 recorded ::
   Int -> Int -> ((HasCircuitContext) => IO a) -> PropertyT IO (a, Int, String)
-recorded start stop k = liftIO $ do
+recorded start stop k = do
+  (a, end, vcd, _) <- recordedWithSidecar start stop k
+  pure (a, end, vcd)
+
+-- | 'recorded', with the sidecar of the VCD (empty if none was written).
+recordedWithSidecar ::
+  Int -> Int -> ((HasCircuitContext) => IO a) -> PropertyT IO (a, Int, String, String)
+recordedWithSidecar start stop k = liftIO $ do
   createDirectoryIfMissing True dir
   (path, h) <- openTempFile dir "recorder.vcd"
   hClose h
@@ -77,12 +87,17 @@ recorded start stop k = liftIO $ do
   a <- P.either throwIO pure r
   written <- writeVCD (P.fromIntegral start, P.fromIntegral stop) rec path
   discardRecording rec
-  vcd <- P.either (P.const (pure Text.empty)) (P.const (TextIO.readFile path)) written
+  let readOr f = P.either (P.const (pure Text.empty)) (P.const (TextIO.readFile f)) written
+  vcd <- readOr path
+  json <- readOr (path -<.> "json")
   P.mapM_ removePathForcibly [path, path -<.> "json"]
-  pure (a, P.fromIntegral (recordingEnd rec), Text.unpack vcd)
+  pure (a, P.fromIntegral (recordingEnd rec), Text.unpack vcd, Text.unpack json)
  where
   dir = "waveforms/test-recorder"
-  period = snatToNum (clockPeriod @System)
+
+-- | The clock period of 'System', in ps.
+period :: Int
+period = snatToNum (clockPeriod @System)
 
 -- | The decoded wave of one signal, or a failing property if it is missing.
 waveOf :: (Monad m) => Int -> String -> String -> PropertyT m [String]
@@ -297,6 +312,54 @@ prop_namesAreUnique = property $ do
  where
   sameElements a b = List.sort a === List.sort b
 
+{- | The signals outside every component are in the stock scope @logic@.
+A component named @logic@ beside them is numbered as a second @logic@:
+@logic_0@. Before, the VCD had two scopes named @logic@, each with a @foo@,
+the sidecar had one entry for the two (@logic.foo@), and the FST had two
+@foo@ in one scope. The generator picks which one the simulation reaches
+first.
+-}
+prop_rootScopeHasItsName :: Property
+prop_rootScopeHasItsName = property $ do
+  componentFirst <- forAll Gen.bool
+  (_, _, vcd, json) <- recordedWithSidecar 0 1 $ do
+    -- traceSignalSW: a signal described in the sidecar.
+    let inside = component "logic" (sampleN 1 (traceSignalSW "foo" (stim @System [1])))
+        outside = sampleN 1 (traceSignalSW "foo" (stim @System [2]))
+        force x = evaluate (x `deepseqX` ())
+    if componentFirst then force inside *> force outside else force outside *> force inside
+  let waves = decodeVCDPaths 1 vcd
+  annotate (P.show (Map.keys waves))
+  P.length [() | "$scope module logic $end" <- P.lines vcd] === 1
+  Map.toList (P.fmap asInts waves)
+    === [("logic.foo", model [2]), ("logic_0.foo", model [1])]
+  -- Both are in the sidecar, by their own path.
+  [p | p <- paths, not (("\"" P.<> p P.<> "\"") `List.isInfixOf` json)]
+    === []
+ where
+  paths = ["logic.foo", "logic_0.foo"]
+
+{- | Two probes with one key are two signals. The key of a probe is its
+scope, its name, and the instance ordinal and call site of its 'pcPath';
+two 'ProbeCtx' with one 'pcPath' and their own caches each register a
+probe @p@ with the same key. Before, the VCD had one of the two.
+-}
+prop_probesWithOneKey :: Property
+prop_probesWithOneKey = property $ do
+  (_, _, vcd) <- recorded 0 1 $ do
+    caches <- P.mapM (P.const (newIORef Map.empty)) [1, 2 :: Int]
+    let path = [HierSeg "machine" ""]
+        probed =
+          [ let ?probe = ProbeCtx ?circuitContext period path 0 cache in probe "p" v
+          | (cache, v) <- P.zip caches [1, 2 :: Unsigned 8]
+          ]
+    -- Something sampled, so that the run has a cycle.
+    evaluate ((probed, sampleN 1 (traceSignalC "t" (stim @System [0]))) `deepseqX` ())
+  let waves = decodeVCD 1 vcd
+  annotate (P.show (Map.keys waves))
+  Map.toList (P.fmap asInts waves)
+    === [("p_0", model [1]), ("p_1", model [2]), ("t", model [0])]
+
 tests :: TestTree
 tests =
   testGroup
@@ -315,4 +378,6 @@ tests =
         "a scope declares its signals in source order, its scopes by name"
         prop_declarationsAreSorted
     , testProperty "every signal has a name of its own" prop_namesAreUnique
+    , testProperty "the stock logic scope keeps its name" prop_rootScopeHasItsName
+    , testProperty "two probes with one key are two signals" prop_probesWithOneKey
     ]
