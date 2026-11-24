@@ -229,6 +229,26 @@ vecOfRecords inp = lanes
   lanes = map (\i -> Lane (inp + pure i) (inp + pure (i + 10))) (0 :> 1 :> 2 :> Nil)
 {-# OPAQUE vecOfRecords #-}
 
+{- | A helper with no scope of its own that binds an @x@: each call records
+its @x@ in the caller's scope.
+-}
+bindsX :: (HasCircuitContext) => Signal System (Unsigned 8) -> Signal System (Unsigned 8)
+bindsX i = x + 1
+ where
+  x = i + 100
+{-# ANN bindsX NoCircuitScope #-}
+
+{- | Two calls of 'bindsX' beside a pair bound as @x@. The pair records
+@x_0@ and @x_1@, the names that the two @x@ of the helper get when there is
+nothing else in the scope.
+-}
+collide ::
+  (HasCircuitContext) => Signal System (Unsigned 8) -> Vec 4 (Signal System (Unsigned 8))
+collide i = fst x :> snd x :> bindsX i :> bindsX (i + 10) :> Nil
+ where
+  x = (i * 2, i * 3)
+{-# OPAQUE collide #-}
+
 --------------------------------------------------------------------------------
 -- Functions the plugin does not split
 
@@ -409,6 +429,25 @@ prop_vecOfRecords = property $ do
         , "up"
         ]
 
+{- | A name that the numbering makes is never one that the scope already
+has. The two @x@ of the helper would be @x_0@ and @x_1@, which are the
+names of the pair's elements, and the VCD then had the pair's elements and
+not the helper's @x@ (the duplicate names were dropped). Now they are
+@x__0@ and @x__1@, and every one of the four has its own values. The
+generator picks the order in which the simulation reaches them.
+-}
+prop_numberingAvoidsNames :: Property
+prop_numberingAvoidsNames = property $ do
+  order <- forAll (Gen.shuffle [0 .. 3])
+  vcd <-
+    recorded 2
+      $ P.mapM_ (\i -> evaluate (sampleN 2 (collide (pure 1) !! (i :: Int)) `deepseqX` ())) order
+  -- In source order: the calls of the helper come before the pair's binding.
+  declarations vcd === ["scope collide", "x__0", "x__1", "x_0", "x_1", "up"]
+  let waves = decodeVCDPaths 2 vcd
+  [fmap asInts (Map.lookup ("collide." P.<> n) waves) | n <- ["x_0", "x_1", "x__0", "x__1"]]
+    === [Just (model [v, v]) | v <- [2, 3, 101, 111]]
+
 tests :: TestTree
 tests =
   testGroup
@@ -459,4 +498,5 @@ tests =
     , testProperty "the calls of an instance method" (numbered "xMethod.acc" ".total" xMethod)
     , testProperty "the calls of a default method" (numbered "xDefault.acc" ".total" xDefault)
     , testProperty "the calls of a function with another annotation" (numbered "xAnn.acc" ".total" xAnn)
+    , testProperty "a number never makes a name that the scope has" prop_numberingAvoidsNames
     ]
