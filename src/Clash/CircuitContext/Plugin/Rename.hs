@@ -92,6 +92,7 @@ import qualified GHC.Data.Bag as GHC
 {- FOURMOLU_ENABLE -}
 import qualified GHC.Core.ConLike as GHC (ConLike (RealDataCon))
 import GHC.Hs
+import qualified GHC.Iface.Env as GHC (newGlobalBinder)
 import qualified GHC.Plugins as GHC
 import qualified GHC.Tc.Types as GHC
 import qualified GHC.Tc.Utils.Env as GHC (tcLookupGlobal, tcLookupTyCon)
@@ -1587,12 +1588,21 @@ isWrapper = \case
         GHC.getOccString f == "callContext"
   _ -> False
 
--- | The worker's name of a top-level binder: external, in this module.
+{- | The worker's name of a top-level binder: external, in this module, and
+in GHC's name cache, as the names of the module's own binders are.
+
+An external name is one name per module and occurrence, through that cache:
+reading an interface that mentions @M.$wf@ looks it up there. Made with a
+fresh unique outside the cache, the worker was a name no interface could
+reach. A module that is not recompiled keeps an unfolding that calls the
+worker (the wrapper is INLINE); when @M@ was recompiled in the same build,
+reading that unfolding made a second @M.$wf@, with another unique, which
+was not in @M@'s declarations: "Can't find interface-file declaration for
+variable $wf". Editing @M@ without changing its interface was enough.
+-}
 topWorkerName :: GHC.Module -> GHC.Name -> GHC.TcM GHC.Name
-topWorkerName mdl n = do
-  u <- getUniqueM
-  pure
-    (GHC.mkExternalName u mdl (GHC.mkVarOcc ("$w" <> GHC.getOccString n)) (GHC.getSrcSpan n))
+topWorkerName mdl n =
+  GHC.newGlobalBinder mdl (GHC.mkVarOcc ("$w" <> GHC.getOccString n)) (GHC.getSrcSpan n)
 
 -- | The worker's name of a local binder.
 localWorkerName :: GHC.Name -> GHC.TcM GHC.Name

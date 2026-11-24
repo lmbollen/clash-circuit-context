@@ -446,6 +446,70 @@ case "$top_rc:$top_out" in
 esac
 rm -rf "$scratch"
 
+# An incremental build after an edit that leaves an interface as it was. A
+# (with the plugin) is split into the wrapper f and the worker $wf; B, not
+# recompiled, keeps an unfolding that calls A.$wf; C, recompiled, reads it.
+# The worker's name was not in GHC's name cache, so reading B's unfolding
+# after A was recompiled in the same build failed with "Can't find
+# interface-file declaration for variable $wf". Free of clash-prelude
+# imports, for the reason given at StrictProbe above.
+scratch=$(mktemp -d)
+cat > "$scratch/A.hs" <<'HS'
+{-# LANGUAGE ImplicitParams #-}
+{-# OPTIONS_GHC -fplugin=Clash.CircuitContext.Plugin #-}
+
+module A (f) where
+
+import Clash.CircuitContext (HasCircuitContext)
+
+f :: (HasCircuitContext) => Int -> Int
+f x = x + 1
+{-# OPAQUE f #-}
+HS
+cat > "$scratch/B.hs" <<'HS'
+{-# LANGUAGE ImplicitParams #-}
+
+module B (g) where
+
+import Clash.CircuitContext (HasCircuitContext)
+
+import A (f)
+
+g :: (HasCircuitContext) => Int
+g = f 1 + f 2
+HS
+cat > "$scratch/C.hs" <<'HS'
+{-# LANGUAGE ImplicitParams #-}
+
+module C (h) where
+
+import Clash.CircuitContext (HasCircuitContext)
+
+import B (g)
+
+h :: (HasCircuitContext) => Int
+h = g + 1
+HS
+incremental() {
+  cabal exec ${cabalargs[@]+"${cabalargs[@]}"} -- ghc -v0 -O -no-link \
+    -package clash-circuit-context "-i$scratch" -outputdir "$scratch/out" \
+    --make "$scratch/C.hs" 2>&1
+}
+first_out=$(incremental); first_rc=$?
+echo "-- edited" >>"$scratch/A.hs"
+echo "-- edited" >>"$scratch/C.hs"
+again_out=$(incremental); again_rc=$?
+if [ "$first_rc" -ne 0 ]; then
+  echo "FAIL: the incremental-build modules did not compile:"
+  echo "$first_out" | head -5; fail=1
+elif [ "$again_rc" -eq 0 ]; then
+  echo "ok: an incremental build reads the worker of a recompiled module"
+else
+  echo "FAIL: an incremental build after an edit of a plugin module failed:"
+  echo "$again_out" | head -5; fail=1
+fi
+rm -rf "$scratch"
+
 # HDL: each design in tests/hdl compiles to Verilog without optimisation and
 # with it, and Calls makes one module of its component. Needs a `clash` that
 # sees this package: set CCC_CLASH to one, e.g. the book's scripts/clash.
