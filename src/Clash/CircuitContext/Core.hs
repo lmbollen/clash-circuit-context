@@ -368,6 +368,12 @@ as the HDL of the function without instrumentation, but the text can differ:
 wire names, the order of declarations, and an identity generate loop for a
 traced 'Clash.Sized.Vector.Vec'. Compare the two with an equivalence checker
 (such as Yosys @equiv_make@ and @equiv_induct@), not as text.
+
+A top entity must supply the context this way: the plugin makes it an error
+when the signature of a top entity asks for 'HasCircuitContext'. A top entity
+is a binding with a @Synthesize@ or @TopEntity@ annotation of Clash, or a
+top-level binding named @topEntity@, which Clash takes as a top entity
+without an annotation.
 -}
 withoutCircuitContext :: ((CircuitContextOnly) => r) -> r
 withoutCircuitContext k = let ?circuitContext = noCircuitContext in k

@@ -489,35 +489,68 @@ noScopeAnnotated abi grp =
   mentionsMarker (HsVar _ (L _ n)) = n == abiNoCircuitScope abi
   mentionsMarker _ = False
 
-{- | A top entity (a @Synthesize@ or @TopEntity@ annotation of Clash) whose
-signature asks for @HasCircuitContext@ is an error. A top entity cannot take
-a context: Clash would name the ports after the call sites and the context
-(@eta@, @eta1@, …) and the names of a @Synthesize@ would land on the wrong
-ports. The fix is a top entity without the constraint that supplies it.
+{- | A top entity whose signature asks for @HasCircuitContext@ is an error. A
+top entity cannot take a context: Clash would name the ports after the call
+sites and the context, so a top entity named by its name loses the names of
+its ports in the HDL (@c$arg@, @c$arg_0@, …), and the names of a
+@Synthesize@ would land on the wrong ports. The fix is a top entity without
+the constraint that supplies it.
+
+A top entity is a binder with a @Synthesize@ or @TopEntity@ annotation of
+Clash, or a top-level binder named @topEntity@: Clash takes every top-level
+binder of that name in the module it compiles as a top entity, also when
+other binders of the module have an annotation. The plugin cannot know
+which module Clash will compile, so it checks a @topEntity@ in every module.
 -}
 topEntityErrors :: Ctx -> HsGroup GhcRn -> GHC.TcM ()
 topEntityErrors ctx grp = case hs_valds grp of
   XValBindsLR (NValBinds _ sigs) -> do
     traced <-
       filterM
-        (fmap snd . sigModes ctx . snd)
-        [(n, ty) | L _ (TypeSig _ ns ty) <- sigs, L _ n <- ns]
+        (\(_, _, ty) -> snd <$> sigModes ctx ty)
+        [(n, locA l, ty) | L l (TypeSig _ ns ty) <- sigs, L _ n <- ns]
+    let
+      annotated =
+        [ (n, locA l)
+        | L l annDecl <- hs_annds grp
+        , any isTopEntityAnn (SYB.listify isName annDecl)
+        , ValueAnnProvenance (L _ n) <- SYB.listify isProvenance annDecl
+        , n `elem` [t | (t, _, _) <- traced]
+        ]
+      byName =
+        [ (n, spn)
+        | (n, spn, _) <- traced
+        , GHC.getOccString n == "topEntity"
+        , n `notElem` map fst annotated
+        ]
     sequence_
-      [ Diag.reportError
-          spn
+      [ Diag.reportError spn $
           [ "'"
               <> GHC.getOccString n
               <> "' is a top entity, and its signature asks for HasCircuitContext."
-          , "A top entity cannot take a context: Clash would add its ports for it, and"
-          , "the port names of the annotation would land on the wrong ports."
-          , "Give the top entity a signature without HasCircuitContext, and supply"
-          , "the context inside it: topEntity ... = withoutCircuitContext (design ...)"
           ]
-      | L l annDecl <- hs_annds grp
-      , any isTopEntityAnn (SYB.listify isName annDecl)
-      , ValueAnnProvenance (L _ n) <- SYB.listify isProvenance annDecl
-      , n `elem` map fst traced
-      , let spn = locA l
+            <> reason
+            <> [ "Give the top entity a signature without HasCircuitContext, and supply"
+               , "the context inside it: topEntity ... = withoutCircuitContext (design ...)"
+               ]
+      | (entities, reason) <-
+          [
+            ( annotated
+            ,
+              [ "A top entity cannot take a context: Clash would add its ports for it, and"
+              , "the port names of the annotation would land on the wrong ports."
+              ]
+            )
+          ,
+            ( byName
+            ,
+              [ "Clash takes a top-level binding named topEntity as a top entity, also"
+              , "without an annotation. A top entity cannot take a context: in the HDL,"
+              , "its ports lose their names (c$arg, c$arg_0, ...)."
+              ]
+            )
+          ]
+      , (n, spn) <- entities
       ]
   _ -> pure ()
  where

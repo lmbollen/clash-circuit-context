@@ -443,7 +443,9 @@ else
 fi
 
 # A top entity that asks for HasCircuitContext is an error: its ports would
-# be named after the call sites and the context.
+# be named after the call sites and the context. Top.hs has an annotation;
+# TopByName.hs has none, but Clash takes a top-level binding named topEntity
+# as a top entity by its name.
 cat > "$scratch/Top.hs" <<'HS'
 {-# LANGUAGE ImplicitParams #-}
 
@@ -458,18 +460,31 @@ sbc x = x + 1
 {-# OPAQUE sbc #-}
 {-# ANN sbc (Synthesize {t_name = "sbc", t_inputs = [PortName "x"], t_output = PortName "y"}) #-}
 HS
-top_out=$(cabal exec ${cabalargs[@]+"${cabalargs[@]}"} -- ghc -v0 -fno-code \
-  -fforce-recomp -package clash-circuit-context \
-  -fplugin=Clash.CircuitContext.Plugin "$scratch/Top.hs" 2>&1); top_rc=$?
-case "$top_rc:$top_out" in
-  0:*)
-    echo "FAIL: a top entity that asks for HasCircuitContext compiled"; fail=1 ;;
-  *"is a top entity, and its signature asks for HasCircuitContext"*)
-    echo "ok: a top entity that asks for HasCircuitContext is an error" ;;
-  *)
-    echo "FAIL: a top entity that asks for HasCircuitContext gave another error:"
-    echo "$top_out" | head -5; fail=1 ;;
-esac
+cat > "$scratch/TopByName.hs" <<'HS'
+{-# LANGUAGE ImplicitParams #-}
+
+module TopByName where
+
+import Clash.CircuitContext
+
+topEntity :: (HasCircuitContext) => Int -> Int
+topEntity x = x + 1
+{-# OPAQUE topEntity #-}
+HS
+for top in Top TopByName; do
+  top_out=$(cabal exec ${cabalargs[@]+"${cabalargs[@]}"} -- ghc -v0 -fno-code \
+    -fforce-recomp -package clash-circuit-context \
+    -fplugin=Clash.CircuitContext.Plugin "$scratch/$top.hs" 2>&1); top_rc=$?
+  case "$top_rc:$top_out" in
+    0:*)
+      echo "FAIL: a top entity that asks for HasCircuitContext compiled ($top.hs)"; fail=1 ;;
+    *"is a top entity, and its signature asks for HasCircuitContext"*)
+      echo "ok: a top entity that asks for HasCircuitContext is an error ($top.hs)" ;;
+    *)
+      echo "FAIL: a top entity that asks for HasCircuitContext gave another error ($top.hs):"
+      echo "$top_out" | head -5; fail=1 ;;
+  esac
+done
 rm -rf "$scratch"
 
 # An incremental build after an edit that leaves an interface as it was. A

@@ -46,6 +46,9 @@ wrapper's signature, also behind a synonym of the designer's (`type MyC dom
 expression one call stack when the callee's type asks for a constraint
 tuple.
 
-A top entity (`Synthesize`) whose signature asks for `HasCircuitContext` is
-an error: Clash would add ports for the context, and the port names of the
-annotation would land on the wrong ports.
+A top entity whose signature asks for `HasCircuitContext` is an error: Clash
+would add ports for the context, and the port names of an annotation would
+land on the wrong ports. A top entity is a binding with a `Synthesize` or
+`TopEntity` annotation, or a top-level binding named `topEntity`, which
+Clash takes as a top entity without an annotation (its ports would lose
+their names).

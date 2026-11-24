@@ -406,6 +406,12 @@ signature is untouched. To opt back out, at four granularities:
 topEntity = withoutCircuitContext (myInstrumentedCircuit clk rst)
 ```
 
+A top entity must supply the context this way: a top entity whose signature
+asks for `HasCircuitContext` is a compile error. A top entity is a binding
+with a `Synthesize` or `TopEntity` annotation of Clash, or a top-level
+binding named `topEntity`, which Clash takes as a top entity without an
+annotation.
+
 `withoutCircuitContext` is exactly `let ?circuitContext = noCircuitContext in …`.
 In simulation, the wrapped call gives the values of the uninstrumented
 function, and records nothing. Its HDL does the same function as the HDL of
