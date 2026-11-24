@@ -338,7 +338,7 @@ chunkBytes = 16 * 1024
 
 -- | The size of a full-grown region of the spill file.
 regionBytes :: Int
-regionBytes = 64 * 1024
+regionBytes = 16 * 1024
 
 -- | The first bytes of a spill file.
 magic :: ByteString.ByteString

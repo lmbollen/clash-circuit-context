@@ -151,6 +151,27 @@ valueAt i
   | P.otherwise = P.fromIntegral i
 {-# NOINLINE valueAt #-}
 
+{- | The regions of a spill file: each one's offset, size and owner (0: the
+metadata, @i + 1@: signal @i@).
+-}
+regionsOf :: ByteString.ByteString -> [(Int, Int, Int)]
+regionsOf contents = go (word 24)
+ where
+  word o =
+    P.foldr
+      (\i acc -> acc P.* 256 P.+ P.fromIntegral (ByteString.index contents (o P.+ i)))
+      0
+      [0 .. 7]
+  go off
+    | off P.+ 32 P.> ByteString.length contents P.|| word off P.== 0 = []
+    | P.otherwise = (off, word off, word (off P.+ 8)) : go (off P.+ word off)
+
+-- | The page size the spill file's regions are multiples of: its first region's offset.
+pageOf :: ByteString.ByteString -> Int
+pageOf contents = case regionsOf contents of
+  (off, _, _) : _ -> off
+  [] -> 0
+
 -- | The path of a waveform name: in @waveforms@, as every test's.
 pathOf :: String -> FilePath
 pathOf name = "waveforms" </> name
@@ -685,13 +706,19 @@ tests =
         -- No environment variable turns mapping off.
         setEnv "CCC_SPILL_NO_MMAP" "1"
         (r, rec) <- withRecording (Just spillFile) $ do
-          -- About 600 KiB of records: regions of 4, 8, 16, 32 and then 64 KiB.
+          -- About 600 KiB of records: regions of a page, two pages, and then
+          -- (at 4 KiB pages) 16 KiB each.
           _ <- evaluate (P.sum (P.map P.toInteger (sampleN 200000 counter)))
           mappings
         unsetEnv "CCC_SPILL_NO_MMAP"
         -- The counter's region, and the metadata's.
         P.either (Left . P.show) Right r @?= Right 2
         mappings >>= (@?= 0)
+        -- A region grows to 16 KiB, or a page where a page is larger.
+        contents <- ByteString.readFile spillFile
+        let sizes = [size | (_, size, owner) <- regionsOf contents, owner P.== 1]
+        P.maximum sizes @?= P.max 16384 (pageOf contents)
+        P.take 1 sizes @?= [pageOf contents]
         discardRecording rec
     , -- Between storing a signal's newest record and its progress, a killed
       -- run's spill file has the record but not yet the progress.
@@ -705,16 +732,7 @@ tests =
         _ <- writeVCD (0, recordingEnd rec) rec (file "formats-lagging-whole" "vcd")
         -- The progress of the counter's last region: back to 0.
         contents <- ByteString.readFile (file name "spill")
-        let word o =
-              P.foldr
-                (\i acc -> acc P.* 256 P.+ P.fromIntegral (ByteString.index contents (o P.+ i)))
-                0
-                [0 .. 7] ::
-                Int
-            regions off
-              | off P.+ 32 P.> ByteString.length contents P.|| word off P.== 0 = []
-              | P.otherwise = (off, word (off P.+ 8)) : regions (off P.+ word off)
-            lastOfCounter = P.last [off | (off, owner) <- regions (word 24), owner P.== 1]
+        let lastOfCounter = P.last [off | (off, _, owner) <- regionsOf contents, owner P.== 1]
             progressAt = lastOfCounter P.+ 24
             lagging =
               ByteString.take progressAt contents

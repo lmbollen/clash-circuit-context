@@ -119,7 +119,7 @@ data Spill
     the spill file, and to the waveform.
 
     A value is in the file as soon as it is recorded, also when the process is
-    killed right after. The file's disk space is reserved ahead, up to 64 KiB
+    killed right after. The file's disk space is reserved ahead, up to 16 KiB
     per signal, so a full disk stops the recording (not the run) with a
     message, and the waveform ends where the recording stopped.
     -}
