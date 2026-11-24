@@ -177,11 +177,11 @@ what the VCD declares:
 >>> declarations "waveforms/counters.vcd"
 $scope module top $end
   $var wire 8 ! out $end
-  $scope module counter_0 $end
+  $scope module counter#0 $end
     $var wire 8 % count $end
     $var wire 8 $ next $end
   $upscope $end
-  $scope module counter_1 $end
+  $scope module counter#1 $end
     $var wire 8 # count $end
     $var wire 8 " next $end
   $upscope $end
@@ -194,7 +194,7 @@ Notice three things:
 - Each named local binding (`out`, `count`, `next`) is a signal, with the
   name of the binding. The signals of a scope come in the order of their
   bindings in the source.
-- The two calls of `counter` are two scopes, `counter_0` and `counter_1`.
+- The two calls of `counter` are two scopes, `counter#0` and `counter#1`.
   The numbers come from the order of the calls in the source (see [About
   the design hierarchy](../explanation/hierarchy.md#how-instances-are-named)).
 
@@ -203,7 +203,7 @@ Notice three things:
 Open `waveforms/counters.vcd` in a waveform viewer, for example
 [Surfer](https://surfer-project.org/) or GTKWave. Both viewers also open FST
 files. Expand `top`, then
-`counter_0` and `counter_1`. The `count` of one counter goes up in the high
+`counter#0` and `counter#1`. The `count` of one counter goes up in the high
 cycles of the input. The `count` of the other goes up in the low cycles.
 
 ## What you made

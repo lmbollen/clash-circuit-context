@@ -36,9 +36,10 @@ pair inp = both
 ```
 
 Each named local binding is a signal in the scope of its function. Two calls
-of the same function are two scopes, `lag_0` and `lag_1`. They are numbered
-in the order of the calls in the source: `lag_0` is `lag inp`, the first
-call (see [About the design
+of the same function are two scopes, `lag#0` and `lag#1`. They are numbered
+in the order of the calls in the source: `lag#0` is `lag inp`, the first
+call. The number follows `#`, because `_` and a number is the position of an
+element, for example in a `Vec` (see [About the design
 hierarchy](../explanation/hierarchy.md#how-instances-are-named)).
 `printWaveform` is a helper of this book, not of the package: it prints the
 scopes and signals of the waveform (see [the
@@ -48,10 +49,10 @@ introduction](../introduction.md#the-examples-are-checked)):
 >>> printWaveform 4 (pair (pure 1))
 pair
   both
-  lag_0
+  lag#0
     early
     late
-  lag_1
+  lag#1
     early
     late
 ```
@@ -89,10 +90,10 @@ pair clk rst inp = withClockResetEnable clk rst enableGen $ syncFF inp .&&. sync
 
 >>> printWaveform 4 (pair clockGen resetGen (pure True))
 pair
-  syncFF_0
+  syncFF#0
     first
     second
-  syncFF_1
+  syncFF#1
     first
     second
 ```
@@ -115,7 +116,8 @@ helpers, see [How to control the warnings of the plugin](warnings.md).
 Instances made by `fmap` or `map` over a vector all come from one call site,
 so they are numbered in the order in which the simulation reaches them. To
 name them by their position, use `imapComponents`. It makes element `i` of
-the vector a component with the name `<name>_<i>`:
+the vector a component with the name `<name>_<i>`. This is the name of a
+position, as for an element of a `Vec`, so it has `_`, not `#`:
 
 ```haskell
 imapComponents ::

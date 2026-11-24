@@ -6,7 +6,7 @@ source: one scope for each component instance, nested as the components
 call each other. This page explains how the package knows that hierarchy,
 and why it names instances as it does.
 
-{{#drawio path="diagrams/hierarchy.drawio" alt="The design top calls counter twice. In the waveform, top has the signal out and two scopes, counter_0 and counter_1, each with count and next"}}
+{{#drawio path="diagrams/hierarchy.drawio" alt="The design top calls counter twice. In the waveform, top has the signal out and two scopes, counter#0 and counter#1, each with count and next"}}
 
 ## The context is an implicit parameter
 
@@ -46,7 +46,15 @@ component in the waveform is then also a module in the hardware.
 
 Two calls of the same component under one parent need two names. The
 package identifies an instance by the identity of its data on the heap, not
-by its name, and then gives the siblings numbers: `name_0`, `name_1`, … .
+by its name, and then gives the siblings numbers: `name#0`, `name#1`, … .
+
+The number follows `#`, not `_`. In a waveform, `_` and a number is a
+position in a structure: an element of a `Vec`, a position in a tuple, or
+an index of `imapComponents`. A duplicate must not look like such an
+element. For example, a scope has a vector `y`, with the elements `y_0`,
+`y_1`, … . Two calls of a helper that records a signal `y` in this scope
+give `y#0` and `y#1`. These names do not change with the elements of the
+vector that a test evaluates.
 
 The numbers come from the calls, in the order of the source: the call of
 the function, for a component that the plugin makes, and the call of
@@ -66,9 +74,9 @@ whatever the number of calls.
 The numbers rank the instances that the run evaluated. A test that
 evaluates only some of the instances numbers those in the same order, but
 from 0: if a test reads only one output of a sorting network, the
-comparators that this output needs are `cas_0`, `cas_1`, …, and `cas_4` can
+comparators that this output needs are `cas#0`, `cas#1`, …, and `cas#4` can
 be another comparator than in a test that reads all outputs. A single
-evaluated instance has no number: `syncFF`, not `syncFF_0`. Within one
+evaluated instance has no number: `syncFF`, not `syncFF#0`. Within one
 waveform, the names are in the order of the source. Between two waveforms,
 compare names only when the tests evaluate the same parts of the design.
 
@@ -93,9 +101,12 @@ argument, and Clash makes a variant of a function for each constant
 argument: such a function with `OPAQUE` becomes one module for each call
 site (see [How to generate HDL](../how-to/hdl.md)).
 
-A number never makes a name that the scope already has. If `name_0` is
-taken, for example by the first element of a pair `name`, the instances get
-two underscores: `name__0`, `name__1`, … (see [Names that are
+A number never makes a name that the scope already has. The name of a
+binding or a field has no `#` in it (a `MagicHash` name has one at its end
+only), so only a name that you give as a string, for example to
+`component`, can make a name that is taken. If such a
+name is `name#0`, the instances of `name` get two signs: `name##0`,
+`name##1`, … (see [Names that are
 taken](../reference/waveform-files.md#names-that-are-taken)).
 
 For how signals and scopes are ordered and named in a waveform, see

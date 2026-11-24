@@ -121,8 +121,8 @@ one module for each call site. The modules differ only in their names.
 Remove the annotation, or accept the extra modules. The names of instances in the HDL are Clash's,
 and can differ from the names of the scopes in the waveform. A module name
 with a number, such as `adder_0`, is a second variant of `adder` that Clash
-made, for example for a constant argument; in the waveform, `adder_0` is the
-first instance of `adder`.
+made, for example for a constant argument. In the waveform, the instances
+of `adder` are `adder#0`, `adder#1`, … .
 
 ## Compare with the HDL of the design without instrumentation
 

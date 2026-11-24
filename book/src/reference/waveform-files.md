@@ -99,13 +99,13 @@ These rows are true for both formats.
 | A component with no recorded signal under it | no scope: an empty scope is not written |
 | Order in a scope | First the signals, in the order of the position of their recorder in the source file (see below). Then the child scopes, by name, with numbers compared as numbers (`lane_2` before `lane_10`) |
 | Signals | one wire for each recorded signal, with the name of its binding |
-| Sibling instances | `name_0`, `name_1`, … (but see [Names that are taken](#names-that-are-taken)) in the order of their calls in the source, numbered among the instances that the run evaluated: a test that evaluates fewer instances numbers them from 0 too. A single evaluated instance has no number: `name`. The instances made by one call, for example by `map` over a vector, are in the order in which the simulation first reaches them; use `imapComponents` to name them by their index. See [About the design hierarchy](../explanation/hierarchy.md#how-instances-are-named) |
-| An operator that is a component | its name: `<+>_0`, `<+>_1`, … |
+| Sibling instances | `name#0`, `name#1`, … (but see [Names that are taken](#names-that-are-taken)) in the order of their calls in the source, numbered among the instances that the run evaluated: a test that evaluates fewer instances numbers them from 0 too. A single evaluated instance has no number: `name`. The instances made by one call, for example by `map` over a vector, are in the order in which the simulation first reaches them; use `imapComponents` to name them by their index. See [About the design hierarchy](../explanation/hierarchy.md#how-instances-are-named) |
+| An operator that is a component | its name: `<+>#0`, `<+>#1`, … |
 | Elements of a `Vec` | `name_0`, `name_1`, …; a `Vec` in a `Vec`: `name_0_3` |
 | Components of a tuple | `name_0`, `name_1`, … |
 | Fields of a record | `name_field` |
-| The bindings of a local function without a scope, for each call | `v_0`, `v_1`, … in the scope of the caller |
-| A name outside all components | in the scope `logic`. This scope keeps the name `logic`, so a component named `logic` beside it is `logic_0`. Without names outside all components, a component named `logic` keeps its name |
+| The bindings of a local function without a scope, for each call | `v#0`, `v#1`, … in the scope of the caller |
+| A name outside all components | in the scope `logic`. This scope keeps the name `logic`, so a component named `logic` beside it is `logic#0`. Without names outside all components, a component named `logic` keeps its name |
 | A signal that the simulation never evaluated, for example a binding that nothing uses | not in the waveform at all. When a run ends, the recorder evaluates each trace up to the last cycle of the run (see [The cost of recording](../explanation/cost.md)), so a trace that the run evaluated once is in the waveform |
 | A cycle that was not evaluated, before the end of the run | the value `z`, for example a probe in a cycle in which nothing used its value, or a trace that the run evaluated less far than the other signals |
 | A probed value that the simulation evaluated after a later cycle | at its own cycle. A value that a mealy machine keeps in its state and uses a few cycles later is evaluated late |
@@ -121,12 +121,17 @@ the sidecar.
 Each signal and scope in a scope has a name of its own.
 
 - A name that occurs once in a scope stays as it is.
-- The duplicates of a name are numbered `name_0`, `name_1`, …, if none of
+- The duplicates of a name are numbered `name#0`, `name#1`, …, if none of
   these names is in the scope already.
-- Otherwise they get two underscores: `name__0`, `name__1`, …, or more
-  underscores until no name is taken. For example, a pair `x` gives `x_0`
-  and `x_1`, so the two `x` of two calls of a helper beside it are `x__0`
-  and `x__1`.
+- Otherwise they get two signs: `name##0`, `name##1`, …, or more signs
+  until no name is taken. Only a name that you give as a string, for
+  example to `component`, can contain `#` and so take such a name. For
+  example, a component named `"x#0"` beside two calls of a helper that
+  records `x` makes the two `x` into `x##0` and `x##1`.
+- `_` and a number is a position in a structure, not a duplicate: an
+  element of a `Vec`, a position in a tuple, an index of `imapComponents`.
+  So the two `x` of two calls of a helper beside a pair `x` are `x#0` and
+  `x#1`, and the elements of the pair are `x_0` and `x_1`.
 - Two signals with the same name and instance are numbered in the same way,
   in the order in which they were first recorded. Only probe contexts made
   by hand can make them.
@@ -155,8 +160,8 @@ file: for a binding that the plugin records, the position of the binding.
   signals have the position of the call: they come where the helper is
   called, the signals of one call together, in the order of the helper's
   own bindings. Two calls of the helper give signals of the same name, which
-  are numbered in the order of the calls: `count_0`, `other_0`, `count_1`,
-  `other_1`.
+  are numbered in the order of the calls: `count#0`, `other#0`, `count#1`,
+  `other#1`.
 - The fields of a record have the position of their binding, and then come
   in the order of their declaration, also inside a nested record.
 - The elements of a `Vec` have the position of their binding, and come in
@@ -194,7 +199,7 @@ by the path of the waveform file, with the extension `.json`.
 
 | Key | Content |
 |---|---|
-| `signals` | one entry for each described signal. The key is the full path of the signal in the waveform, for example `top.counter_0.count`, or `logic.out` for a name outside all components. The value is the key of the type of the signal in `types`. A signal that is recorded as bits only has no entry |
+| `signals` | one entry for each described signal. The key is the full path of the signal in the waveform, for example `top.counter#0.count`, or `logic.out` for a name outside all components. The value is the key of the type of the signal in `types`. A signal that is recorded as bits only has no entry |
 | `types` | one entry for each type of a described signal. The key is `<fingerprint>:<type>`. The value tells a viewer how to show the bits of the type: its constructors, fields and widths, from its `Waveform` instance |
 | `luts` | the lookup tables of the types whose `Waveform` instance uses one: for each recorded value, its bits and the text to show. Empty when no type uses a lookup table |
 | `clash-circuit-context` | only in the sidecar of the waveform of a failed run: see below |
