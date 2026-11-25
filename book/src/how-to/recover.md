@@ -44,13 +44,15 @@ A run that is cancelled after it recorded a cycle writes a message on
 stderr with the absolute path of the spill file:
 
 ```text
-clash-circuit-context: the run was stopped; what it recorded is in /home/you/project/waveforms/firmware.spill. Write its waveform in Haskell with
+clash-circuit-context: the run was stopped; what it recorded is in /home/you/project/waveforms/firmware.spill. The next recording at this path starts that file again. Write its waveform first, in Haskell with
   recoverWaveform defaultOptions "/home/you/project/waveforms/firmware"
 or from a shell, in a cabal project with clash-circuit-context (spill2vcd writes a VCD), with
   cabal run clash-circuit-context:spill2fst -- /home/you/project/waveforms/firmware.spill
 ```
 
-The message gives both ways with the path filled in. For a spill file whose
+The message gives both ways with the path filled in. Write the waveform
+before you run the test again: the next recording at the same path starts
+the spill file again, and what the stopped run recorded is lost. For a spill file whose
 name does not end in `.spill` (one of `withRecording`), it gives `writeSpill`
 in place of `recoverWaveform`.
 
@@ -89,8 +91,8 @@ Do one of these:
   [Executables](../reference/executables.md).
 
   The executable prints the window that it wrote, for example
-  `spill2fst: wrote waveforms/firmware.fst, window 0,128717`: the run
-  recorded 128717 cycles.
+  `spill2fst: wrote /home/you/project/waveforms/firmware.fst, window 0,128717`:
+  the run recorded 128717 cycles. The path in the message is absolute.
 
 - From Haskell, use `recoverWaveform` with the options of the waveform. It
   takes the path of the waveform without an extension, as `writeWaveform`

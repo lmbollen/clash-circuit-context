@@ -36,8 +36,8 @@ The executables keep the spill file, unless you give `--delete`.
 ## Output and exit status
 
 For each waveform that it writes, an executable prints
-`<program>: wrote <path>, window <start>,<stop>`: the window that the
-waveform shows. Without `-w`, this is all that the run recorded, so it tells
+`<program>: wrote <path>, window <start>,<stop>`, with the absolute path of
+the waveform, and the window that the waveform shows. Without `-w`, this is all that the run recorded, so it tells
 how many cycles a spill file has.
 
 For each spill file that it cannot write, it prints the reason on stderr,

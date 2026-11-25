@@ -234,9 +234,11 @@ Warn.hs:42:1: warning: [-Wx-circuit-context]
 - A binding that no recorder could ever take, for example a list or a
   function. See [Types that can be recorded](recordable-types.md).
 - A binding with a higher-rank type. It is always a function.
-- A closed local binding without a signature, unless it refers to itself. It
-  is skipped before the oracle is asked (see [What the plugin
-  instruments](instrumentation.md#local-bindings)).
+- A closed local binding without a signature that GHC generalised, or that
+  is in a function with `HasProbe`. It is not recorded, and the oracle is not
+  asked (see [What the plugin instruments](instrumentation.md#local-bindings)).
+  One that GHC did not generalise, in a traced function, is reported (see
+  above).
 - A function with `HasCircuitContext`, without `OPAQUE`, and with the
   annotation `{-# ANN f NoCircuitScope #-}`.
 - The signature of a class method, with `HasCircuitContext` or `HasProbe`.
