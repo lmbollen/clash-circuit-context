@@ -51,8 +51,9 @@ The renamer-stage rewrite ('GHC.renamedResultAction'):
   of one plugin-made component by their calls.
   A function that is not split (a class or instance method, or a function
   with an annotation other than 'NoCircuitScope') keeps its body, but its
-  signature has @HasCircuitContext@ written out as its three constraints
-  (see 'keptSig'), so that GHC 9.8 gives each of its calls a call stack.
+  signature has @HasCircuitContext@ written out as the constraints a caller
+  supplies (see 'keptSig'), so that GHC 9.8 gives each of its calls a call
+  stack.
 
 * The pass is IDEMPOTENT: an injection this pass would make, and that is
   already there under the same name, is not made twice (see
@@ -458,15 +459,20 @@ diagnose modes opaques signed both vouched groups = concatMap check binders
   note spn body = (spn, Diag.Uninstrumented, body)
 
 {- | Does this binder have @where@\/@let@ bindings that a component wrap
-would have scoped?
+would have scoped? A @let@ anywhere in its equations counts, as a @where@
+does: without the wrap, both trace into the caller's scope. Only a binding
+that would be traced counts ('wantedBinder'): not one whose name starts with
+@_@, and not one that a code generator made, such as those of a
+circuit-notation block.
 -}
 scopesSomething :: MatchGroup GhcRn (LHsExpr GhcRn) -> Bool
-scopesSomething (MG _ (L _ ms)) = any nonEmpty ms
+scopesSomething mg =
+  any
+    (\n -> wantedBinder n (GHC.getSrcSpan n))
+    (concatMap (collectLocalBinders CollNoDictBinders) (SYB.listify local mg))
  where
-  nonEmpty (L _ (Match _ _ _ (GRHSs _ _ lbs))) = not (isEmpty lbs)
-  nonEmpty _ = False
-  isEmpty (EmptyLocalBinds _) = True
-  isEmpty _ = False
+  local :: HsLocalBinds GhcRn -> Bool
+  local _ = True
 
 {- | Binders the author annotated @{\-\# ANN f NoCircuitScope \#-\}@: a
 'HasCircuitContext' function that deliberately has no @OPAQUE@ pragma.
@@ -743,8 +749,8 @@ methodSigsWrittenOut ctx g = do
     d -> pure d
 
 {- | The signature of a function that the pass does not split, with each
-@HasCircuitContext@ in the constraints of its spine written out as its three
-constraints ('keptContext'), also behind a synonym (see 'withContext').
+@HasCircuitContext@ in the constraints of its spine written out as the
+constraints of 'keptContext', also behind a synonym (see 'withContext').
 GHC 9.8 gives two calls in one expression one call stack when the callee's
 type asks for a constraint tuple: the calls of such a function then have
 the site of the first on the call path that the next wrapper receives
@@ -767,12 +773,14 @@ keptSig ctx (L l sig) =
   ifTraced modes rewrite = modes >>= \(_, isTrace) -> if isTrace then rewrite else pure sig
 
 {- | What a function that is not split asks for instead of
-@HasCircuitContext@: all three of its constraints. Unlike a wrapper's
-signature, it keeps 'TurnOnTheCircuitContextPlugin': its callers call it,
-and it asks the module of each call to turn the plugin on.
+@HasCircuitContext@: the call sites and the context, as a wrapper does.
+'TurnOnTheCircuitContextPlugin' says that the module that defines a function
+was compiled without the plugin, and this module was not, so the function's
+callers need no plugin: a test suite without it calls a class method or an
+annotated function as it calls a function that is split.
 -}
 keptContext :: AbiNames -> [GHC.Name]
-keptContext abi = [abiCallSitesOnly abi, abiCircuitContextOnly abi, abiTurnOnPlugin abi]
+keptContext abi = [abiCallSitesOnly abi, abiCircuitContextOnly abi]
 
 --------------------------------------------------------------------------------
 -- Top-level rewrite
@@ -871,7 +879,16 @@ rewriteInside ctx mode0 = goM mode0
           (fmap (/= Just 0) . etaArity ctx 0 . snd)
           [(n, ty) | L _ (TypeSig _ ns ty) <- sigs, L _ n <- ns]
     let localSigned = [n | L _ (TypeSig _ ns _) <- sigs, L _ n <- ns]
-    groups' <- mapM (onGroup m localModes localSigned rankN) groups
+    -- The type variables a local function's own signature brings into scope
+    -- for its body, as the top-level one's do ('ctxScoped').
+    scopedTyVars <- GHC.xopt LangExt.ScopedTypeVariables <$> GHC.getDynFlags
+    let localScoped =
+          [ (n, map GHC.occName (hsLTyVarNames bndrs))
+          | scopedTyVars
+          , L _ (TypeSig _ ns (HsWC _ (L _ (HsSig _ HsOuterExplicit{hso_bndrs = bndrs} _)))) <- sigs
+          , L _ n <- ns
+          ]
+    groups' <- mapM (onGroup m localModes localSigned localScoped rankN) groups
     (groups'', sigs') <- splitGroups ctx localWorkerName [] groups' sigs
     pure (XValBindsLR (NValBinds groups'' sigs'))
   onVB _ vb = pure vb
@@ -910,17 +927,18 @@ rewriteInside ctx mode0 = goM mode0
     Mode ->
     [(GHC.Name, Mode)] ->
     [GHC.Name] ->
+    [(GHC.Name, [GHC.OccName])] ->
     [GHC.Name] ->
     (GHC.RecFlag, LHsBinds GhcRn) ->
     GHC.TcM (GHC.RecFlag, LHsBinds GhcRn)
-  onGroup m localModes localSigned rankN (r, bs) = do
+  onGroup m localModes localSigned localScoped rankN (r, bs) = do
     let
       binds = bindsToList bs
       -- Binders this pass has ALREADY aliased (a previous run of it, when the
       -- plugin is enabled twice): renaming them again would bury the traced
       -- name under a second alias.
       aliased = mapMaybe (aliasedBinder abi) binds
-    results <- mapM (onLocalBind m localModes localSigned rankN aliased) binds
+    results <- mapM (onLocalBind m localModes localSigned localScoped rankN aliased) binds
     let
       r' = if all (null . snd) results then r else GHC.Recursive
       binds' = concatMap (\(b0, extras) -> b0 : extras) results
@@ -930,14 +948,17 @@ rewriteInside ctx mode0 = goM mode0
     Mode ->
     [(GHC.Name, Mode)] ->
     [GHC.Name] ->
+    [(GHC.Name, [GHC.OccName])] ->
     [GHC.Name] ->
     [GHC.Name] ->
     LHsBind GhcRn ->
     GHC.TcM (LHsBind GhcRn, [LHsBind GhcRn])
-  onLocalBind inherited localModes localSigned rankN aliased (L l b) = case b of
+  onLocalBind inherited localModes localSigned localScoped rankN aliased (L l b) = case b of
     FunBind{fun_id = L _ nm} -> do
       let m = fromMaybe inherited (lookup nm localModes)
-      ms <- goM m (fun_matches b)
+      ms <- case lookup nm localScoped of
+        Just scoped -> rewriteInside ctx{ctxScoped = ctxScoped ctx <> scoped} m (fun_matches b)
+        Nothing -> goM m (fun_matches b)
       inferred <- inferredHigherRank localSigned nm (zeroArgGRHSs ms)
       when
         ( m == TraceMode
@@ -1522,10 +1543,23 @@ splitGroups ctx workerName keep groups sigs = do
     pairFor ns = case [(wr, wo) | (ns', wr, wo) <- sigPairs, map unLoc ns' == map unLoc ns] of
       p : _ -> Just p
       [] -> Nothing
+    -- The type variables the wrapper passes on to the worker: those its
+    -- signature quantifies over, which the worker's quantifies over in the
+    -- same order. A type that is ambiguous without a type application
+    -- (AllowAmbiguousTypes) needs them, as the wrapper's call of the worker
+    -- can fix them no other way.
+    tyArgsFor n = case [wr | (ns, wr, _) <- sigPairs, n `elem` map unLoc ns] of
+      HsWC _ (L _ (HsSig _ bndrs _)) : _ -> specifiedTyVars bndrs
+      [] -> []
     split lb@(L l b) = case b of
       FunBind{fun_id = L _ n}
         | Just w <- lookup n workers ->
-            [ L l b{fun_ext = GHC.mkNameSet [w], fun_matches = wrapperMG n w (locA l) (fun_matches b)}
+            [ L
+                l
+                b
+                  { fun_ext = GHC.mkNameSet [w]
+                  , fun_matches = wrapperMG n w (tyArgsFor n) (locA l) (fun_matches b)
+                  }
             , -- The equations keep the user's name: GHC names the function
               -- of an equation after it in its messages.
               L l b{fun_id = L (noAnnSrcSpan (locA l)) w}
@@ -1570,14 +1604,16 @@ splitGroups ctx workerName keep groups sigs = do
   abi = ctxAbi ctx
 
   -- The wrapper's one equation: no arguments, the context of the call, the
-  -- worker.
+  -- worker at the wrapper's type variables. It is written prefix: an
+  -- operator defined infix has no arguments to put around it here.
   wrapperMG ::
     GHC.Name ->
     GHC.Name ->
+    [GHC.Name] ->
     GHC.SrcSpan ->
     MatchGroup GhcRn (LHsExpr GhcRn) ->
     MatchGroup GhcRn (LHsExpr GhcRn)
-  wrapperMG n w spn (MG x (L lm ms)) = case ms of
+  wrapperMG n w tyArgs spn (MG x (L lm ms)) = case ms of
     L lm1 (Match mx mc _ (GRHSs gx (L lg (GRHS gex _ _) : _) _)) : _ ->
       MG
         x
@@ -1591,7 +1627,7 @@ splitGroups ctx workerName keep groups sigs = do
                     (mkMatchPats [])
                     ( GRHSs
                         gx
-                        [L lg (GRHS gex [] (wrapperBody spn w))]
+                        [L lg (GRHS gex [] (wrapperBody spn w tyArgs))]
                         (EmptyLocalBinds noExtField)
                     )
                 )
@@ -1599,7 +1635,7 @@ splitGroups ctx workerName keep groups sigs = do
         )
     _ -> MG x (L lm ms)
 
-  wrapperBody spn w =
+  wrapperBody spn w tyArgs =
     mkLetE
       spn
       ( HsIPBinds
@@ -1617,19 +1653,36 @@ splitGroups ctx workerName keep groups sigs = do
               ]
           )
       )
-      (mkVarE spn w)
+      (foldl (\e v -> mkHsAppType e (HsWC [] (tyVar v))) (mkVarE spn w) tyArgs)
+   where
+    tyVar :: GHC.Name -> LHsType GhcRn
+    tyVar v = L (noAnnSrcSpan spn) (HsTyVar noAnn NotPromoted (L (noAnnSrcSpan spn) v))
 
   ipBind spn ip e =
     L (noAnnSrcSpan spn) (IPBind noExtField (L (noAnnSrcSpan spn) (HsIPName ip)) e)
 
   renameCtxt w = \case
-    c@FunRhs{mc_fun = L lf _} -> c{mc_fun = L lf w}
+    c@FunRhs{mc_fun = L lf _} -> c{mc_fun = L lf w, mc_fixity = Prefix}
     c -> c
+
+{- | The type variables of a signature that a type application can give, in
+the order it takes them: all those it binds implicitly, and those of its
+@forall@ that are not in braces.
+-}
+specifiedTyVars :: HsOuterSigTyVarBndrs GhcRn -> [GHC.Name]
+specifiedTyVars = \case
+  HsOuterImplicit{hso_ximplicit = ns} -> ns
+  HsOuterExplicit{hso_bndrs = bs} ->
+    [ n
+    | b <- bs
+    , hsTyVarBndrFlag (unLoc b) == GHC.SpecifiedSpec
+    , n <- hsLTyVarNames [b]
+    ]
 
 {- | A signature with each @HasCircuitContext@ in the constraints of its spine
 replaced by @with@: the wrapper asks for @CallSitesOnly, CircuitContextOnly@,
-the worker for @CircuitContextOnly@, and a function that is not split for all
-three ('keptContext').
+the worker for @CircuitContextOnly@, and a function that is not split for
+what the wrapper asks for ('keptContext').
 
 The wrapper's constraints (and those of a function that is not split) are
 written out, also those behind a synonym of the designer's
@@ -1637,8 +1690,8 @@ written out, also those behind a synonym of the designer's
 calls in one expression one call stack when the callee's type asks for a
 constraint tuple, and a synonym of a tuple is one (see
 'Clash.CircuitContext.Core.CallSitesOnly'). The worker leaves out the call
-sites, which Clash would specialise it on, and 'TurnOnTheCircuitContextPlugin',
-which only this module's plugin solves.
+sites, which Clash would specialise it on. Neither asks for
+'TurnOnTheCircuitContextPlugin': this module was compiled with the plugin.
 -}
 withContext :: Ctx -> [GHC.Name] -> LHsSigWcType GhcRn -> GHC.TcM (LHsSigWcType GhcRn)
 withContext ctx with (HsWC wx sig) = HsWC wx <$> withSigContext ctx with sig

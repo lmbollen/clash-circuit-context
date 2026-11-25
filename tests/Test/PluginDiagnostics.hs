@@ -387,6 +387,27 @@ noOpaque inp = out2
  where
   out2 = inp + 5
 
+{- | 'noOpaque' as an operator: the pragma the warning suggests names it in
+parentheses, @{\-# OPAQUE (|+|) #-\}@, as a pragma must.
+-}
+(|+|) ::
+  (HasCircuitContext) => Signal System Int -> Signal System Int -> Signal System Int
+a |+| b = out5
+ where
+  out5 = a + b
+
+{- | 'noOpaque' with its local binding in a @let@: it lands in the caller's
+scope just the same, so it warns just the same.
+-}
+letNoOpaque :: (HasCircuitContext) => Signal System Int -> Signal System Int
+letNoOpaque inp = let out6 = inp + 6 in out6
+
+{- | 'letNoOpaque' whose only local binding is not traced (its name starts
+with @_@): nothing lands in the caller's scope, so it does not warn.
+-}
+underscoreOnly :: (HasCircuitContext) => Signal System Int -> Signal System Int
+underscoreOnly inp = let _ignored = inp + 7 in inp
+
 {- | Both constraints on one signature: probe mode wins and a probed binder
 never becomes a component, so this is a component that silently is not one.
 Never called — the diagnostic is the point.
@@ -413,6 +434,9 @@ top inp =
     + viaTuplePat inp
     + partialLast 1 inp
     + noOpaque (unsigned inp)
+    + (inp |+| inp)
+    + letNoOpaque inp
+    + underscoreOnly inp
     + (unAwkward <$> sized (Awkward . fromIntegral <$> inp :: Signal System (Awkward 8)))
     + (unAwkward <$> grounded (Awkward . fromIntegral <$> inp))
     + DeclGroups.beforeSplice inp

@@ -122,6 +122,8 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
   for want in \
     ${tags[@]+"${tags[@]}"} \
     "'noOpaque' has HasCircuitContext but no OPAQUE" \
+    "Add {-# OPAQUE (|+|) #-} if you wanted one." \
+    "'letNoOpaque' has HasCircuitContext but no OPAQUE" \
     "'unsigned' is OPAQUE but has no type signature" \
     "'bothModes' has both HasProbe and HasCircuitContext" \
     "not traced: Signal dom Undescribed" \
@@ -152,6 +154,13 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
       echo "FAIL: expected diagnostic missing: $want"; fail=1
     fi
   done
+  # A function without OPAQUE whose local bindings are not traced is not
+  # reported (Test/PluginDiagnostics.hs underscoreOnly).
+  if grep -qF "'underscoreOnly' has HasCircuitContext" "$log"; then
+    echo "FAIL: warned about a function whose local bindings are not traced"; fail=1
+  else
+    echo "ok: no OPAQUE warning without a traced local binding"
+  fi
   # Higher-rank bindings are never reported. A local is a function, so it is
   # no trace target and is left alone (Test/Downstream.hs rankN, probedRankN).
   # A component is eta-expanded, or under ImpredicativeTypes wrapped as
@@ -200,15 +209,19 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
   # the enclosing signature already binds its type variables with an
   # explicit forall under ScopedTypeVariables (Test/Downstream.hs
   # unsignedClosedScoped.scopedPulse). The warning ends at GHC's excerpt.
+  # The same in a local function whose own signature binds them
+  # (unsignedClosedLocalScoped.localScopedPulse).
   if grep -q "Compiling Test.Downstream" "$log"; then
-    scoped=$(awk '/not traced: scopedPulse ::/ {p = 1} p && /^ *[0-9]* *\|/ {exit} p' "$log")
-    if [ -z "$scoped" ]; then
-      echo "FAIL: no warning for the closed binding scopedPulse"; fail=1
-    elif grep -q "explicit forall" <<<"$scoped"; then
-      echo "FAIL: the warning for scopedPulse says to bind a type variable already in scope"; fail=1
-    else
-      echo "ok: a closed-binding warning gives no forall hint for a scoped type variable"
-    fi
+    for binding in scopedPulse localScopedPulse; do
+      scoped=$(awk "/not traced: $binding ::/ {p = 1} p && /^ *[0-9]* *\\|/ {exit} p" "$log")
+      if [ -z "$scoped" ]; then
+        echo "FAIL: no warning for the closed binding $binding"; fail=1
+      elif grep -q "explicit forall" <<<"$scoped"; then
+        echo "FAIL: the warning for $binding says to bind a type variable already in scope"; fail=1
+      else
+        echo "ok: a closed-binding warning gives no forall hint for a scoped type variable ($binding)"
+      fi
+    done
   fi
   # Integer inside a composite: no BitPack, and the fix is Signed 64, never a
   # NonTranslatable declaration (that would silence every later real fix).

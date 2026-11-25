@@ -49,7 +49,7 @@ import Clash.CircuitContext.Recording (
   writeVCD,
  )
 import Test.SourceOrder.Acc (acc)
-import Test.SourceOrder.Plain (plainCalls)
+import Test.SourceOrder.Plain (plainCalls, plainRoots)
 import Test.Vcd (asInts, decodeVCDPaths, model)
 
 --------------------------------------------------------------------------------
@@ -476,6 +476,11 @@ tests =
     , testProperty
         "the calls of a module without the plugin"
         (numbered "plainCalls.acc" ".total" plainCalls)
+    , testProperty "the calls of a module without the plugin, from code without the context"
+        $ Hedgehog.withTests 1
+        . property
+        $ plainRoots
+        === [[0, 0, 1], [0, 0, 2], [0, 0, 1], [0, 0, 3], [0, 0, 1], [0, 0, 4]]
     , testProperty
         "the calls in an instance method body"
         (numbered "methodBody.acc" ".total" methodBody)

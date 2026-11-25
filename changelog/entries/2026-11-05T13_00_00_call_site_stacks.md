@@ -30,10 +30,12 @@ TurnOnTheCircuitContextPlugin)`. The call sites are an implicit parameter
 of the worker `$wf`, at the function's definition. The
 context is a `SimOnly CircuitContext`; `noCircuitContext` is one too, so
 `let ?circuitContext = noCircuitContext in …` still supplies it. Only the
-plugin solves `TurnOnTheCircuitContextPlugin`: compiling a call of an
-instrumented function without the plugin (for example `clash Design.hs`
-without `-fplugin`, which ignores an `OPTIONS_GHC` plugin) is now an error
-that names it, instead of HDL with one module per call. Code instrumented by
+plugin solves `TurnOnTheCircuitContextPlugin`, and it takes it out of the
+signatures of the module it compiles: a function compiled without the plugin
+(for example by `clash Design.hs` without `-fplugin`, which ignores an
+`OPTIONS_GHC` plugin) now makes its calls an error that names it, instead of
+HDL with one module per call. A module that only calls instrumented
+functions, such as a test suite, needs no plugin. Code instrumented by
 hand without the plugin asks for `CircuitContextOnly` instead. The arguments
 of `component`, `imapComponents`, `withoutCircuitContext` and the waveform
 functions are given `CircuitContextOnly`, which

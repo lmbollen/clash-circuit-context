@@ -58,6 +58,7 @@ module Test.Downstream (
   unsignedClosed,
   unsignedClosedHiddenOut,
   unsignedClosedScopedOut,
+  unsignedClosedLocalScoped,
   handWritten,
 
   -- * Higher-rank signatures
@@ -380,6 +381,19 @@ unsignedClosedScoped = scopedPulse
 unsignedClosedScopedOut :: (HasCircuitContext) => Signal System Bool
 unsignedClosedScopedOut =
   withClockResetEnable clockGen resetGen enableGen unsignedClosedScoped
+
+{- | The closed binding of 'unsignedClosedScoped' in a local function, whose
+own signature binds @dom@ with an explicit forall: the warning does not say
+to bind it there either.
+-}
+unsignedClosedLocalScoped :: (HasCircuitContext) => Signal System Bool
+unsignedClosedLocalScoped = withClockResetEnable clockGen resetGen enableGen inner
+ where
+  inner :: forall dom. (HasCircuitContext, HiddenClockResetEnable dom) => Signal dom Bool
+  inner = localScopedPulse
+   where
+    localScopedPulse = riseEvery d4
+{-# OPAQUE unsignedClosedLocalScoped #-}
 
 -- | The same counter, written with a hidden clock, reset and enable.
 hiddenCounter ::

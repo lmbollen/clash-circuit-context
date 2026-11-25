@@ -18,9 +18,10 @@ The plugin then wraps the function in a named *component* (a hierarchy
 level), auto-traces every named local binding of traceable type under its
 binder name, and auto-probes bindings inside `HasProbe` functions (e.g.
 mealy step functions). Under `noCircuitContext` (or `withoutCircuitContext`)
-every combinator collapses to identity. A design that asks for
-`HasCircuitContext` needs the plugin: without it, a call of an instrumented
-function is an error that names `TurnOnTheCircuitContextPlugin`.
+every combinator collapses to identity. A module that defines functions that
+ask for `HasCircuitContext` needs the plugin: without it, a call of such a
+function is an error that names `TurnOnTheCircuitContextPlugin`. A module
+that only calls them, such as a test suite, does not.
 
 ## Adding it to your project
 
@@ -133,10 +134,10 @@ are numbered by their call sites in `top`:
 ```
 top
 ├── out
-├── acc_0
+├── acc#0
 │   ├── total
 │   └── next   (a per-cycle probe from the step function)
-└── acc_1
+└── acc#1
     ├── total
     └── next
 ```
