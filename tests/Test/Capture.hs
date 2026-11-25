@@ -21,13 +21,14 @@ import qualified Prelude as P
 
 import Control.Exception (ErrorCall, SomeException, evaluate, try)
 import Control.Monad (when)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
+import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef, writeIORef)
 import Data.List (isPrefixOf)
 import qualified Data.Map.Strict as Map
 import System.Directory (doesFileExist, removeFile, removePathForcibly)
 import System.Posix.Files (accessModes, fileMode, getFileStatus, intersectFileModes)
 import System.FilePath ((-<.>), (<.>), (</>))
 import System.IO.Unsafe (unsafePerformIO)
+import System.Timeout (timeout)
 
 import Test.Tasty (TestTree, testGroup)
 import Test.Tasty.HUnit (Assertion, assertBool, testCase, (@?=))
@@ -35,9 +36,10 @@ import Test.Tasty.HUnit (Assertion, assertBool, testCase, (@?=))
 import Clash.Explicit.Prelude
 
 import Clash.CircuitContext
-import Clash.CircuitContext.Recording (discardRecording)
+import Clash.CircuitContext.Recording (discardRecording, writeVCD)
 import Clash.CircuitContext.Waveform
 import Clash.CircuitContext.Waveform.Hedgehog (Capture (..), simulateWaveform)
+import Clash.Signal.Internal (Signal ((:-)))
 
 import qualified Hedgehog
 import qualified Hedgehog.Gen as Gen
@@ -48,7 +50,7 @@ import Hedgehog.Internal.Runner (checkReport)
 import qualified Hedgehog.Internal.Seed as Seed
 import qualified Hedgehog.Range as Range
 
-import Test.Vcd (decodeVCD)
+import Test.Vcd (asInts, decodeVCD)
 
 -- | A trivial traced design; the payload type is irrelevant to what we assert.
 counter :: (HasCircuitContext) => Signal System (Unsigned 8)
@@ -80,6 +82,32 @@ lateStep = cnt
   next = traceSignalC "next" (mux (pure True) step cnt)
   step = traceSignalC "step" (cnt + 1)
 {-# OPAQUE lateStep #-}
+
+{- | A traced pipeline of 6 one-cycle stages, @s0@ to @s5@, after a traced
+source @src@. Stage /i/ starts at /i/, so in cycle 1 it shows /i + 1/. A
+stage is a cons cell, not a Clash primitive, so how far a run reaches does
+not depend on how lazy 'register' is.
+
+A run of 2 cycles of @s0@ reaches @s1@ only. Finishing @s1@ evaluates cycle 0
+of @s2@, which registers then. The source sets the flag when the simulation
+evaluates it.
+-}
+pipeline :: (HasCircuitContext) => IORef Bool -> Signal System (Unsigned 8)
+pipeline reached = stage 0
+ where
+  stage :: (HasCircuitContext) => Int -> Signal System (Unsigned 8)
+  stage 6 =
+    traceSignalC "src" (unsafePerformIO (writeIORef reached True >> pure (fromList [6 ..])))
+  stage i = traceSignalC ("s" <> P.show i) (fromIntegral i :- stage (i P.+ 1))
+{-# OPAQUE pipeline #-}
+
+{- | A pipeline without a last stage: each stage traces itself and the stage
+after it. A run reaches a stage per cycle, but finishing a stage up to the
+end of the run reaches the stages after it, without end.
+-}
+endless :: (HasCircuitContext) => Unsigned 8 -> Signal System (Unsigned 8)
+endless n = traceSignalC "stim" (n :- endless (n P.+ 1))
+{-# OPAQUE endless #-}
 
 vcdOf :: String -> FilePath
 vcdOf name = "waveforms" </> name <.> "vcd"
@@ -265,6 +293,38 @@ tests =
           out @?= [0, 0]
           vcd <- P.readFile (vcdOf name)
           Map.lookup "step" (decodeVCD 2 vcd) @?= P.Just ["00000001", "00000001"]
+    , -- Finishing a trace of the run can reach a trace the run did not:
+      -- that one has the cycles that were evaluated, and is not finished
+      -- itself, so the stages after it are not reached (see the next test).
+      testCase "a stage that only finishing reaches has the cycles it evaluated" $
+        withName "capture-late-pipeline" $ \name -> do
+          reached <- newIORef False
+          (out, rec) <- withRecording (vcdOf name -<.> "spill") $ do
+            let xs = sampleN 2 (pipeline reached)
+            _ <- evaluate (xs `deepseqX` ())
+            (,) xs <$> readIORef reached
+          P.either (P.error . P.show) pure out >>= (@?= ([0, 1], False))
+          _ <- writeVCD (0, 2) rec (vcdOf name)
+          discardRecording rec
+          vcd <- P.readFile (vcdOf name)
+          P.fmap asInts (decodeVCD 2 vcd)
+            @?= Map.fromList
+              [ ("s0", [P.Just 0, P.Just 1])
+              , ("s1", [P.Just 1, P.Just 2])
+              , ("s2", [P.Just 2, P.Nothing])
+              ]
+    , -- A design whose stages never end makes no recording that never ends:
+      -- finishing it stops, and the recording closes.
+      testCase "a pipeline without a last stage finishes" $
+        withName "capture-endless" $ \name -> do
+          done <- timeout 20000000 $ do
+            (out, rec) <- withRecording (vcdOf name -<.> "spill") $ do
+              let xs = sampleN 3 (endless 0)
+              _ <- evaluate (xs `deepseqX` ())
+              pure xs
+            discardRecording rec
+            pure out
+          P.fmap (P.either (P.error . P.show) P.id) done @?= P.Just [0, 1, 2]
     , -- The same contract inside a hedgehog property, where a failure is a
       -- VALUE in the property monad and no amount of `try` in IO can see it.
       testCase "simulateWaveform writes nothing when the property passes" $

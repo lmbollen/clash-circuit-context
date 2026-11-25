@@ -147,7 +147,7 @@ import Control.Exception (
   throwIO,
   try,
  )
-import Control.Monad (forM, forM_, when)
+import Control.Monad (forM, forM_, unless)
 import Data.Bits (xor, (.&.))
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import qualified Data.IntMap.Strict as IntMap
@@ -411,37 +411,44 @@ recorded. Finishing evaluates cycles the run did not force; a cycle that
 throws ends that trace there (its later cycles show as not evaluated).
 
 Finishing a trace can evaluate a trace that the run did not reach, which then
-registers. Such a trace is finished too, up to the same end: the taps are read
-again until no new trace registers. The list only grows at its head, so the
-new taps are the first ones.
+registers. Such a trace records the cycles that were evaluated, its last one
+too, but is not finished itself: finishing it could reach yet another trace,
+and a design without a last stage (a stage that calls itself) would never
+stop. Recording its last cycle can register a trace in turn, which records
+the same way, until no new trace registers.
 -}
 finishRecording :: Recorder -> IORef [(Sig, IORef TraceTap)] -> IO Recording
 finishRecording rec tapsRef = do
-  taps <- readIORef tapsRef
+  taps <- takeTaps
   forced <- forM taps $ \(sig, ref) -> do
     TraceTap touched next _ <- readIORef ref
     pure (if touched then (next + 1) * sigPeriod sig else 0)
   recorded <- recorderEnd rec
   let
     end = maximum (recorded : forced)
-    finishFrom done = do
-      now <- readIORef tapsRef
-      let new = length now - done
-      when (new > 0) $ do
-        forM_ (take new now) finish
-        finishFrom (done + new)
-    finish (sig, ref) = do
-      TraceTap _ next rest <- readIORef ref
-      let upto = (end + sigPeriod sig - 1) `div` sigPeriod sig
-      finished <-
-        try
-          (forM_ (zip [next .. upto - 1] rest) (\(c, v) -> evaluate v >>= recordCycle rec sig c))
-      case finished of
-        -- A cancellation is not a cycle that throws: it goes on.
-        Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
-        _ -> pure ()
-  finishFrom 0
+    upto sig = (end + sigPeriod sig - 1) `div` sigPeriod sig
+    -- The cycle in the tap: evaluated, not recorded yet.
+    evaluated (sig, ref) = do
+      TraceTap touched next _ <- readIORef ref
+      pure (if touched then min (next + 1) (upto sig) else 0)
+    evaluatedOfNew = do
+      new <- takeTaps
+      unless (null new) (forM_ new (\t -> evaluated t >>= finish t) >> evaluatedOfNew)
+  forM_ taps (\t@(sig, _) -> finish t (upto sig))
+  evaluatedOfNew
   closeRecorder rec end
+ where
+  takeTaps = atomicModifyIORef' tapsRef (\ts -> ([], ts))
+  -- Record the cycles of a trace up to this one, exclusive.
+  finish (sig, ref) to = do
+    TraceTap _ next rest <- readIORef ref
+    finished <-
+      try
+        (forM_ (zip [next .. to - 1] rest) (\(c, v) -> evaluate v >>= recordCycle rec sig c))
+    case finished of
+      -- A cancellation is not a cycle that throws: it goes on.
+      Left err | Just (_ :: SomeAsyncException) <- fromException err -> throwIO err
+      _ -> pure ()
 
 {- | Declarations of intent the plugin reads from an @ANN@ pragma.
 
