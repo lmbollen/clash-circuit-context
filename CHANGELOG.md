@@ -256,8 +256,9 @@ Initial version.
   them to their plain forms and eliminates the tracing machinery:
   `traceSignalC`/`probe`/`component` become identity and `mealyProbed`
   becomes a plain `mealy` (no companion counter, hence no extra hardware).
-  An instrumented design synthesizes to the same netlist as the
-  un-instrumented one; discharge `HasCircuitContext` at a boundary with
+  An instrumented design gives HDL that is equivalent to that of the
+  un-instrumented one, but not the same text (compare it with an
+  equivalence checker, not `diff`); discharge `HasCircuitContext` at a boundary with
   `withoutCircuitContext (f a b c)` (or the raw `noCircuitContext`).
   `withoutCircuitContext :: (HasCircuitContext => r) -> r` lets a
   synthesis-facing caller invoke an instrumented function without acquiring
@@ -339,10 +340,8 @@ Initial version.
   (goldens unchanged); a signal of a slower domain now changes at its own
   clock edges, where stock `dumpVCD` shifts its values. Signals with the
   same history are found by a hash of their changes, confirmed by comparing
-  them, so a collision cannot merge two signals. Memory still grows with the
-  length of a recorded run, because the trace taps keep raw design values
-  alive while it runs (#38): on a CPU design the maximum residency went from
-  3.4 GB to 1.05 GB, not to a constant.
+  them, so a collision cannot merge two signals. On a CPU design the maximum
+  residency went from 3.4 GB to 1.05 GB.
 * New probe combinators for the two Clash idioms `mealyProbed` could not reach:
   `mealyBProbed`/`mooreBProbed` (bundled-I/O mealy/moore — the `mealyB`/`mooreB`
   form, the most common in real designs) and `probeFmap`, an `fmap` that binds a

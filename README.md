@@ -341,9 +341,11 @@ code never fails to compile because something cannot be traced, and
 `traceNamed` remains the way to demand tracing at compile time, since it
 takes `Traceable` as a real constraint (`traceSignalC`, for a plain signal,
 takes `BitPack`): a binding whose type has no `Traceable` instance is a
-compile error. A record or tuple with the generic instance is traced field
-by field, though, and a field that cannot be recorded only warns
-(`-Wx-circuit-context-untraced`) and is a hole in the waveform.
+compile error. A record with the generic instance, or a tuple, is traced
+field by field, though: a field that could have been recorded but cannot be
+only warns (`-Wx-circuit-context-untraced` or `-Wx-circuit-context-undecided`)
+and is a hole in the waveform, and a field no recorder could ever take (an
+`Int`, a `Signal` of functions) is left out without a warning.
 
 Custom warning categories are a GHC 9.8 feature. On 9.6 these are still real
 warnings — a blanket `-Werror` promotes them — but they cannot be silenced or
@@ -454,8 +456,10 @@ the waveform. Hedgehog prints footnotes only for the case it reports, so the
 waveform is of the **shrunk counterexample**, recorded once, and the report
 ends with its path. `AtSize s` additionally keeps the first passing case of at
 least size `s` (once per waveform name): a small size gives a short waveform
-you can read end to end, and a property of `n` tests reaches sizes below
-`min n 100` (Hedgehog starts again at size 0 after 99).
+you can read end to end. Each case, a discarded one too, is one size larger
+than the one before, so a property of `n` tests and `d` discarded cases
+reaches sizes below `min (n + d) 100` (Hedgehog starts again at size 0 after
+99).
 
 A worked version of all of this is the Example level of the test suite,
 which `check.sh` builds and runs:
