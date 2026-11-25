@@ -469,7 +469,8 @@ stoppedMessage path =
   say
     ( "the run was stopped; what it recorded is in "
         <> path
-        <> ". Write its waveform in Haskell with\n  "
+        <> ". The next recording at this path starts that file again. Write its"
+        <> " waveform first, in Haskell with\n  "
         <> haskell
         <> "\nor from a shell, in a cabal project with clash-circuit-context (spill2vcd"
         <> " writes a VCD), with\n  cabal run clash-circuit-context:spill2fst -- "

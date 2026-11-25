@@ -143,7 +143,9 @@ data Spill
     A recording locks its spill file while it runs. A second recording with
     the same spill file at the same time (two tests with one path, in one
     process or in two) throws at once, with an error that names the file,
-    and leaves the first one's file alone.
+    and leaves the first one's file alone. A later recording at that path
+    starts the file again: write the waveform of a stopped run before the next
+    run at its path.
 
     On Linux, a value is in the file as soon as it is recorded, also when the
     process is killed right after. The file's disk space is reserved ahead, up to 16 KiB

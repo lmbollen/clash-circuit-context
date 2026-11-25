@@ -515,7 +515,8 @@ the rerun of a failed check of `withWaveform` or `simulateWaveform`. Their
 first runs do not record, so a test that hangs and is cancelled in its first
 run leaves nothing; to keep the waveform of such a test, simulate it with
 `writeWaveform`. The file describes itself: its signals, their descriptions, and the
-values recorded up to there. Write its waveform from Haskell:
+values recorded up to there. The next recording at that path starts the file
+again, so write its waveform before you run the test again. From Haskell:
 
 ```haskell
 recoverWaveform defaultOptions "waveforms/counter"   -- waveforms/counter.fst, deletes the spill
