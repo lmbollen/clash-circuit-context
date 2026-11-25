@@ -30,7 +30,8 @@ Two cooperating stages — spike findings:
   round — deferred instead; the real round always carries at least the
   enclosing @?circuitContext@\/@?probe@ given.
 
-Solvability approximation (constraints-emerge style, no re-entrant solver):
+Solvability approximation (constraints-emerge style; GHC's solver runs again
+only in 'ghcUnsolved'):
 direct given hit → yes; built-in classes (KnownNat\/KnownSymbol literals,
 ground Typeable) decided directly; @KnownNat@ of type-level arithmetic and
 side conditions such as @1 <= n@ decided by GHC itself, with the plugins
@@ -835,7 +836,8 @@ solvablePred ::
   (Monad m) =>
   m GHC.InstEnvs ->
   {- | One-step type-family reduction. The oracle walks the instance
-  environment itself and never runs the typechecker's solver, so without this
+  environment itself (it runs the typechecker's solver only for type-level
+  arithmetic and side conditions, see 'ghcUnsolved'), so without this
   a family application it cannot see through — @BitSize SomeRecord@, the
   @Assert@ behind @1 <= 4096@ — looks like a type nothing can be known about.
   Reducing first is the difference between declining a wire and tracing it.

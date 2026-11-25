@@ -89,6 +89,15 @@ case "$ghcver" in
        "[-Wx-circuit-context-undescribed]"
      ) ;;
 esac
+# A width that GHC cannot know (Test/SideConditions.hs, unknownOperand, in the
+# typelits-plugins suite): asserted when that module was compiled into this log.
+if grep -q "Compiling.*SideConditions" "$log" 2>/dev/null; then
+  if grep -qF "no instance for: KnownNat m" "$log"; then
+    echo "ok: diagnostic fired: no instance for: KnownNat m"
+  else
+    echo "FAIL: expected diagnostic missing: no instance for: KnownNat m"; fail=1
+  fi
+fi
 if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
   for want in \
     ${tags[@]+"${tags[@]}"} \
@@ -110,7 +119,6 @@ if grep -q "Compiling Main.*PluginDiagnostics" "$log" 2>/dev/null; then
     "the oracle could not decide: 1 <= n" \
     "the oracle could not decide: KnownNat (n + 1)" \
     "the oracle could not decide: BitPack (Overlapped tag)" \
-    "no instance for: KnownNat m" \
     "Name the binding with traceNamed, which takes Traceable"
   do
     if grep -qF "$want" "$log"; then
