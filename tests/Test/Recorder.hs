@@ -31,7 +31,14 @@ import Control.Concurrent.MVar (
   readMVar,
   takeMVar,
  )
-import Control.Exception (evaluate, finally, throwIO)
+import Control.Exception (
+  SomeException,
+  displayException,
+  evaluate,
+  finally,
+  throwIO,
+  try,
+ )
 import Control.Monad (forM_)
 import Control.Monad.IO.Class (liftIO)
 import Data.IORef (newIORef)
@@ -40,7 +47,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Text as Text
 import qualified Data.Text.IO as TextIO
 import System.Directory (createDirectoryIfMissing, removePathForcibly)
-import System.FilePath ((-<.>))
+import System.FilePath ((-<.>), (</>))
 import System.IO (hClose, openTempFile)
 import System.IO.Unsafe (unsafePerformIO)
 
@@ -62,10 +69,18 @@ import Clash.CircuitContext (
   component,
   traceSignalC,
   traceSignalSW,
+  withRecording,
   withRecordingFrom,
  )
 import Clash.CircuitContext.Core (HierSeg (..), ProbeCtx (..), probe)
-import Clash.CircuitContext.Recording (discardRecording, recordingEnd, writeVCD)
+import Clash.CircuitContext.Recording (
+  discardRecording,
+  recordedChanges,
+  recordedSignals,
+  recordingEnd,
+  signalKey,
+  writeVCD,
+ )
 import Test.Vcd (asInts, decodeVCD, decodeVCDPaths, model)
 
 -- | A domain at half the speed of 'System'.
@@ -578,6 +593,9 @@ tests =
         "a scope declares its signals in source order, its scopes by name"
         prop_declarationsAreSorted
     , testProperty "every signal has a name of its own" prop_namesAreUnique
+    , testProperty
+        "threads that record at once keep their own values"
+        prop_threadsKeepTheirValues
     , testProperty "the stock logic scope keeps its name" prop_rootScopeHasItsName
     , testProperty "two probes with one key are two signals" prop_probesWithOneKey
     , testProperty
@@ -590,3 +608,54 @@ tests =
         "many probed values evaluated late are shown at their cycles"
         prop_manyLateProbesAreShown
     ]
+
+{- | Threads that record at once keep their own values. Four wide signals
+change in every cycle, so each one fills region after region of the spill
+file, and each is forced by a thread of its own. Where a spill file is written through
+a Handle (every platform but Linux), a write is a seek and then a write: a
+thread switched out between the two wrote its region at the offset of the
+other thread's region. The values are wide, so that the threads spend most
+of their time writing: with 64-bit values, that happened too rarely to see.
+-}
+prop_threadsKeepTheirValues :: Property
+prop_threadsKeepTheirValues = Hedgehog.withTests 6 $ property $ do
+  wrong <- liftIO $ do
+    createDirectoryIfMissing True dir
+    (r, rec) <- withRecording (Just (dir </> "two-threads.spill")) $ do
+      dones <-
+        P.mapM
+          ( \(name, k) -> do
+              done <- newEmptyMVar
+              _ <-
+                forkIO
+                  ( ( evaluate (P.length (P.filter (P.== 0) (sampleN cycles (traceSignalC name (counter k)))))
+                        *> pure ()
+                    )
+                      `finally` putMVar done ()
+                  )
+              pure done
+          )
+          [(name, k) | k <- [1 .. 4], let name = "s" <> P.show k]
+      P.mapM_ takeMVar dones
+    P.either throwIO pure r
+    wrong <- P.mapM (check rec) (recordedSignals rec)
+    discardRecording rec
+    pure (P.concat wrong)
+  wrong === []
+ where
+  dir = "waveforms/test-recorder"
+  cycles = 4000 :: Int
+  counter :: Integer -> Signal System (BitVector 32768)
+  counter k = P.fmap (\i -> P.fromInteger (i P.* 2654435761 P.+ k)) (fromList [0 ..])
+  check rec s = do
+    let k = P.read (P.takeWhile (P./= '@') (P.drop 1 (signalKey s)))
+        want =
+          [ (c, P.Just (0, P.fromInteger (P.toInteger c P.* 2654435761 P.+ k)))
+          | c <- [0 .. cycles P.- 2]
+          ]
+    got <- try @SomeException (recordedChanges rec s)
+    pure $ case got of
+      P.Left e -> [signalKey s <> ": " <> displayException e]
+      P.Right cs
+        | P.take (cycles P.- 1) cs P.== want -> []
+        | P.otherwise -> [signalKey s <> ": the values differ from the design's"]

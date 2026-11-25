@@ -138,6 +138,7 @@ mapAt fd off len = alloca $ \out -> do
 unmap :: Ptr Word8 -> Int -> IO (Either Error ())
 unmap p len = result <$> c_unmap p (fromIntegral len)
 #else
+import Control.Concurrent.MVar (MVar, newMVar, withMVar)
 import Control.Exception (IOException, try)
 import GHC.IO.Handle.Lock (
   FileLockingNotSupported (FileLockingNotSupported),
@@ -158,8 +159,12 @@ import System.IO (
   openBinaryFile,
  )
 
--- | An open spill file.
-type Fd = Handle
+{- | An open spill file, and the lock of its position. A write is a seek and
+then a write, two steps on one position that every thread shares: a thread
+switched out between the two would write at the offset another thread
+sought.
+-}
+data Fd = Fd !Handle !(MVar ())
 
 -- | Why a call failed.
 type Error = IOException
@@ -190,7 +195,7 @@ openSpill path = do
       locked <-
         hTryLock h ExclusiveLock `Exception.catch` \FileLockingNotSupported -> pure True
       if locked
-        then hSetFileSize h 0 >> hSetBuffering h NoBuffering >> pure h
+        then hSetFileSize h 0 >> hSetBuffering h NoBuffering >> Fd h <$> newMVar ()
         else ioError (inUse path)
     )
     `Exception.onException` hClose h
@@ -199,15 +204,16 @@ openSpill path = do
 'Handle', which closing tries again; that error has been reported already.
 -}
 closeSpill :: Fd -> IO ()
-closeSpill h = hClose h `Exception.catch` \(_ :: IOException) -> pure ()
+closeSpill (Fd h _) = hClose h `Exception.catch` \(_ :: IOException) -> pure ()
 
 -- | Nothing is reserved here: nothing is mapped.
 reserve :: Fd -> Int -> Int -> IO (Either Error ())
 reserve _ _ _ = pure (Right ())
 
--- | Write this many bytes at this offset.
+-- | Write this many bytes at this offset, one thread at a time.
 writeAt :: Fd -> Ptr Word8 -> Int -> Int -> IO (Either Error ())
-writeAt h p len off = try (hSeek h AbsoluteSeek (fromIntegral off) >> hPutBuf h p len)
+writeAt (Fd h lock) p len off =
+  try (withMVar lock (\() -> hSeek h AbsoluteSeek (fromIntegral off) >> hPutBuf h p len))
 
 -- | Nothing is mapped here.
 mapAt :: Fd -> Int -> Int -> IO (Either Error (Ptr Word8))
